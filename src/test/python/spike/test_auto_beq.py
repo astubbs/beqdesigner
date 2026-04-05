@@ -341,6 +341,21 @@ def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
     log.info("raw spectrum: %d bins from %.1f to %.1f Hz",
              len(measured_freqs), measured_freqs[0], measured_freqs[-1])
 
+    # Absolute (un-normalised) dBFS at diagnostic frequencies. The
+    # pipeline normalises to 0 dB at 80 Hz next, which throws away
+    # mastering-level information. Log it first so we can see whether
+    # films differ in absolute mid-bass energy (hypothesis: louder
+    # absolute mid-bass correlates with mastering aggressiveness).
+    abs_dbfs = [
+        measured_db[int(np.argmin(np.abs(measured_freqs - f)))]
+        for f in (5.0, 10.0, 20.0, 40.0, 60.0, 80.0, 120.0)
+    ]
+    log.info(
+        "absolute dBFS: 5Hz=%.1f 10Hz=%.1f 20Hz=%.1f 40Hz=%.1f "
+        "60Hz=%.1f 80Hz=%.1f 120Hz=%.1f",
+        *abs_dbfs,
+    )
+
     measured_on_grid = np.interp(freqs, measured_freqs, measured_db)
     anchor_idx = int(np.argmin(np.abs(freqs - 80.0)))
     measured_on_grid -= measured_on_grid[anchor_idx]
