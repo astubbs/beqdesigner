@@ -182,12 +182,20 @@ def _load_media_manifest() -> list[dict]:
         path = Path(entry["path"]).expanduser()
         if not path.exists():
             continue
+        # trim_start_s / trim_end_s: optional, used as ffmpeg -ss/-to
+        # when extracting. Debugging aid for spot-checking how a
+        # film's non-showcase content differs from its full-length
+        # Welch average. Not a production feature.
+        trim_start_s = entry.get("trim_start_s")
+        trim_end_s = entry.get("trim_end_s")
         runnable.append({
             "path": str(path),
             "title": entry["title"],
             "filter_count": entry.get("filter_count"),
             "expected_grade": entry.get("expected_grade", "PASS"),
             "notes": entry.get("notes", ""),
+            "trim_start_s": float(trim_start_s) if trim_start_s is not None else None,
+            "trim_end_s": float(trim_end_s) if trim_end_s is not None else None,
         })
     return runnable
 
@@ -217,14 +225,31 @@ def _probe_audio_stream(media_path: Path) -> dict:
     return info
 
 
-def _extract_lfe_wav(media_path: Path, target_fs: int) -> Path:
+def _extract_lfe_wav(
+    media_path: Path,
+    target_fs: int,
+    trim_start_s: float | None = None,
+    trim_end_s: float | None = None,
+) -> Path:
     """Extract the LFE channel to a cached WAV next to the source file.
 
-    Cache file: ``<source-stem>.lfe-<fs>hz.wav`` in the same directory.
-    Returns the cache path. Skips ffmpeg if the cache already exists.
+    Cache file: ``<stem>.lfe-<fs>hz.wav``, or
+    ``<stem>.lfe-<fs>hz-t<start>-<end>.wav`` when trim is set. In the
+    same directory as the source. Skips ffmpeg if cache exists.
+
+    ``trim_start_s`` / ``trim_end_s`` inject ``-ss`` / ``-to`` before
+    ``-i`` (keyframe-accurate-fast, good enough for Welch statistics
+    over minutes of content). Either bound may be None.
     """
     cache_path = media_path.with_suffix("")
-    cache_path = cache_path.parent / f"{cache_path.name}.lfe-{target_fs}hz.wav"
+    trim_suffix = ""
+    if trim_start_s is not None or trim_end_s is not None:
+        start_tag = f"{trim_start_s:g}" if trim_start_s is not None else "0"
+        end_tag = f"{trim_end_s:g}" if trim_end_s is not None else "end"
+        trim_suffix = f"-t{start_tag}-{end_tag}"
+    cache_path = cache_path.parent / (
+        f"{cache_path.name}.lfe-{target_fs}hz{trim_suffix}.wav"
+    )
 
     if cache_path.exists() and cache_path.stat().st_size > 0:
         log.info("cached LFE WAV found, skipping extraction: %s (%d bytes)",
@@ -241,20 +266,30 @@ def _extract_lfe_wav(media_path: Path, target_fs: int) -> Path:
             "AUTO_BEQ_MEDIA_CHANNEL to bypass auto-detection"
         )
 
+    if trim_start_s is not None or trim_end_s is not None:
+        log.info(
+            "APPLYING TRIM: start=%ss end=%ss - this is NOT the full film",
+            trim_start_s, trim_end_s,
+        )
     log.info("extracting LFE channel -> %s (fs=%d)", cache_path, target_fs)
     log.info("this may take 1-3 minutes for a feature-length movie...")
     start = time.time()
-    proc = subprocess.run(
-        [
-            "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "warning",
-            "-i", str(media_path),
-            "-af", "pan=mono|c0=LFE",
-            "-ar", str(target_fs),
-            "-ac", "1",
-            str(cache_path),
-        ],
-        capture_output=True, text=True,
-    )
+    # ffmpeg args: -ss / -to BEFORE -i for keyframe-accurate-fast seek.
+    ff_args: list[str] = [
+        "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "warning",
+    ]
+    if trim_start_s is not None:
+        ff_args += ["-ss", str(trim_start_s)]
+    if trim_end_s is not None:
+        ff_args += ["-to", str(trim_end_s)]
+    ff_args += [
+        "-i", str(media_path),
+        "-af", "pan=mono|c0=LFE",
+        "-ar", str(target_fs),
+        "-ac", "1",
+        str(cache_path),
+    ]
+    proc = subprocess.run(ff_args, capture_output=True, text=True)
     elapsed = time.time() - start
     if proc.returncode != 0:
         log.error("ffmpeg stderr:\n%s", proc.stderr)
@@ -304,6 +339,8 @@ def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
     filter_count = manifest_entry["filter_count"]
     expected_grade = manifest_entry["expected_grade"]
     notes = manifest_entry["notes"]
+    trim_start_s = manifest_entry.get("trim_start_s")
+    trim_end_s = manifest_entry.get("trim_end_s")
 
     log.info("=== real-media roundtrip ===")
     log.info("media: %s", media_path)
@@ -324,7 +361,10 @@ def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
     # doesn't re-probe by itself.
     stream_info = _probe_audio_stream(media_path)
 
-    wav_path = _extract_lfe_wav(media_path, fs)
+    wav_path = _extract_lfe_wav(
+        media_path, fs,
+        trim_start_s=trim_start_s, trim_end_s=trim_end_s,
+    )
 
     # Load via the app's signal pipeline.
     log.info("loading WAV into Signal pipeline")
