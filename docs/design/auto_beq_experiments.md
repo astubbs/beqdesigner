@@ -217,6 +217,36 @@ trying to bake all the correct numbers into a one-shot prompt.
 
 This is iteration-with-self-inspection. The LLM should do the same.
 
+### E13 - De-overfit prompts (honest baseline)
+Reverted overfit language from E11's prompts:
+- Tier prompt: removed fixture-specific film lists (EoT, Dune,
+  Pacific Rim etc), replaced with DESCRIPTIONS of each tier
+  (reference = "demo reel" reputation, blockbuster = "big Atmos
+  modern action", etc) and director/composer signals.
+- Numbers prompt: removed DEFAULT values (+28, +15, +13) baked from
+  fixture catalogue entries. Now just gives tier ranges.
+- Chain prompt: removed Mad Max's exact notch values (11 Hz Q=8
+  -6 dB). Now describes the general inner-knee/PEQ/outer-knee
+  pattern with generic frequency ranges.
+
+**Result (llama3.1:8b, real Ollama)**:
+- EoT: tier=blockbuster (WRONG, should be reference), +18 dB @ 19 Hz
+  -> FAIL (7.12 / 13.04). Under-gained by 10 dB.
+- MM: tier=blockbuster (correct), multi-knee triggered, 3-filter
+  chain -> MARGINAL (2.20 / 6.93). Very close - only 0.20 over mean
+  threshold and 1.93 over max.
+- JW: tier=action (correct) -> PASS.
+
+**Lesson**: Removing EoT's name from the prompt costs us the tier
+classification. Small LLM doesn't independently know EoT is in the
+BEQ demo-reel canon. General descriptions ("Doug Liman sci-fi
+action") land it in blockbuster. This matches expectations - we're
+now testing whether the feedback loop can recover what the
+overfitting gave us.
+
+MM result is encouraging: the general principles got the multi-knee
+chain close to PASS without any Mad-Max-specific hardcoding.
+
 ## Next to try
 
 - [ ] **E12: Self-feedback loop**. Generate initial chain, compute
