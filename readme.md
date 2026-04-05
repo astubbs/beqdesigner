@@ -59,6 +59,51 @@ exact invocation used in CI.
 | `.github/workflows/` | `test.yaml` (CI) and `create-app.yaml` (release builds) |
 | `docs/` | Source for the readthedocs site (MkDocs) |
 
+## Architecture
+
+```mermaid
+graph TD
+    App["app.py<br/>BeqDesigner main window"]
+    UI["ui/<br/>Qt Designer forms"]
+
+    subgraph CoreModels["model/ — core logic"]
+        Filter["filter<br/>CompleteFilter"]
+        Signal["signal<br/>audio pipeline"]
+        IIR["iir<br/>biquad DSP"]
+        Codec["codec<br/>JSON I/O"]
+        Analysis["analysis<br/>spectrum"]
+        Prefs["preferences<br/>QSettings"]
+    end
+
+    subgraph Integrations["Device / app integrations"]
+        JRiver["jriver/<br/>JRiver MC"]
+        MiniDSP["minidsp<br/>device XML"]
+        HTP1["sync<br/>HTP-1 WebSocket"]
+        FFmpeg["ffmpeg<br/>extract / remux"]
+    end
+
+    App --> UI
+    App --> CoreModels
+    App --> Prefs
+    UI --> CoreModels
+    Filter --> IIR
+    Signal --> IIR
+    Analysis --> Signal
+    Filter --> Codec
+    JRiver --> Filter
+    MiniDSP --> Filter
+    HTP1 --> Filter
+    FFmpeg --> Signal
+
+    App --> Qt["PyQt6 / qtpy"]
+    IIR --> NumPy["numpy / scipy"]
+    Analysis --> MPL["matplotlib / pyqtgraph"]
+    FFmpeg --> FFbin["ffmpeg binary"]
+```
+
+See [`docs/architecture.md`](docs/architecture.md) for a longer walkthrough of
+each subsystem.
+
 ## Working with Qt Designer files
 
 Forms are edited as `.ui` files in Qt Designer and compiled to Python with
