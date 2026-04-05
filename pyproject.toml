@@ -33,6 +33,7 @@ soxr = "*"
 [tool.poetry.group.dev.dependencies]
 pytest = "*"
 pytest-cov = "*"
+pytest-qt = "*"
 distro = "*"
 atomicwrites = "*"
 scipy-stubs = "*"
