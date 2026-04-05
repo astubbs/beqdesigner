@@ -250,6 +250,155 @@ def _fit_low_shelf(
     )
 
 
+def classify_content(
+    measured_curve_db: np.ndarray,
+    freqs_hz: np.ndarray,
+    band: tuple[float, float] = DEFAULT_BAND,
+    peak_search_band: tuple[float, float] = (15.0, 40.0),
+) -> tuple[str, float]:
+    """Classify measured content into a tuning profile.
+
+    Different films need different BEQ aggressiveness, and the
+    measured curve gives us clues. This is a first-cut classifier
+    with three profiles. Each returns (profile_name, max_gain_db).
+
+    Profiles:
+      - "cliff": content with a very deep rolloff (>25 dB deficit at
+        5 Hz). These films have steep LFE rolloffs and the catalogue
+        applies medium-gain corrections - we cap tightly to avoid
+        over-extending. Example: Mad Max: Fury Road (45 dB range).
+      - "mild": shallow rolloff (<15 dB deficit). Content is
+        naturally fairly extended. Apply a generous cap. Example:
+        John Wick (11 dB range).
+      - "middle": moderate rolloff (15-25 dB deficit). Standard cap.
+        Example: Edge of Tomorrow - BUT EoT's catalogue is
+        expert-aggressive beyond what measured content suggests,
+        which this heuristic cannot infer.
+    """
+    mask = _band_mask(freqs_hz, band)
+    peak_mask = mask & (freqs_hz >= peak_search_band[0]) & (freqs_hz <= peak_search_band[1])
+    if not peak_mask.any():
+        return "flat", 0.0
+    peak_level = float(measured_curve_db[peak_mask].max())
+    band_vals = measured_curve_db[mask]
+    deficit_at_low = peak_level - float(band_vals.min())
+
+    if deficit_at_low > 25.0:
+        return "cliff", 12.0
+    if deficit_at_low < 15.0:
+        return "mild", 15.0
+    return "middle", 15.0
+
+
+def infer_correction_from_measured(
+    measured_curve_db: np.ndarray,
+    freqs_hz: np.ndarray,
+    band: tuple[float, float] = DEFAULT_BAND,
+    peak_search_band: tuple[float, float] = (15.0, 40.0),
+    max_gain_db: float | None = None,
+) -> np.ndarray | None:
+    """Heuristic: build a target-correction curve from a measured LFE curve.
+
+    BEQ philosophy is "extend bass where the content rolls off". The
+    heuristic here is conservative peak-extension:
+
+      1. Find the peak level in the LFE shoulder band (default 15-40 Hz).
+         This approximates "what the content naturally reaches" in its
+         strongest region.
+      2. At every frequency below the peak, compute how far below the
+         peak the measured curve sits. That gap IS the correction: lift
+         the low end up to the peak level.
+      3. Clamp tiny corrections to zero.
+
+    This matches conservative BEQs (mild-to-medium). It will under-shoot
+    aggressive catalogue entries (e.g. Edge of Tomorrow's +28 dB at
+    10 Hz) because those embed the expert's decision to go well beyond
+    what the measured content warrants. That mismatch is a known spike
+    finding, not a bug.
+
+    Returns None if no meaningful correction is needed (< 1 dB peak).
+    """
+    mask = _band_mask(freqs_hz, band)
+    peak_mask = mask & (freqs_hz >= peak_search_band[0]) & (freqs_hz <= peak_search_band[1])
+    if not peak_mask.any():
+        return None
+    peak_level = float(measured_curve_db[peak_mask].max())
+    # Index of peak frequency within the search band.
+    peak_freqs = freqs_hz[peak_mask]
+    peak_vals = measured_curve_db[peak_mask]
+    peak_freq = float(peak_freqs[int(np.argmax(peak_vals))])
+
+    # Use classifier-selected cap unless caller overrode it.
+    profile = "unclassified"
+    if max_gain_db is None:
+        profile, max_gain_db = classify_content(
+            measured_curve_db, freqs_hz, band=band, peak_search_band=peak_search_band
+        )
+    if max_gain_db <= 0.0:
+        return None
+
+    # For cliff-class content (steep rolloff), push the knee DOWN to
+    # where the steep drop actually starts. Catalogue entries for
+    # cliff content typically put their shelves at the drop-start
+    # frequency, not at the content's shoulder peak.
+    if profile == "cliff":
+        # Walk from peak_freq downward, find the first frequency
+        # where the curve falls 3 dB below peak_level.
+        band_freqs = freqs_hz[mask]
+        band_vals = measured_curve_db[mask]
+        peak_idx_band = int(np.argmin(np.abs(band_freqs - peak_freq)))
+        # scan downward
+        drop_freq = peak_freq
+        for i in range(peak_idx_band, -1, -1):
+            if band_vals[i] < peak_level - 3.0:
+                drop_freq = float(band_freqs[i])
+                break
+        peak_freq = drop_freq
+
+    # Below the peak frequency, lift the curve up to peak_level, but
+    # cap each bin at `max_gain_db`. Real BEQs top out around
+    # +15-20 dB of DC gain; beyond that we'd be invoking expert
+    # judgment we don't have. Above the peak frequency, correction=0
+    # (we don't modify content that's already at or above the shoulder).
+    correction = np.zeros_like(measured_curve_db)
+    below_peak = freqs_hz < peak_freq
+    correction[below_peak] = peak_level - measured_curve_db[below_peak]
+    correction = np.clip(correction, 0.0, max_gain_db)
+    # Smooth the knee transition so it's shelf-shaped rather than a
+    # step function.
+    correction = smooth_fractional_octave(correction, freqs_hz, octaves=1.0 / 3.0)
+
+    if float(correction.max()) < 1.0:
+        return None
+    return correction
+
+
+def propose_filters_from_measured(
+    measured_curve_db: np.ndarray,
+    freqs_hz: np.ndarray,
+    fs: int = DEFAULT_FS,
+    band: tuple[float, float] = DEFAULT_BAND,
+    max_filters: int = 6,
+) -> list[dict]:
+    """Production API: given a measured LFE curve, propose BEQ filters.
+
+    Pipeline:
+      1. Infer a correction curve from the measured curve
+         (conservative peak-extension heuristic).
+      2. Fit an N-filter IIR chain that reproduces that correction.
+
+    Returns an empty list if the measured curve doesn't need extension.
+    """
+    correction = infer_correction_from_measured(measured_curve_db, freqs_hz, band=band)
+    if correction is None:
+        return []
+    # The fitter treats its input as "cancel this curve". We want the
+    # chain's response to EQUAL `correction`, so we flip the sign.
+    return propose_filters(
+        -correction, freqs_hz, fs=fs, band=band, max_filters=max_filters,
+    )
+
+
 def propose_filters(
     target_curve_db: np.ndarray,
     freqs_hz: np.ndarray,

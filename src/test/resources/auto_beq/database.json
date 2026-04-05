@@ -2270,5 +2270,131 @@
     "audioCodecs": [
       "Atmos"
     ]
+  },
+  {
+    "title": "John Wick",
+    "year": "2014",
+    "audioTypes": [
+      "Atmos"
+    ],
+    "content_type": "film",
+    "author": "aron7awol",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/aron7awol/56811348/#atmos",
+    "filters": [
+      {
+        "type": "PeakingEQ",
+        "freq": 50.0,
+        "gain": 0.4,
+        "q": 1.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000752381394842",
+              "-1.996796417705212",
+              "0.9967318716656904"
+            ],
+            "a": [
+              "1.996796417705212",
+              "-0.9968071098051745"
+            ]
+          }
+        }
+      },
+      {
+        "type": "LowShelf",
+        "freq": 11.0,
+        "gain": 3.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000876921908122",
+              "-1.999282660985093",
+              "0.9991956136268323"
+            ],
+            "a": [
+              "1.9992827752319366",
+              "-0.9992831915708004"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 11.0,
+        "gain": 3.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000876921908122",
+              "-1.999282660985093",
+              "0.9991956136268323"
+            ],
+            "a": [
+              "1.9992827752319366",
+              "-0.9992831915708004"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 21.0,
+        "gain": 5.6,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0002473657695787",
+              "-1.998699031043782",
+              "0.998454271269852"
+            ],
+            "a": [
+              "1.9986996502186276",
+              "-0.9987010178645853"
+            ]
+          }
+        },
+        "count": 1
+      }
+    ],
+    "images": [
+      "https://i.imgur.com/m2ib7Lv.jpg",
+      "https://i.imgur.com/LgEGtHm.jpg"
+    ],
+    "warning": "",
+    "mv": "2",
+    "avs": "https://www.avsforum.com/threads/bass-eq-for-filtered-movies.2995212/post-56811348",
+    "sortTitle": "john wick",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "Ex-hitman John Wick comes out of retirement to track down the gangsters that took everything from him.",
+    "theMovieDB": "245891",
+    "rating": "R",
+    "runtime": "101",
+    "genres": [
+      "Action",
+      "Thriller"
+    ],
+    "altTitle": "",
+    "collection": {
+      "id": "404609",
+      "name": "John Wick Collection"
+    },
+    "underlying": "John Wick (2014) (+2 gain) BEQ Atmos",
+    "digest": "9174559800d3210fbffb3ca61a3e4489686878d7749bfd67cf44ba32e8d79987",
+    "created_at": 1543898641,
+    "updated_at": 1611984156,
+    "audioChannelCounts": [
+      ""
+    ],
+    "audioCodecs": [
+      "Atmos"
+    ]
   }
 ]

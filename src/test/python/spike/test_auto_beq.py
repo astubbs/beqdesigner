@@ -1,12 +1,36 @@
-"""Spike integration test: can propose_filters match catalogue entries?
+"""Spike integration tests for the auto-BEQ proposal pipeline.
 
-Parametrised over a list of (title, filter_count) fixtures from the
-committed catalogue snapshot. For each entry:
-  1. Compute the ground-truth magnitude curve G(f) from the entry's filters.
-  2. Feed -G(f) to propose_filters as a simulated rolloff.
-  3. Apply the proposed chain and assert it cancels the rolloff to tolerance.
+The spike's central question (from the vision brief):
 
-Extending this test to dozens of titles means adding rows to FIXTURES.
+    Can we take the human out of the chain of making BEQ filters?
+    Given only a measured LFE curve from a media file, can we
+    automatically propose filter parameters that resemble what a
+    human BEQ expert prescribed (i.e. the catalogue entry)?
+
+Three tests, in order of how much of the production problem they
+exercise:
+
+1. test_synthetic_roundtrip - PURE CURVE FITTING, no measurement.
+   Validates that scipy.optimize + an N-filter chain can reproduce
+   known catalogue response curves when handed them directly. If
+   this fails, scipy can't even fit known targets and nothing else
+   is worth trying.
+
+2. test_real_media_roundtrip - THE ACTUAL SPIKE QUESTION.
+   Extracts LFE from a real media file, computes its spectrum,
+   feeds the measured curve into propose_filters, and compares the
+   resulting filter chain's response to the catalogue entry's
+   response. Currently expected to FAIL: we don't yet have a way to
+   turn "measured LFE" into "catalogue-shaped correction target".
+   These failures are the core remaining work of the spike - each
+   one tells us how wrong our current heuristic is per-title.
+
+3. Supporting sanity tests (flat input, report formatter).
+
+The grading thresholds (<2 dB mean / <5 dB max error in 5-80 Hz)
+come from the vision brief. The PASS verdict means "this proposal
+resembles expert output closely enough to serve as a starting point
+for a magic-wand button".
 """
 
 from __future__ import annotations
@@ -27,16 +51,22 @@ from model.auto_beq import (
     evaluate_filter_chain,
     format_match_report,
     propose_filters,
+    propose_filters_from_measured,
     smooth_fractional_octave,
 )
 
 log = logging.getLogger("auto_beq_spike")
 
-# (title, filter_count, expected_verdict, notes)
+# Synthetic-roundtrip fixtures. For each (title, filter_count):
+#   - Compute the catalogue entry's response curve G(f).
+#   - Hand G(f) directly to the fitter (via -G as the "cancel" target).
+#   - Assert the fitter reproduces G(f) within the pass thresholds.
+#
 # filter_count disambiguates when a title has multiple catalogue entries
-# (different releases/rips). PASS cases use single-LowShelf entries because
-# the spike optimizer only fits LowShelf + optional PEQ.
-FIXTURES = [
+# (different releases). All of these are 1-filter entries - easy targets
+# for the fitter. They are a floor gate: if synthetic fails, the fitter
+# itself is broken and real-media can't possibly pass.
+SYNTHETIC_FIXTURES = [
     ("Battle: Los Angeles", 1, "PASS", "clean single-shelf, +4 dB @ 28 Hz"),
     ("Captain America: The Winter Soldier", 1, "PASS", "+3.8 dB @ 22 Hz"),
     ("Run Hide Fight", 1, "PASS", "+6 dB @ 17 Hz"),
@@ -48,8 +78,18 @@ def _ground_truth_curve(entry: dict, freqs_hz: np.ndarray, fs: int) -> np.ndarra
     return evaluate_filter_chain(entry["filters"], freqs_hz, fs=fs)
 
 
-@pytest.mark.parametrize("title,filter_count,expected,notes", FIXTURES)
+@pytest.mark.parametrize("title,filter_count,expected,notes", SYNTHETIC_FIXTURES)
 def test_synthetic_roundtrip(catalogue_snapshot, title, filter_count, expected, notes):
+    """FLOOR GATE: fitter can reproduce a known catalogue curve.
+
+    No measurement involved. Computes the catalogue entry's response
+    curve and asks the fitter to reproduce it. This tests the fitter
+    in isolation from the measurement pipeline.
+
+    Passing here does NOT prove the magic wand works. It only proves
+    scipy.optimize + the N-filter chain can fit known bass-curve
+    shapes. This is a prerequisite for the real test below.
+    """
     entry = catalogue_snapshot(title, filter_count=filter_count)
     fs = 1000
     freqs = DEFAULT_GRID
@@ -232,6 +272,30 @@ def _extract_lfe_wav(media_path: Path, target_fs: int) -> Path:
     ids=[e["title"] for e in MEDIA_MANIFEST],
 )
 def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
+    """THE CORE SPIKE QUESTION: end-to-end magic-wand simulation.
+
+    Exercises every step of the production "magic wand" workflow:
+      1. Extract LFE from a real media file (ffmpeg, cached).
+      2. Load samples via the app's Signal pipeline.
+      3. Compute the average spectrum (Welch), interp to log grid,
+         normalise to 80 Hz anchor, smooth to 1/6-octave.
+      4. Hand ONLY the measured curve to propose_filters. No
+         catalogue access at inference time - production has none.
+      5. Compare the proposed chain's response to the catalogue
+         entry's response using the vision-brief thresholds
+         (<2 dB mean / <5 dB max in 5-80 Hz).
+
+    This is the test that determines whether the spike's core
+    value-prop works: can we take the human out of BEQ-making?
+
+    Currently expected to FAIL on deep catalogue entries because
+    propose_filters has no heuristic to bridge measured-curve to
+    catalogue-shaped target. Each failure is data: it tells us how
+    aggressively each title's expert chose to extend versus what
+    the measured content naturally shows. Fix by teaching the
+    fitter how to construct a target-correction curve from the
+    measured curve alone.
+    """
     caplog.set_level(logging.INFO, logger="auto_beq_spike")
 
     media_path = Path(manifest_entry["path"])
@@ -293,16 +357,6 @@ def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
              ground_truth[int(np.argmin(np.abs(freqs - 20.0)))],
              ground_truth[anchor_idx])
 
-    # Informational: how far apart are measured content and the catalogue
-    # entry's correction curve? (If you invert the catalogue it does NOT
-    # equal the measured curve - experts do partial extension, not full
-    # flattening. This number quantifies that gap per-title.)
-    band_mask = (freqs >= 20.0) & (freqs <= 80.0)
-    gap = float(
-        np.mean(np.abs(measured_on_grid[band_mask] + ground_truth[band_mask]))
-    )
-    log.info("measured-vs-catalogue gap in 20-80 Hz (informational): %.2f dB", gap)
-
     # Pipeline sanity: the extracted LFE should contain real LFE content
     # (not silence, not a constant). 5 dB of dynamic range in-band is a
     # weak lower bound that catches "forgot to select the right channel"
@@ -317,15 +371,23 @@ def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
         "pipeline probably extracted silence or wrong channel"
     )
 
-    # Algorithm test (per vision brief): can N-filter fitter reproduce
-    # this catalogue entry's response curve? The target is the catalogue,
-    # not the measured curve. Going measured -> catalogue-shaped target
-    # is a separate unsolved problem beyond the spike's scope.
-    log.info("fitting N filters to reproduce catalogue response curve")
-    proposed = propose_filters(-ground_truth, freqs, fs=fs)
+    # ===== THE CORE SPIKE QUESTION =====
+    # Feed ONLY the measured curve into propose_filters (no catalogue
+    # access at inference time - this matches production, where the
+    # magic wand has no ground truth). Grade the proposed chain's
+    # response against the catalogue entry's response.
+    #
+    # A PASS means "our proposed chain resembles expert output within
+    # the tolerance thresholds". A FAIL is the central spike finding
+    # that tells us we don't yet know how to map measured LFE curves
+    # to expert-shaped correction targets.
+    log.info("running propose_filters_from_measured (production scenario)")
+    proposed = propose_filters_from_measured(measured_on_grid, freqs, fs=fs)
+    # compute_match_metrics grades |target + evaluate(chain)|.
+    # To grade |evaluate(proposed) - catalogue|, pass target=-catalogue.
     metrics = compute_match_metrics(-ground_truth, proposed, freqs, fs=fs)
     report = format_match_report(
-        f"{title} (catalogue fit via real-media pipeline)",
+        f"{title} (measured -> proposed filters vs catalogue)",
         entry["filters"],
         proposed,
         metrics,
