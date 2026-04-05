@@ -69,12 +69,30 @@ cd src/main/python/ui
 poetry run pyuic6 foo.ui -o foo.py
 ```
 
-See `src/main/python/ui/convert.sh` and `convert.bat` for batch scripts (the
-paths in them are hard-coded to a contributor's venv — regenerate the pyuic6
-path from your own `poetry env info --path`).
+To regenerate every form at once:
+
+```sh
+poetry run ui-gen
+# or, equivalently:
+poetry run python scripts/regen_ui.py
+```
+
+(`src/main/python/ui/convert.sh` and `convert.bat` are kept for reference but
+have hard-coded paths to a contributor's venv — prefer `poetry run ui-gen`.)
 
 Generated `.py` files **are** checked in — regenerate them whenever the `.ui`
-changes. Do not hand-edit the generated files.
+changes. Do not hand-edit the generated files. To catch this automatically:
+
+```sh
+poetry run pip install pre-commit
+pre-commit install
+```
+
+Once installed, staging a modified `.ui` triggers the hook (defined in
+`.pre-commit-config.yaml`), which runs `ui-gen` and re-stages the matching
+`.py`. A CI job (`ui-sync-check` in `.github/workflows/test.yaml`) performs the
+same check on every push and fails if the committed `.py` files drifted from
+their `.ui` sources.
 
 ## Conventions worth knowing
 

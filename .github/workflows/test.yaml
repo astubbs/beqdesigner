@@ -6,6 +6,7 @@ on:
     paths:
       - 'src/main/python/**'
       - 'src/test/**'
+      - 'scripts/**'
       - 'poetry.lock'
       - 'test.yaml'
   pull_request:
@@ -14,6 +15,7 @@ on:
     paths:
       - 'src/main/python/**'
       - 'src/test/**'
+      - 'scripts/**'
       - 'poetry.lock'
       - 'test.yaml'
   workflow_dispatch:
@@ -23,6 +25,26 @@ defaults:
   run:
     shell: bash
 jobs:
+  ui-sync-check:
+    name: Qt .ui -> .py drift check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.13
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-in-project: true
+      - name: Install minimal deps for pyuic6
+        run: poetry install --no-interaction --only main
+      - name: Regenerate UI
+        run: poetry run python scripts/regen_ui.py
+      - name: Fail if generated files drifted
+        run: git diff --exit-code src/main/python/ui/
+
   build:
     runs-on: ${{ matrix.os }}
     strategy:
