@@ -38,9 +38,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
-import subprocess
-import time
 from pathlib import Path
 
 import numpy as np
@@ -55,6 +52,8 @@ from model.auto_beq import (
     smooth_fractional_octave,
 )
 from model.auto_beq_advisor import MediaMetadata, get_advisor
+
+from spike._auto_beq_helpers import _extract_lfe_wav, _have_tool, _probe_audio_stream
 
 log = logging.getLogger("auto_beq_spike")
 
@@ -163,10 +162,6 @@ def test_report_formatter_shape(catalogue_snapshot):
 # ---------------------------------------------------------------------------
 
 
-def _have_tool(name: str) -> bool:
-    return shutil.which(name) is not None
-
-
 def _load_media_manifest() -> list[dict]:
     manifest_env = os.environ.get("AUTO_BEQ_MEDIA_MANIFEST")
     if manifest_env:
@@ -193,75 +188,6 @@ def _load_media_manifest() -> list[dict]:
 
 
 MEDIA_MANIFEST = _load_media_manifest()
-
-
-def _probe_audio_stream(media_path: Path) -> dict:
-    """Probe the first audio stream with ffprobe. Returns stream info dict."""
-    log.info("probing audio streams via ffprobe: %s", media_path)
-    result = subprocess.run(
-        [
-            "ffprobe", "-v", "error",
-            "-select_streams", "a:0",
-            "-show_entries", "stream=index,codec_name,channels,channel_layout,sample_rate",
-            "-of", "json",
-            str(media_path),
-        ],
-        capture_output=True, check=True, text=True, timeout=30,
-    )
-    info = json.loads(result.stdout)["streams"][0]
-    log.info(
-        "audio stream: codec=%s channels=%d layout=%s sample_rate=%s",
-        info.get("codec_name"), info.get("channels"),
-        info.get("channel_layout"), info.get("sample_rate"),
-    )
-    return info
-
-
-def _extract_lfe_wav(media_path: Path, target_fs: int) -> Path:
-    """Extract the LFE channel to a cached WAV next to the source file.
-
-    Cache file: ``<source-stem>.lfe-<fs>hz.wav`` in the same directory.
-    Returns the cache path. Skips ffmpeg if the cache already exists.
-    """
-    cache_path = media_path.with_suffix("")
-    cache_path = cache_path.parent / f"{cache_path.name}.lfe-{target_fs}hz.wav"
-
-    if cache_path.exists() and cache_path.stat().st_size > 0:
-        log.info("cached LFE WAV found, skipping extraction: %s (%d bytes)",
-                 cache_path, cache_path.stat().st_size)
-        return cache_path
-
-    stream = _probe_audio_stream(media_path)
-    layout = stream.get("channel_layout", "")
-    if "LFE" not in layout.upper() and not any(
-        layout.lower().startswith(p) for p in ("5.1", "6.1", "7.1")
-    ):
-        pytest.skip(
-            f"audio layout {layout!r} has no LFE channel; set "
-            "AUTO_BEQ_MEDIA_CHANNEL to bypass auto-detection"
-        )
-
-    log.info("extracting LFE channel -> %s (fs=%d)", cache_path, target_fs)
-    log.info("this may take 1-3 minutes for a feature-length movie...")
-    start = time.time()
-    proc = subprocess.run(
-        [
-            "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "warning",
-            "-i", str(media_path),
-            "-af", "pan=mono|c0=LFE",
-            "-ar", str(target_fs),
-            "-ac", "1",
-            str(cache_path),
-        ],
-        capture_output=True, text=True,
-    )
-    elapsed = time.time() - start
-    if proc.returncode != 0:
-        log.error("ffmpeg stderr:\n%s", proc.stderr)
-        raise RuntimeError(f"ffmpeg failed (exit {proc.returncode})")
-    size = cache_path.stat().st_size
-    log.info("extracted %d bytes in %.1fs -> %s", size, elapsed, cache_path)
-    return cache_path
 
 
 @pytest.mark.skipif(not MEDIA_MANIFEST, reason="no media manifest / no files on disk")
