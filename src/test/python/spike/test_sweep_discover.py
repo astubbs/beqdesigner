@@ -27,10 +27,16 @@ _FIXTURE_ROOT = (
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("candidate,expected", [
+    # Plex/Jellyfin style
     ("Dune (2021) [tmdb-438631]", ("Dune", 2021)),
     ("The Matrix (1999) [imdb-tt0133093]", ("The Matrix", 1999)),
     ("Inception (2010)", ("Inception", 2010)),
     ("Blade Runner 2049 (2017)", ("Blade Runner 2049", 2017)),
+    # Scene-style (dots as separators)
+    ("Edge.of.Tomorrow.2014.UHD.2160p.x265.DTS-HD.MA.7.1", ("Edge of Tomorrow", 2014)),
+    ("Mad.Max.Fury.Road.2015.BluRay.1080p.DTS.x264", ("Mad Max Fury Road", 2015)),
+    ("The.Dark.Knight.2008.REMUX", ("The Dark Knight", 2008)),
+    # Rejected
     ("Some TV Show S01E01", None),
     ("No year here", None),
     ("Movie (99)", None),                     # 2-digit year rejected

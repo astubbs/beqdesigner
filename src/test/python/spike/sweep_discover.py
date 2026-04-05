@@ -43,11 +43,17 @@ _DEFAULT_TEST_LIMIT = 10
 _CATALOGUE_CACHE_MAX_AGE_HOURS = 24
 _SCHEMA_VERSION = 1
 
-# Matches: "Title (YEAR)" optionally followed by " [tmdb-NNN]" or " [imdb-ttNNN]".
-# Title is non-greedy, year is 4 digits. Applied to directory or file stem.
-_FILENAME_RE = re.compile(
+# Pattern 1 — Plex/Jellyfin: "Title (YEAR)" optionally followed by " [tmdb-NNN]".
+_PLEX_RE = re.compile(
     r"^(?P<title>.+?)\s*\((?P<year>\d{4})\)"
     r"(?:\s*\[(?:tmdb|imdb)-[^\]]+\])?\s*$"
+)
+
+# Pattern 2 — Scene-style: "Title.Name.YEAR.codec.source..." with dots as separators.
+# Matches the year as the first 4-digit group that looks like a plausible release year
+# (1920-2039). Everything before the year (with dots replaced by spaces) is the title.
+_SCENE_RE = re.compile(
+    r"^(?P<title>.+?)\.(?P<year>(?:19|20)\d{2})\."
 )
 
 _MEDIA_EXTENSIONS = (".mkv",)
@@ -98,13 +104,23 @@ def load_dotenv(path: Path | None = None) -> dict[str, str]:
 def parse_plex_filename(path: Path) -> tuple[str, int] | None:
     """Extract (title, year) from a media file's directory or stem name.
 
-    Plex uses the enclosing directory name; some layouts use the file
-    stem. Try the directory first, fall back to the stem.
+    Supports two naming conventions:
+      - Plex/Jellyfin: ``Title (YEAR) [tmdb-NNN]``
+      - Scene-style: ``Title.Name.YEAR.codec.source.mkv``
+
+    Tries the enclosing directory name first (Plex convention), then
+    the file stem, for each pattern.
     """
     for candidate in (path.parent.name, path.stem):
-        m = _FILENAME_RE.match(candidate)
+        # Plex/Jellyfin pattern first (more specific).
+        m = _PLEX_RE.match(candidate)
         if m:
             return (m.group("title").strip(), int(m.group("year")))
+        # Scene-style with dots.
+        m = _SCENE_RE.match(candidate)
+        if m:
+            title = m.group("title").replace(".", " ").strip()
+            return (title, int(m.group("year")))
     return None
 
 
