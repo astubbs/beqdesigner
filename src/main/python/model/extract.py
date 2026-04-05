@@ -7,18 +7,39 @@ from urllib.request import url2pathname
 
 import numpy as np
 import qtawesome as qta
-from qtpy.QtCore import Qt, QTime
-from qtpy.QtGui import QPalette, QColor, QFont
-from qtpy.QtMultimedia import QSoundEffect
-from qtpy.QtWidgets import QDialog, QFileDialog, QStatusBar, QDialogButtonBox, QMessageBox
-
-from model.ffmpeg import Executor, ViewProbeDialog, SIGNAL_CONNECTED, SIGNAL_ERROR, SIGNAL_COMPLETE, parse_audio_stream, \
-    get_channel_name, parse_video_stream
-from model.preferences import EXTRACTION_OUTPUT_DIR, EXTRACTION_NOTIFICATION_SOUND, ANALYSIS_TARGET_FS, \
-    EXTRACTION_MIX_MONO, EXTRACTION_DECIMATE, EXTRACTION_INCLUDE_ORIGINAL, EXTRACTION_INCLUDE_SUBTITLES, \
-    EXTRACTION_COMPRESS, COMPRESS_FORMAT_OPTIONS, COMPRESS_FORMAT_FLAC, COMPRESS_FORMAT_NATIVE, COMPRESS_FORMAT_EAC3, \
-    BASS_MANAGEMENT_LPF_FS, COMPRESS_FORMAT_AC3, EXTRACTION_GEOMETRY, Preferences
+from model.ffmpeg import (
+    SIGNAL_COMPLETE,
+    SIGNAL_CONNECTED,
+    SIGNAL_ERROR,
+    Executor,
+    ViewProbeDialog,
+    get_channel_name,
+    parse_audio_stream,
+    parse_video_stream,
+)
+from model.preferences import (
+    ANALYSIS_TARGET_FS,
+    BASS_MANAGEMENT_LPF_FS,
+    COMPRESS_FORMAT_AC3,
+    COMPRESS_FORMAT_EAC3,
+    COMPRESS_FORMAT_FLAC,
+    COMPRESS_FORMAT_NATIVE,
+    COMPRESS_FORMAT_OPTIONS,
+    EXTRACTION_COMPRESS,
+    EXTRACTION_DECIMATE,
+    EXTRACTION_GEOMETRY,
+    EXTRACTION_INCLUDE_ORIGINAL,
+    EXTRACTION_INCLUDE_SUBTITLES,
+    EXTRACTION_MIX_MONO,
+    EXTRACTION_NOTIFICATION_SOUND,
+    EXTRACTION_OUTPUT_DIR,
+    Preferences,
+)
 from model.signal import AutoWavLoader
+from qtpy.QtCore import Qt, QTime
+from qtpy.QtGui import QColor, QFont, QPalette
+from qtpy.QtMultimedia import QSoundEffect
+from qtpy.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QMessageBox, QStatusBar
 from ui.edit_mapping import Ui_editMappingDialog
 from ui.extract import Ui_extractAudioDialog
 
@@ -627,7 +648,7 @@ class ExtractAudioDialog(QDialog, Ui_extractAudioDialog):
         '''
         dialog = QFileDialog(parent=self)
         dialog.setFileMode(QFileDialog.FileMode.Directory)
-        dialog.setWindowTitle(f"Select Output Directory")
+        dialog.setWindowTitle("Select Output Directory")
         if dialog.exec():
             selected = dialog.selectedFiles()
             if len(selected) > 0:

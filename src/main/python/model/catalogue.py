@@ -4,21 +4,20 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
 import qtawesome as qta
 import requests
 from dateutil.parser import parse as parsedate
-from qtpy.QtCore import Signal, QRunnable, QObject, QThreadPool, QUrl, Qt
-from qtpy.QtGui import QDesktopServices, QImageReader, QPixmap
-from qtpy.QtWidgets import QDialog, QMessageBox, QSizePolicy, QListWidgetItem, QMenu, QAction, QPushButton
-from sortedcontainers import SortedSet
-
-from model.iir import HighShelf, LowShelf, PeakingEQ, BiquadWithQGain
+from model.iir import BiquadWithQGain, HighShelf, LowShelf, PeakingEQ
 from model.minidsp import FilterPublisher, FilterPublisherSignals
 from model.preferences import BEQ_DOWNLOAD_DIR, BINARIES_MINIDSP_RS, MINIDSP_RS_OPTIONS
 from model.report import block_signals
+from qtpy.QtCore import QObject, QRunnable, Qt, QThreadPool, QUrl, Signal
+from qtpy.QtGui import QDesktopServices, QImageReader, QPixmap
+from qtpy.QtWidgets import QAction, QDialog, QListWidgetItem, QMenu, QMessageBox, QPushButton, QSizePolicy
+from sortedcontainers import SortedSet
 from ui.catalogue import Ui_catalogueDialog
 from ui.imgviewer import Ui_imgViewerDialog
 

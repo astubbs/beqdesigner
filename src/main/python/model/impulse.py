@@ -1,16 +1,15 @@
-from typing import List, Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import qtawesome as qta
-from qtpy import QtCore
-from qtpy.QtCore import QTimer
-from qtpy.QtWidgets import QDialog, QAbstractItemView, QListWidgetItem, QWidget
-
 from model.limits import ImpulseRangeCalculator
 from model.magnitude import MagnitudeModel
-from model.preferences import Preferences, IMPULSE_GRAPH_X_MIN, IMPULSE_GRAPH_X_MAX, get_filter_colour
+from model.preferences import IMPULSE_GRAPH_X_MAX, IMPULSE_GRAPH_X_MIN, Preferences, get_filter_colour
 from model.signal import Signal
 from model.xy import MagnitudeData
+from qtpy import QtCore
+from qtpy.QtCore import QTimer
+from qtpy.QtWidgets import QAbstractItemView, QDialog, QListWidgetItem, QWidget
 from ui.channel_select import Ui_channelSelectDialog
 from ui.impulse import Ui_impulseDialog
 

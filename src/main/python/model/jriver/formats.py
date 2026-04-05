@@ -1,6 +1,6 @@
 # 2-9
 import functools
-from typing import List, Dict, Tuple
+from typing import Dict, List, Tuple
 
 SURROUND_CHANNELS = ['Left', 'Right', 'Centre', 'Subwoofer', 'Surround Left', 'Surround Right', 'Rear Left',
                      'Rear Right']

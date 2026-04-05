@@ -1,13 +1,12 @@
 import logging
-from abc import abstractmethod, ABC
-from typing import List, Optional, Tuple, Callable
+from abc import ABC, abstractmethod
+from typing import Callable, List, Optional, Tuple
 from uuid import uuid4
 
-from qtpy.QtCore import QObject, Signal, QRunnable
-from qtpy.QtWidgets import QFileDialog
-
-from model.iir import Passthrough, PeakingEQ, Shelf, LowShelf, HighShelf, Biquad
+from model.iir import Biquad, HighShelf, LowShelf, Passthrough, PeakingEQ, Shelf
 from model.preferences import BEQ_DOWNLOAD_DIR
+from qtpy.QtCore import QObject, QRunnable, Signal
+from qtpy.QtWidgets import QFileDialog
 
 logger = logging.getLogger('minidsp')
 
@@ -68,8 +67,8 @@ class TwoByFourXmlParser(XmlParser):
         super().__init__(minidsp_type, optimise_filters)
 
     def _overwrite(self, filters, target, metadata=None, pretty=False):
-        import xml.etree.ElementTree as ET
         import re
+        import xml.etree.ElementTree as ET
         logger.info(f"Copying {len(filters)} to {target}")
         et_tree = ET.parse(target)
         root = et_tree.getroot()
@@ -256,7 +255,7 @@ def get_minidsp_filter_code(filt):
 
 def xml_to_filt(file, fs=1000, unroll=False) -> List[Biquad]:
     ''' Extracts a set of filters from the provided minidsp file '''
-    from model.iir import PeakingEQ, LowShelf, HighShelf
+    from model.iir import HighShelf, LowShelf, PeakingEQ
 
     filts = __extract_filters(file)
     output = []
@@ -444,8 +443,8 @@ class FilterPublisher(QRunnable):
                 for i in range(idx, 10):
                     self.__send_bypass(str(c), str(i), True)
             self.__signals.on_status.emit(FilterPublisherSignals.ON_COMPLETE)
-        except Exception as e:
-            logger.exception(f"Unexpected failure during filter publication")
+        except Exception:
+            logger.exception("Unexpected failure during filter publication")
             self.__signals.on_status.emit(FilterPublisherSignals.ON_ERROR)
 
     def __send_config(self):
