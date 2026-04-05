@@ -16,10 +16,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from model.iir import HighShelf, LowShelf, PeakingEQ
 from scipy import signal as sps
 from scipy.optimize import minimize
-
-from model.iir import HighShelf, LowShelf, PeakingEQ
 
 DEFAULT_FS = 1000
 DEFAULT_BAND = (20.0, 80.0)

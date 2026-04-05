@@ -18,7 +18,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
 from model.auto_beq import (
     DEFAULT_GRID,
     compute_match_metrics,
