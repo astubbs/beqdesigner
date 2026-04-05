@@ -27,6 +27,7 @@ from model.auto_beq import (
     evaluate_filter_chain,
     format_match_report,
     propose_filters,
+    smooth_fractional_octave,
 )
 
 log = logging.getLogger("auto_beq_spike")
@@ -274,7 +275,12 @@ def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
     measured_on_grid = np.interp(freqs, measured_freqs, measured_db)
     anchor_idx = int(np.argmin(np.abs(freqs - 80.0)))
     measured_on_grid -= measured_on_grid[anchor_idx]
-    log.info("measured curve on grid: 10Hz=%.1f 20Hz=%.1f 80Hz=%.1f 200Hz=%.1f dB",
+    # Smooth to 1/6-octave - standard for BEQ-style analysis. Narrow
+    # resonances in the raw spectrum are mastering artefacts, not
+    # features an IIR filter should chase.
+    measured_on_grid = smooth_fractional_octave(measured_on_grid, freqs, octaves=1.0 / 6.0)
+    measured_on_grid -= measured_on_grid[anchor_idx]
+    log.info("smoothed curve on grid: 10Hz=%.1f 20Hz=%.1f 80Hz=%.1f 200Hz=%.1f dB",
              measured_on_grid[0],
              measured_on_grid[int(np.argmin(np.abs(freqs - 20.0)))],
              measured_on_grid[anchor_idx],

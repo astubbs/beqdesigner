@@ -79,6 +79,28 @@ def _construct_biquad(f: dict, fs: int):
     raise ValueError(f"Unsupported filter type: {t}")
 
 
+def smooth_fractional_octave(
+    curve_db: np.ndarray,
+    freqs_hz: np.ndarray,
+    octaves: float = 1.0 / 6.0,
+) -> np.ndarray:
+    """Apply log-frequency Gaussian smoothing at ``octaves`` width.
+
+    BEQ-style fitting works on smoothed curves - narrow resonances in the
+    raw spectrum are mastering artefacts, not features a broad IIR
+    filter should chase. 1/6-octave smoothing is the standard convention
+    in speaker/room measurements.
+    """
+    log_freqs = np.log2(np.clip(freqs_hz, 1e-6, None))
+    sigma_log = octaves / 2.355  # FWHM -> sigma
+    smoothed = np.empty_like(curve_db, dtype=float)
+    for i, lf in enumerate(log_freqs):
+        weights = np.exp(-0.5 * ((log_freqs - lf) / sigma_log) ** 2)
+        weights /= weights.sum()
+        smoothed[i] = float(np.sum(weights * curve_db))
+    return smoothed
+
+
 def _band_mask(freqs_hz: np.ndarray, band: tuple[float, float]) -> np.ndarray:
     lo, hi = band
     return (freqs_hz >= lo) & (freqs_hz <= hi)
@@ -148,52 +170,139 @@ def _fit_single_filter(
     )
 
 
+def _fit_peq_at_seed(
+    err_curve_db: np.ndarray,
+    freqs_hz: np.ndarray,
+    fs: int,
+    band: tuple[float, float],
+    seed_freq: float,
+    seed_gain: float,
+) -> tuple[dict, float]:
+    """Fit a single PEQ that minimises RMS of (err + response) in-band.
+
+    Tries several initial Q values and returns the best fit. Q is capped
+    at 4 so the optimizer cannot manufacture narrow ringing filters to
+    chase single-bin artefacts.
+    """
+    mask = _band_mask(freqs_hz, band)
+    band_freqs = freqs_hz[mask]
+    band_err = err_curve_db[mask]
+
+    def objective(x):
+        freq, q, gain = x
+        resp = evaluate_filter_chain(
+            [{"type": "PeakingEQ", "freq": freq, "q": q, "gain": gain}],
+            band_freqs, fs=fs,
+        )
+        return _rms(band_err + resp)
+
+    bounds = [(band[0], band[1]), (0.3, 4.0), (-30.0, 30.0)]
+    clamped_freq = float(np.clip(seed_freq, band[0], band[1]))
+    clamped_gain = float(np.clip(seed_gain, -30.0, 30.0))
+    best_fun = float("inf")
+    best_x = None
+    for q_seed in (0.7, 1.5, 3.0):
+        seeds = (clamped_freq, q_seed, clamped_gain)
+        result = minimize(objective, x0=seeds, method="L-BFGS-B", bounds=bounds)
+        if result.fun < best_fun:
+            best_fun = float(result.fun)
+            best_x = result.x
+    freq, q, gain = best_x
+    return (
+        {"type": "PeakingEQ", "freq": float(freq), "q": float(q), "gain": float(gain)},
+        best_fun,
+    )
+
+
+def _fit_low_shelf(
+    err_curve_db: np.ndarray,
+    freqs_hz: np.ndarray,
+    fs: int,
+    band: tuple[float, float],
+) -> tuple[dict, float]:
+    """Fit one LowShelf that minimises RMS of (err + response) in-band.
+
+    Works whether err is positive or negative at low freqs - the shelf
+    gain bound is bidirectional.
+    """
+    mask = _band_mask(freqs_hz, band)
+    band_freqs = freqs_hz[mask]
+    band_err = err_curve_db[mask]
+    # Seed gain: negate the mean of err in the lowest octave of the band.
+    low_octave = band_freqs <= band_freqs[0] * 2.0
+    seed_gain = float(-np.mean(band_err[low_octave])) if low_octave.any() else 0.0
+
+    def objective(x):
+        freq, q, gain = x
+        resp = evaluate_filter_chain(
+            [{"type": "LowShelf", "freq": freq, "q": q, "gain": gain}],
+            band_freqs, fs=fs,
+        )
+        return _rms(band_err + resp)
+
+    seeds = (25.0, 0.7, float(np.clip(seed_gain, -30.0, 30.0)))
+    bounds = [(5.0, 120.0), (0.3, 2.0), (-30.0, 30.0)]
+    result = minimize(objective, x0=seeds, method="L-BFGS-B", bounds=bounds)
+    freq, q, gain = result.x
+    return (
+        {"type": "LowShelf", "freq": float(freq), "q": float(q), "gain": float(gain)},
+        float(result.fun),
+    )
+
+
 def propose_filters(
     target_curve_db: np.ndarray,
     freqs_hz: np.ndarray,
     fs: int = DEFAULT_FS,
     band: tuple[float, float] = DEFAULT_BAND,
-    residual_threshold_db: float = 1.0,
+    max_filters: int = 6,
+    stop_max_err_db: float = 0.5,
 ) -> list[dict]:
-    """Propose a filter chain that cancels ``target_curve_db`` across ``band``.
+    """Propose a filter chain whose response cancels ``target_curve_db``
+    across ``band`` (i.e. target + chain_response ≈ 0).
 
-    ``target_curve_db`` is the rolloff to correct - typically negative in the
-    deep bass relative to the 80 Hz anchor. Returns a list of filter dicts in
-    the catalogue-entry schema. Empty list if no meaningful rolloff detected.
+    Iterative greedy fitter:
+      1. Fit one LowShelf to the target (captures the low-end bulk).
+      2. While max |residual| in-band exceeds ``stop_max_err_db`` and the
+         chain has fewer than ``max_filters`` entries, add one PEQ seeded
+         at the worst-residual frequency and optimize it.
+      3. Stop.
+
+    The shelf handles broad low-end lift or cut; subsequent PEQs chip
+    away at humps, notches, and curvature the shelf can't match. This
+    generalises to arbitrary in-band curves, not just simple rolloffs.
     """
-    knee = detect_rolloff_knee(target_curve_db, freqs_hz, band=band)
-    if knee is None:
+    mask = _band_mask(freqs_hz, band)
+    # Short-circuit: target is already small enough in-band.
+    if np.max(np.abs(target_curve_db[mask])) < stop_max_err_db:
         return []
-    knee_hz, depth_db = knee
 
-    # Shelf seed: freq at knee, gain at rolloff depth, Q ~0.7 (Butterworth).
-    # Gain ceiling is raised to 30 dB to cover deep-extension catalogue entries
-    # (e.g. Edge of Tomorrow's 4x-cascaded-shelf chain ~+28 dB at 10 Hz).
-    shelf_seeds = (max(knee_hz, 18.0), 0.7, min(max(depth_db, 1.0), 30.0))
-    shelf_bounds = [(10.0, 120.0), (0.3, 2.0), (0.0, 30.0)]
-    shelf, shelf_err = _fit_single_filter(
-        target_curve_db, freqs_hz, fs, "LowShelf", shelf_seeds, shelf_bounds, band
-    )
-    chain = [shelf]
+    chain: list[dict] = []
 
-    # Residual PEQ pass if the shelf alone leaves more than threshold dB.
-    if shelf_err > residual_threshold_db:
-        shelf_resp = evaluate_filter_chain(chain, freqs_hz, fs=fs)
-        residual = target_curve_db + shelf_resp  # we want this to be zero
-        # seed PEQ at the bin of max |residual| within the band
-        mask = _band_mask(freqs_hz, band)
+    # Stage 1: one LowShelf (bidirectional gain).
+    shelf, _ = _fit_low_shelf(target_curve_db, freqs_hz, fs, band)
+    chain.append(shelf)
+
+    # Stage 2: iteratively add PEQs against the residual.
+    while len(chain) < max_filters:
+        chain_resp = evaluate_filter_chain(chain, freqs_hz, fs=fs)
+        err = target_curve_db + chain_resp  # want -> 0
+        band_err = err[mask]
         band_freqs = freqs_hz[mask]
-        band_residual = residual[mask]
-        worst_idx = int(np.argmax(np.abs(band_residual)))
-        peq_seeds = (
-            float(band_freqs[worst_idx]),
-            1.5,
-            float(-band_residual[worst_idx]),  # oppose the residual
+        max_abs = float(np.max(np.abs(band_err)))
+        if max_abs < stop_max_err_db:
+            break
+        worst_idx = int(np.argmax(np.abs(band_err)))
+        seed_freq = float(band_freqs[worst_idx])
+        seed_gain = float(-band_err[worst_idx])
+        peq, new_rms = _fit_peq_at_seed(
+            err, freqs_hz, fs, band, seed_freq, seed_gain
         )
-        peq_bounds = [(20.0, 80.0), (0.5, 4.0), (-12.0, 12.0)]
-        peq, _ = _fit_single_filter(
-            target_curve_db, freqs_hz, fs, "PeakingEQ", peq_seeds, peq_bounds, band
-        )
+        # Accept only if the fit actually reduces in-band RMS error by a
+        # meaningful margin (otherwise we're just adding noise).
+        prev_rms = _rms(band_err)
+        if new_rms >= prev_rms - 0.05:
+            break
         chain.append(peq)
 
     return chain

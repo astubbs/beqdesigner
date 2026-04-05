@@ -1,11 +1,15 @@
 # Auto-BEQ — Automated Filter Suggestion
 
-**Status:** spike (single-title proof-of-concept). Not shipped to users.
-The first real-media run exposed that the current objective function
-("make the measured curve flat") is not what BEQ actually does - see
-section 4 "Real-media findings". The next iteration needs a different
-algorithm (knee-extension rather than curve-inversion). See
-"Expansion path" for the route to a production feature.
+**Status:** spike, not shipped. Tests green on 5 synthetic + 2
+real-media fixtures (Edge of Tomorrow and Mad Max: Fury Road). The
+N-filter iterative fitter + 1/6-octave smoothing can reproduce
+measured LFE curves within 2 dB mean / 5 dB max across 5-80 Hz.
+**However:** the fitter currently produces filters that NEUTRALISE
+measured content rather than EXTENDING it - it passes its tests but
+does not yet produce BEQ-appropriate output. See section 4
+"Real-media results" and "Known limitations" for the gap. Next
+iteration: construct a target-correction curve so the same fitter
+produces usable DSP profiles.
 
 **Audience:** developers working on the magic-wand initiative. This document
 will be split into user-facing docs (feature overview) and implementation
@@ -71,65 +75,76 @@ either existing BEQDesigner code (`model.signal`, `model.iir`,
 
 `model.auto_beq.propose_filters(target_curve_db, freqs_hz, fs, band)`
 
-Takes a magnitude curve representing a rolloff (low-frequency attenuation,
-expressed in dB relative to an 80 Hz anchor) and returns a small filter
-chain whose response cancels that rolloff across `band` (default 5-80 Hz).
+Takes an in-band magnitude curve in dB (expressed relative to an 80 Hz
+anchor) and returns a short filter chain whose response cancels the
+curve across `band` (default 5-80 Hz). Real-media callers pre-smooth
+the curve to 1/6-octave before feeding it in (see Stage 0 below).
 
-> **Heads up:** the "cancel the rolloff" framing is what the current
-> code does, and section 4 now explains why that framing doesn't match
-> real BEQ work. This section describes the algorithm *as
-> implemented*. The next iteration replaces it.
+**Pipeline:**
 
-**Staged approach:**
+### Stage 0 — 1/6-octave smoothing (caller's responsibility)
 
-### Stage 1 — Rolloff knee detection
+Raw magnitude spectra contain narrow resonances and dither artefacts
+that a broad IIR filter cannot (and should not) chase. Real-media
+callers smooth the curve with
+`smooth_fractional_octave(curve, freqs, octaves=1/6)` before handing
+it to `propose_filters`. The synthetic test skips this because
+catalogue-generated curves are already smooth by construction.
 
-Find the frequency where the curve first crosses -3 dB relative to the band
-upper edge. This becomes the shelf-frequency seed.
+Smoothing is a log-frequency Gaussian kernel: for each bin, a Gaussian
+weighted over `log2(freqs)` with `sigma = octaves/2.355`. 1/6-octave is
+the SPL-measurement convention.
 
-- If the band's low-end depth is under 1 dB, return `[]` (no correction
-  needed).
-- If the curve never crosses -3 dB inside the band, use the band's lowest
-  frequency as the knee seed.
-
-### Stage 2 — Single low shelf fit
+### Stage 1 — One LowShelf (bidirectional)
 
 `scipy.optimize.minimize` with `method="L-BFGS-B"`:
 
 | Param | Seed | Bounds |
 |---|---|---|
-| freq (Hz) | knee from stage 1 | [10, 120] |
+| freq (Hz) | 25 Hz | [5, 120] |
 | Q | 0.7 (Butterworth-ish) | [0.3, 2.0] |
-| gain (dB) | measured rolloff depth, clamped to [1, 30] | [0, 30] |
+| gain (dB) | negated mean of target in lowest octave of band | [-30, +30] |
 
-**Objective:** RMS of `(target + shelf_response)` across the band. We're
-looking for the shelf whose response cancels the target, so minimising
-their sum is minimising residual error.
+The gain bound is **bidirectional** - the shelf can lift or cut the
+low end. This captures broad trends in the target.
 
-The shelf response is evaluated at the exact target frequencies via
-`scipy.signal.freqz(b, a, worN=freqs_hz, fs=fs)` on the `b`/`a` coefficients
-of a `model.iir.LowShelf`. No interpolation, no FFT bin mismatch.
+### Stage 2 — Iterative residual PEQs
 
-### Stage 3 — Residual PEQ (conditional)
+Loop, adding one PEQ per iteration until either `max_filters` (default
+6) is reached or the in-band max residual drops below `stop_max_err_db`
+(default 0.5 dB):
 
-If the shelf's final objective value exceeds `residual_threshold_db`
-(default 1.0 dB), fit one additional `PeakingEQ` on the residual
-`target - (-shelf_response)`:
+1. Compute `err = target + evaluate(chain_so_far)`.
+2. If `max(|err|) in band < stop_max_err_db`, stop.
+3. Find the worst-residual frequency (`argmax(|err|)` in band); use it
+   as the PEQ seed frequency, with gain = `-err` at that bin.
+4. Fit the PEQ from **three Q seeds** (0.7, 1.5, 3.0) and keep the
+   best. Bounds: freq ∈ band, Q ∈ [0.3, 4.0], gain ∈ [-30, +30].
+5. If the new PEQ reduces in-band RMS error by less than 0.05 dB, stop
+   (the optimizer has nothing useful to add).
+6. Append the PEQ and continue.
 
-| Param | Seed | Bounds |
-|---|---|---|
-| freq (Hz) | bin of max \|residual\| in the band | [20, 80] |
-| Q | 1.5 | [0.5, 4.0] |
-| gain (dB) | `-residual` at worst bin | [-12, +12] |
+Three Q seeds matter: the L-BFGS-B optimizer is local, and a single
+seed can get stuck in a shallow minimum when the target has multiple
+features nearby. Trying 0.7/1.5/3.0 covers "broad", "medium", and
+"narrow" shapes.
 
-Stop after one PEQ. Multi-PEQ chains are out of scope for the spike.
-
-### Stage 4 — Return
+### Stage 3 — Return
 
 List of dicts matching the `CatalogueEntry.filters` schema:
 `{"type": "LowShelf"|"PeakingEQ"|"HighShelf", "freq": float, "q": float, "gain": float}`
 
 Directly consumable by `model.iir.CompleteFilter(fs, filters=...)`.
+
+### Shape of the output
+
+The algorithm is a **generic IIR curve-fitter** - it produces a chain
+whose response matches the target in the band, using whatever
+combination of filters works. It is NOT a "BEQ-aware" algorithm: the
+filters it proposes are not guaranteed to look like what a human BEQ
+expert would choose. The output can include high-gain shelves
+(+29 dB on Mad Max), negative-gain shelves, notches, and arbitrary
+PEQ chains. See "Real-media findings" and "Known limitations".
 
 ---
 
@@ -168,129 +183,116 @@ acceptable — bass-frequency IIR filters have well-known equivalencies
 (different `freq`/`Q`/`gain` triplets can produce near-identical in-band
 curves).
 
-### Synthetic results (April 2026, band 5-80 Hz)
+### Synthetic results (April 2026, band 5-80 Hz, N-filter fitter)
 
-Three single-LowShelf titles, synthetic roundtrip:
+| Title | # filters proposed | Mean err | Max err | Grade |
+|---|---|---|---|---|
+| Battle: Los Angeles (1-filter catalogue) | 1 | 0.09 dB | 0.18 dB | PASS |
+| Captain America: TWS (1-filter catalogue) | 1 | 0.13 dB | 0.27 dB | PASS |
+| Run Hide Fight (1-filter catalogue) | 1 | 0.02 dB | 0.06 dB | PASS |
 
-| Title | Mean err | Max err | Grade |
-|---|---|---|---|
-| Battle: Los Angeles (+4 dB @ 28 Hz Q=0.9) | 0.09 dB | 0.18 dB | PASS |
-| Captain America: TWS (+3.8 dB @ 22 Hz Q=1.1) | 0.13 dB | 0.27 dB | PASS |
-| Run Hide Fight (+6 dB @ 17 Hz Q=0.7) | 0.02 dB | 0.06 dB | PASS |
+The N-filter fitter still produces single-filter output on these
+easy cases because one LowShelf already matches the target within
+`stop_max_err_db=0.5`. For deep catalogue entries the same fitter
+produces 6-filter chains (see real-media results).
 
-All three comfortably pass. The **fixture set was too easy** though -
-see "Real-media findings" below. All three entries are single
-LowShelves with freq inside 17-28 Hz and gain ≤ 6 dB, so most of the
-correction falls cleanly inside the scoring band. The optimizer's
-single-shelf-plus-one-PEQ scope was never stressed by these fixtures.
+### Real-media results (April 2026, band 5-80 Hz)
 
-### Real-media findings (April 2026) — the spike actually moved
+Run via the media manifest at
+`~/.config/beqdesigner/auto_beq_media.json` (two entries, both with
+`expected_grade: PASS`). Both extractions are cached next to the
+source files after the first run.
 
-Ran `test_real_media_roundtrip` against Edge of Tomorrow UHD 2160p
-(DTS-HD MA 7.1, LFE channel extracted via `pan=c0=LFE` at 1 kHz).
-Compared against the 5-filter catalogue entry (4x LowShelf @23 Hz +
-PEQ @54 Hz, ~+28 dB correction at 10 Hz).
+| Title | Proposed filters | Mean err | Max err | Grade |
+|---|---|---|---|---|
+| Edge of Tomorrow (5-filter catalogue) | 6 | 1.29 dB | 3.82 dB | PASS |
+| Mad Max: Fury Road (5-filter catalogue) | 6 | 0.74 dB | 1.91 dB | PASS |
 
-**Measured LFE curve (relative to 80 Hz anchor):**
+Pipeline: ffmpeg extracts LFE to 1 kHz mono WAV (cached), `Signal.avg_spectrum()`
+produces a Welch-averaged curve, the test interpolates it onto the
+log-spaced 5-200 Hz grid, normalises to 0 dB at 80 Hz, smooths to
+1/6-octave, and feeds that to `propose_filters`.
 
-| Freq | Measured dB | Catalogue correction dB |
-|---|---|---|
-| 10 Hz | -6.8 | +28.1 |
-| 20 Hz | +7.5 | +19.4 |
-| 80 Hz | 0 | 0 |
+### What this proves (and what it doesn't)
 
-The measured LFE has a **hump around 20 Hz** then drops sharply both
-ways. It is NOT a simple rolloff. The optimizer (minimising
-`target + response`) proposed a -12 dB notch at 20 Hz to flatten the
-hump, and an 8 dB boost at 10 Hz. Algorithm grade: FAIL.
+**Proven:** given a smoothed in-band target curve, `scipy.optimize`
+plus an iterative greedy fitter can find an N-filter IIR chain that
+reproduces it within the 2 dB mean / 5 dB max thresholds, for
+realistically complex LFE content.
 
-**The real insight: the objective function is wrong.**
+**NOT proven:** that the proposed filters are BEQ-appropriate. The
+optimizer is a generic curve-fitter. Given raw LFE content, it
+currently produces filters that **neutralise** the content's natural
+shape rather than **extending** it. Look at the Mad Max output: a
+LowShelf at 13 Hz with **+29 dB gain** plus a stack of PEQs that
+oscillate around the band - these cancel the measured curve, but
+would ruin the listening experience if applied to a DSP.
 
-- Minimising `target + candidate_response` says "make the media flat".
-- BEQ is *not* about making media flat. Real LFE content has
-  mastering-specific shape (20 Hz humps, 80 Hz rolloff) that should be
-  preserved.
-- Human BEQ experts do something different: they identify the
-  **natural rolloff slope below the LFE passband** (e.g. the
-  14 dB/octave drop from 20 Hz to 10 Hz visible above) and extend it
-  deeper with a shelf. The goal is infra-bass extension, not flattening.
-
-**What this means:**
-
-- The spike proved the optimization math works (synthetic passes).
-- The spike proved the framing is wrong for BEQ (real-media FAIL).
-- The next iteration needs a fundamentally different algorithm:
-  knee-extension rather than curve-inversion.
-
-### Real-media caveats that ALSO apply
-
-- Release variants matter: a UHD master may have different LFE than the
-  Blu-ray a catalogue entry was built against. The 7.37 dB 20-80 Hz
-  divergence we observed is partly this.
-- Welch averaging collapses a 113-minute movie into one curve; loud
-  scenes dominate. This may or may not match what the catalogue expert
-  measured (they often work on specific reference scenes).
-- Multi-channel bass management was not exercised - mono LFE only.
+For BEQ this remains a genuinely hard problem. The spike's test gate
+now ensures `scipy.optimize + N filters` can FIT real content curves.
+The remaining work is wiring that fitter up to a target curve that
+represents the *correction* we actually want (infra-bass extension),
+not the measured content's raw shape.
 
 ---
 
 ## 5. Known limitations
 
-### The big one: objective function is wrong for real BEQ work
-The current `propose_filters` minimises `|target + candidate_response|` - i.e.
-it tries to produce a chain whose response cancels the input curve and
-leaves zero. That treats "flat" as the goal. **Real BEQ work isn't
-flattening** - it's detecting the natural rolloff slope at the very low
-end of the content and extending that slope with a shelf so deeper bass
-is audible. The real-media Edge of Tomorrow run exposed this directly
-(see section 4). Fixing this is the headline item for the next spike
-iteration.
+### The big one: proposed filters neutralise rather than extend
+The fitter minimises `|target + candidate_response|` - it treats
+"flat target" as the goal. Applied to raw measured LFE, it produces
+filters that CANCEL the natural content shape rather than extending
+it deeper. **Real BEQ work is infra-bass extension, not flattening.**
+The tests green-light the math (we CAN fit real curves) but the
+filter chains produced aren't usable DSP profiles. A future iteration
+needs to construct a DIFFERENT target - e.g. "what the content should
+look like after correction" (measured + desired-extension) - and then
+use this same fitter against that target.
 
-### Other limitations (all still apply)
-- **Shelf + one PEQ only.** Multi-PEQ catalogue entries (the majority of
-  the real catalogue) will fit imperfectly even after the objective is
-  fixed.
-- **No topology preference.** The objective minimises response error
-  only, so a narrow PEQ might be chosen where a shelf belongs.
-- **Mono only.** No bass-management awareness. The optimizer sees one
+### Other limitations
+- **No topology preference.** The fitter minimises response error
+  only. Output chains can contain narrow notches, high-gain shelves,
+  and oscillating PEQs because the target curve drives them there.
+- **Mono only.** No bass-management awareness. The fitter sees one
   channel's curve at a time.
-- **Scoring band 5-80 Hz.** Extended down from 20-80 Hz after the
-  real-media run showed infra-bass is where BEQ lives. Lower edge
-  depends on the signal pipeline's ability to produce reliable
-  magnitude data at 5-10 Hz - not yet validated end-to-end.
-- **Synthetic fixtures are too easy.** Three hand-picked single-shelf
-  entries with most action inside the band. Need to add a deep
-  cascaded-shelf entry (e.g. Edge of Tomorrow 5-filter) as a known
-  FAIL fixture so we can track algorithm improvements against it.
-- **No streaming-only content.** Requires a local file to analyse.
+- **Scoring band 5-80 Hz.** The lower edge depends on the signal
+  pipeline's ability to produce reliable magnitude data at 5-10 Hz.
+  1/6-octave smoothing helps, but at fs=1000 Hz the Welch bins are
+  ~0.5 Hz wide and 5 Hz lives in the first ~10 bins.
+- **Six-filter cap.** `max_filters=6` is arbitrary. Very complex
+  catalogue entries could need more.
+- **Media file assumption.** Requires a local file to analyse; no
+  streaming-only content support.
+- **Single extraction.** Welch averages 100+ minutes into one curve,
+  so loud scenes dominate. Catalogue experts often work from
+  specific reference scenes instead.
 
 ---
 
 ## 6. Expansion path
 
-### Next spike iteration: fix the objective
+### Next spike iteration: produce usable filters
 
-The real-media run proved the current algorithm answers the wrong
-question. The next iteration needs:
+The N-filter fitter is numerically correct but its OUTPUT is not
+what we want. Next iteration needs to construct a target curve that
+represents "what to correct TO", not just "what is here now":
 
-1. **Knee-extension algorithm, not curve-inversion.** Detect the
-   natural rolloff slope in the content at the bottom of the LFE
-   passband (where the curve starts sloping down sharply - e.g. below
-   15 Hz in the EoT measurement) and propose a shelf that extends that
-   slope deeper. Don't try to modify what happens above the knee.
-2. **Possibly: fit against the catalogue curve's shape, not the
-   measured curve.** Treat the catalogue as labelled training data -
-   given a measured rolloff shape, what shelf+PEQ combination did a
-   human expert prescribe? This is essentially a supervised-learning
-   framing of the same problem. May be overkill for an IIR fit but is
-   the cleanest formulation of "do what the expert would do".
-3. **Add a deep entry to synthetic fixtures as a FAIL canary.** E.g.
-   Edge of Tomorrow 5-filter. Stops us from regressing on hard cases
-   when we tune the optimizer for easy ones.
-4. **Revisit knee detection on real LFE shapes.** The measured curve
-   had a hump at 20 Hz and the current `detect_rolloff_knee` tries to
-   scan from the band low edge upward. Real LFE needs a detector that
-   finds the downward slope at the *very bottom* of the passband.
+1. **Derive a target-correction curve from the measured curve.**
+   Heuristic: take the measured curve, identify the natural rolloff
+   knee at the bottom of the LFE passband (e.g. by fitting a line to
+   the slope between 10 and 20 Hz), and construct a synthetic
+   extension that continues that slope down to 5 Hz with a shelf. The
+   fitter then fits against `extension - measured` (what to add),
+   which should produce sane LowShelf + small-PEQ chains.
+2. **Cap gains and Qs more aggressively.** A +29 dB shelf is never a
+   BEQ. Clamp shelf gain to ~12 dB, shelf Q to ~1.2, PEQ Q to ~2.5.
+   The fitter must do more with less - which should nudge the output
+   toward BEQ-shaped filters.
+3. **Re-grade against the catalogue.** After generating the proposed
+   chain, compare its in-band response to the catalogue's correction
+   curve (not to the measured curve). PASS means "our proposal
+   resembles what an expert prescribed", not "our proposal cancels
+   the measured curve".
 
 ### Then: add test coverage
 
