@@ -23,6 +23,26 @@ defaults:
   run:
     shell: bash
 jobs:
+  lint:
+    name: ruff + mypy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.13
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-in-project: true
+      - name: Install dev deps
+        run: poetry install --no-interaction --only main,dev
+      - name: ruff
+        run: poetry run ruff check src/main/python
+      - name: mypy
+        run: poetry run mypy
+
   build:
     runs-on: ${{ matrix.os }}
     strategy:

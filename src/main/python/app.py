@@ -1,6 +1,7 @@
 import gzip
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -8,42 +9,62 @@ from collections import abc
 from contextlib import contextmanager
 from typing import Optional
 
-import math
-
 os.environ['QT_API'] = 'pyqt6'
 os.environ['PYQTGRAPH_QT_LIB'] = 'PyQt6'
 
 import matplotlib
-from scipy import signal
-
-from model.waveform import WaveformController
-from model.checker import VersionChecker, ReleaseNotesDialog
-from model.report import SaveReportDialog, block_signals
-from model.preferences import DISPLAY_SHOW_FILTERED_SIGNALS, SYSTEM_CHECK_FOR_UPDATES, BIQUAD_EXPORT_MAX, \
-    BIQUAD_EXPORT_FS, BIQUAD_EXPORT_DEVICE, SHOW_NO_FILTERS, SYSTEM_CHECK_FOR_BETA_UPDATES, APP_FONT_SIZE
-
-from ui.delegates import RegexValidator
-
 import pyqtgraph as pg
 import qtawesome as qta
 from matplotlib import style
-
-from model.iir import Passthrough, CompleteFilter, as_equalizer_apo, COMBINED
-from ui.biquad import Ui_exportBiquadDialog
-from ui.savechart import Ui_saveChartDialog
-
-from qtpy import QtCore, QtWidgets
-from qtpy.QtCore import QSettings, QThreadPool, QUrl, Qt
-from qtpy.QtGui import QIcon, QFont, QCursor, QTextCursor, QDesktopServices
-from qtpy.QtWidgets import QMainWindow, QApplication, QErrorMessage, QAbstractItemView, QDialog, QFileDialog, \
-    QHeaderView, QMessageBox, QHBoxLayout, QToolButton
-
-from model.preferences import PreferencesDialog, BINARIES_GROUP, ANALYSIS_TARGET_FS, STYLE_MATPLOTLIB_THEME, \
-    Preferences, SCREEN_GEOMETRY, SCREEN_WINDOW_STATE, FILTERS_PRESET_x, \
-    DISPLAY_SHOW_LEGEND, DISPLAY_SHOW_FILTERS, SHOW_FILTER_OPTIONS, SHOW_SIGNAL_OPTIONS, DISPLAY_SHOW_SIGNALS, \
-    SHOW_FILTERED_SIGNAL_OPTIONS
-from ui.beq import Ui_MainWindow
+from model.checker import ReleaseNotesDialog, VersionChecker
+from model.iir import COMBINED, CompleteFilter, Passthrough, as_equalizer_apo
+from model.preferences import (
+    ANALYSIS_TARGET_FS,
+    APP_FONT_SIZE,
+    BINARIES_GROUP,
+    BIQUAD_EXPORT_DEVICE,
+    BIQUAD_EXPORT_FS,
+    BIQUAD_EXPORT_MAX,
+    DISPLAY_SHOW_FILTERED_SIGNALS,
+    DISPLAY_SHOW_FILTERS,
+    DISPLAY_SHOW_LEGEND,
+    DISPLAY_SHOW_SIGNALS,
+    SCREEN_GEOMETRY,
+    SCREEN_WINDOW_STATE,
+    SHOW_FILTER_OPTIONS,
+    SHOW_FILTERED_SIGNAL_OPTIONS,
+    SHOW_NO_FILTERS,
+    SHOW_SIGNAL_OPTIONS,
+    STYLE_MATPLOTLIB_THEME,
+    SYSTEM_CHECK_FOR_BETA_UPDATES,
+    SYSTEM_CHECK_FOR_UPDATES,
+    FILTERS_PRESET_x,
+    Preferences,
+    PreferencesDialog,
+)
+from model.report import SaveReportDialog, block_signals
+from model.waveform import WaveformController
 from mpl import NoCaretStyle
+from qtpy import QtCore, QtWidgets
+from qtpy.QtCore import QSettings, Qt, QThreadPool, QUrl
+from qtpy.QtGui import QCursor, QDesktopServices, QFont, QIcon, QTextCursor
+from qtpy.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QDialog,
+    QErrorMessage,
+    QFileDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QMainWindow,
+    QMessageBox,
+    QToolButton,
+)
+from scipy import signal
+from ui.beq import Ui_MainWindow
+from ui.biquad import Ui_exportBiquadDialog
+from ui.delegates import RegexValidator
+from ui.savechart import Ui_saveChartDialog
 
 logger = logging.getLogger('beq')
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
@@ -115,7 +136,7 @@ class BeqDesigner(QMainWindow, Ui_MainWindow):
         self.actionShow_Logs.triggered.connect(self.logViewer.show_logs)
         self.actionPreferences.triggered.connect(self.showPreferences)
         # init a default signal for when we want to edit a filter without a signal
-        from model.signal import SingleChannelSignalData, Signal
+        from model.signal import Signal, SingleChannelSignalData
         default_fs = self.preferences.get(ANALYSIS_TARGET_FS)
         default_signal = Signal('default', signal.unit_impulse(default_fs, 'mid'), self.preferences, fs=default_fs)
         self.__default_signal = SingleChannelSignalData(name='default',
@@ -136,7 +157,7 @@ class BeqDesigner(QMainWindow, Ui_MainWindow):
         self.actionShow_Filter_Widget.triggered.connect(lambda: self.editFilter(small=True))
         self.filterView.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.filterView.doubleClicked.connect(self.editFilter)
-        from model.filter import FilterTableModel, FilterModel
+        from model.filter import FilterModel, FilterTableModel
         self.__filter_model = FilterModel(self.filterView, self.preferences, label=self.filtersLabel,
                                           on_update=self.on_filter_change)
         self.__filter_table_model = FilterTableModel(self.__filter_model, parent=parent)
@@ -406,7 +427,7 @@ class BeqDesigner(QMainWindow, Ui_MainWindow):
         Delegates to on_signal_change which we can't call directly because of the argument mismatch (dataChanged emits
         the QModelIndexes specifying which data has changed which we don't care about).
         '''
-        logger.debug(f"Handling signal data change")
+        logger.debug("Handling signal data change")
         self.on_signal_selected()
         self.on_signal_change()
 
@@ -463,7 +484,7 @@ class BeqDesigner(QMainWindow, Ui_MainWindow):
             logger.debug(f"Selecting signal {signal_count - 1} on remove")
             self.signalView.selectRow(signal_count - 1)
         else:
-            logger.debug(f"No signals in model, selecting default filter on remove")
+            logger.debug("No signals in model, selecting default filter on remove")
             self.on_signal_selected()
 
     def addSignal(self):
@@ -822,7 +843,7 @@ class BeqDesigner(QMainWindow, Ui_MainWindow):
         '''
         Exports the project to a file.
         '''
-        file_name = QFileDialog(self).getSaveFileName(self, 'Export Project', f"project.beq", "BEQ Project (*.beq)")
+        file_name = QFileDialog(self).getSaveFileName(self, 'Export Project', "project.beq", "BEQ Project (*.beq)")
         file_name = str(file_name[0]).strip()
         if len(file_name) > 0:
             output = self.__signal_model.to_json()
@@ -1151,8 +1172,8 @@ class BeqDesigner(QMainWindow, Ui_MainWindow):
                 file_path = os.path.join(sys._MEIPASS, 'flat24hd.xml')
             else:
                 file_path = os.path.abspath(os.path.join(os.path.dirname('__file__'), '../xml/flat24hd.xml'))
-            from model.minidsp import HDXmlParser
             from model.merge import DspType
+            from model.minidsp import HDXmlParser
             parser = HDXmlParser(DspType.MINIDSP_TWO_BY_FOUR_HD, False)
             output_xml, _ = parser.convert(file_path, self.__filter_model.filter)
             with open(file_name, 'w+', encoding='utf8') as f:
@@ -1353,7 +1374,7 @@ class ExportBiquadDialog(QDialog, Ui_exportBiquadDialog):
     def export(self):
         txt = str(self.biquads.toPlainText()).strip()
         if len(txt) > 0:
-            file_name = QFileDialog(self).getSaveFileName(self, 'Export Biquads', f"biquads.txt", "Txt (*.txt)")
+            file_name = QFileDialog(self).getSaveFileName(self, 'Export Biquads', "biquads.txt", "Txt (*.txt)")
             file_name = str(file_name[0]).strip()
             if len(file_name) > 0:
                 with open(file_name, 'w') as f:

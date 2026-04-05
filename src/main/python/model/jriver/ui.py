@@ -3,49 +3,111 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import math
 import os
 import sys
 import xml.etree.ElementTree as et
 from builtins import isinstance
 from pathlib import Path
-from typing import Dict, Optional, List, Tuple, Callable, Set, Any, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
-import math
 import qtawesome as qta
-from qtpy.QtCore import QPoint, QModelIndex, Qt, QTimer, QAbstractTableModel, QVariant, QSize
-from qtpy.QtGui import QColor, QPalette, QKeySequence, QShowEvent, QFont, QIcon, QGuiApplication
-from qtpy.QtWidgets import QDialog, QFileDialog, QMenu, QAction, QListWidgetItem, QMessageBox, QInputDialog, \
-    QDialogButtonBox, QAbstractItemView, QWidget, \
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QSpinBox, QCheckBox, QSpacerItem, QSizePolicy, QGridLayout, QPushButton, \
-    QDoubleSpinBox, QAbstractSpinBox, \
-    QComboBox, QHeaderView, QListWidget, QTableWidgetItem
-
-from model.filter import FilterModel, FilterDialog
-from model.iir import SOS, CompleteFilter, FilterType, ComplexLowPass, ComplexHighPass, DEFAULT_Q
+from model.filter import FilterDialog, FilterModel
+from model.iir import DEFAULT_Q, SOS, CompleteFilter, ComplexHighPass, ComplexLowPass, FilterType
 from model.impulse import ImpulseDialog
-from model.jriver import JRIVER_FS, flatten, ImpossibleRoutingError, s2f, make_dirac_pulse
-from model.jriver.codec import get_element, xpath_to_key_data_value, write_dsp_file, get_peq_key_name
-from model.jriver.formats import get_channel_name, get_channel_idx, OutputFormat, OUTPUT_FORMATS, SHORT_USER_CHANNELS
+from model.jriver import JRIVER_FS, ImpossibleRoutingError, flatten, make_dirac_pulse, s2f
+from model.jriver.codec import get_element, get_peq_key_name, write_dsp_file, xpath_to_key_data_value
 from model.jriver.dsp import JRiverDSP
-from model.jriver.filter import Divider, GEQFilter, CompoundRoutingFilter, CustomPassFilter, GainQFilter, Gain, Pass, \
-    LinkwitzTransform, Polarity, Mix, Delay, \
-    Filter, create_single_filter, MixType, ChannelFilter, convert_filter_to_mc_dsp, SingleFilter, XOFilter, HighPass, \
-    LowPass, SimulationFailed, MSOFilter, \
-    MDSXO, WayValues, MultiwayFilter, WayDescriptor, CompositeXODescriptor, MDSPoint, XODescriptor, MultiChannelSystem, \
-    LFE_ADJUST_KEY, EDITORS_KEY, \
-    EDITOR_NAME_KEY, UNDERLYING_KEY, WAYS_KEY, SYM_KEY, LFE_IN_KEY, ROUTING_KEY
-from model.jriver.mcws import MediaServer, MCWSError, DSPMismatchError
+from model.jriver.filter import (
+    EDITOR_NAME_KEY,
+    EDITORS_KEY,
+    LFE_ADJUST_KEY,
+    LFE_IN_KEY,
+    MDSXO,
+    ROUTING_KEY,
+    SYM_KEY,
+    UNDERLYING_KEY,
+    WAYS_KEY,
+    ChannelFilter,
+    CompositeXODescriptor,
+    CompoundRoutingFilter,
+    CustomPassFilter,
+    Delay,
+    Divider,
+    Filter,
+    Gain,
+    GainQFilter,
+    GEQFilter,
+    HighPass,
+    LinkwitzTransform,
+    LowPass,
+    MDSPoint,
+    Mix,
+    MixType,
+    MSOFilter,
+    MultiChannelSystem,
+    MultiwayFilter,
+    Pass,
+    Polarity,
+    SimulationFailed,
+    SingleFilter,
+    WayDescriptor,
+    WayValues,
+    XODescriptor,
+    XOFilter,
+    convert_filter_to_mc_dsp,
+    create_single_filter,
+)
+from model.jriver.formats import OUTPUT_FORMATS, SHORT_USER_CHANNELS, OutputFormat, get_channel_idx, get_channel_name
+from model.jriver.mcws import DSPMismatchError, MCWSError, MediaServer
 from model.jriver.parser import from_mso
 from model.jriver.render import render_dot
 from model.jriver.routing import Matrix
 from model.limits import DecibelRangeCalculator, PhaseRangeCalculator
 from model.magnitude import MagnitudeModel
-from model.preferences import JRIVER_GEOMETRY, JRIVER_GRAPH_X_MIN, JRIVER_GRAPH_X_MAX, JRIVER_DSP_DIR, \
-    get_filter_colour, Preferences, XO_GEOMETRY, \
-    JRIVER_MCWS_CONNECTIONS
+from model.preferences import (
+    JRIVER_DSP_DIR,
+    JRIVER_GEOMETRY,
+    JRIVER_GRAPH_X_MAX,
+    JRIVER_GRAPH_X_MIN,
+    JRIVER_MCWS_CONNECTIONS,
+    XO_GEOMETRY,
+    Preferences,
+    get_filter_colour,
+)
 from model.signal import Signal
 from model.xy import MagnitudeData
 from mpl import NoCaretStyle
+from qtpy.QtCore import QAbstractTableModel, QModelIndex, QPoint, QSize, Qt, QTimer, QVariant
+from qtpy.QtGui import QColor, QFont, QGuiApplication, QIcon, QKeySequence, QPalette, QShowEvent
+from qtpy.QtWidgets import (
+    QAbstractItemView,
+    QAbstractSpinBox,
+    QAction,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QSpacerItem,
+    QSpinBox,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 from ui.channel_matrix import Ui_channelMatrixDialog
 from ui.channel_select import Ui_channelSelectDialog
 from ui.delegates import CheckBoxDelegate, FreqRangeEditor
@@ -114,7 +176,7 @@ class JRiverDSPDialog(QDialog, Ui_jriverDspDialog):
 
     def __upload_dsp(self):
         if self.dsp:
-            logger.info(f"Uploading dsp config")
+            logger.info("Uploading dsp config")
             MCWSDialog(self, self.prefs, txt_provider=self.dsp.config_txt, download=False).exec()
 
     def __enable_history_buttons(self, back: bool, fwd: bool) -> None:
@@ -197,7 +259,6 @@ class JRiverDSPDialog(QDialog, Ui_jriverDspDialog):
         Creates a new configuration with a selected output format.
         '''
         mc_version = self.__pick_mc_version()
-        of: OutputFormat
         all_formats: List[OutputFormat] = sorted([of for of in OUTPUT_FORMATS.values() if of.is_compatible(mc_version)])
         output_formats = [of.display_name for of in all_formats]
         item, ok = QInputDialog.getItem(self, "Create New DSP Config", "Output Format:", output_formats, 0, False)
@@ -556,11 +617,11 @@ class JRiverDSPDialog(QDialog, Ui_jriverDspDialog):
         if filt:
             menu = QMenu(self)
             self.__populate_edit_node_add_menu(menu.addMenu('&Add'), node_name)
-            edit = QAction(f"&Edit", self)
+            edit = QAction("&Edit", self)
             edit.triggered.connect(lambda: self.__show_edit_filter_dialog(node_name))
             menu.addAction(edit)
             if not isinstance(filt, CompoundRoutingFilter):
-                delete = QAction(f"&Delete", self)
+                delete = QAction("&Delete", self)
                 delete.triggered.connect(lambda: self.__delete_node(node_name))
                 menu.addAction(delete)
             menu.exec(pos)
@@ -650,7 +711,6 @@ class JRiverDSPDialog(QDialog, Ui_jriverDspDialog):
         node_channel = node_name.split('_')[0]
         if f:
             if isinstance(f, ChannelFilter):
-                item: QListWidgetItem
                 if self.dsp.active_graph.delete_channel(f, node_channel):
                     match = self.__find_item_by_filter_id(f.id)
                     if match:
@@ -1106,18 +1166,18 @@ class JRiverDSPDialog(QDialog, Ui_jriverDspDialog):
         from graphviz import ExecutableNotFound
         try:
             self.__gen_svg()
-        except ExecutableNotFound as enf:
+        except ExecutableNotFound:
             if not self.__ignore_gz_not_installed:
                 self.__ignore_gz_not_installed = True
                 msg_box = QMessageBox()
-                msg_box.setText(f"Please install graphviz using your system package manager.")
+                msg_box.setText("Please install graphviz using your system package manager.")
                 msg_box.setIcon(QMessageBox.Icon.Critical)
                 msg_box.setWindowTitle('Graphviz is not installed')
                 msg_box.exec()
-        except Exception as e:
+        except Exception:
             logger.exception(f"Failed to render {self.__current_dot_txt}")
             msg_box = QMessageBox()
-            msg_box.setText(f"Invalid rendering ")
+            msg_box.setText("Invalid rendering ")
             msg_box.setIcon(QMessageBox.Icon.Critical)
             msg_box.setWindowTitle('Unable to render graph')
             msg_box.exec()
@@ -1560,7 +1620,7 @@ class ShowFiltersDialog(QDialog, Ui_xoFiltersDialog):
             if self.f.delays:
                 if self.filters.count() > 0:
                     self.filters.addItem('')
-                self.filters.addItem(f'*** Delays ***')
+                self.filters.addItem('*** Delays ***')
                 for f in self.f.delays:
                     self.filters.addItem(str(f))
 

@@ -1,22 +1,27 @@
 import json
 import logging
+import math
 from collections import OrderedDict
 from pathlib import Path
 
-import math
 import qtawesome as qta
 from awesomeversion import AwesomeVersion
-from qtpy import QtWebSockets
-from qtpy.QtCore import QUrl, Qt
-from qtpy.QtWidgets import QDialog, QAbstractItemView, QHeaderView, QLineEdit, QToolButton, QListWidgetItem, QMessageBox
-
 from model.batch import StoppableSpin, stop_spinner
-from model.iir import CompleteFilter, PeakingEQ, LowShelf, HighShelf
+from model.iir import CompleteFilter, HighShelf, LowShelf, PeakingEQ
 from model.limits import DecibelRangeCalculator
 from model.magnitude import MagnitudeModel
-from model.preferences import get_filter_colour, HTP1_ADDRESS, HTP1_AUTOSYNC, HTP1_SYNC_GEOMETRY, HTP1_GRAPH_X_MAX, \
-    HTP1_GRAPH_X_MIN
+from model.preferences import (
+    HTP1_ADDRESS,
+    HTP1_AUTOSYNC,
+    HTP1_GRAPH_X_MAX,
+    HTP1_GRAPH_X_MIN,
+    HTP1_SYNC_GEOMETRY,
+    get_filter_colour,
+)
 from mpl import NoCaretStyle
+from qtpy import QtWebSockets
+from qtpy.QtCore import Qt, QUrl
+from qtpy.QtWidgets import QAbstractItemView, QDialog, QHeaderView, QLineEdit, QListWidgetItem, QMessageBox, QToolButton
 from ui.edit_mapping import Ui_editMappingDialog
 from ui.syncdetails import Ui_syncDetailsDialog
 from ui.synchtp1 import Ui_syncHtp1Dialog
@@ -202,7 +207,7 @@ class SyncHTP1Dialog(QDialog, Ui_syncHtp1Dialog):
             self.__update_device_state(msoupdate)
             self.showDetailsButton.setEnabled(True)
         else:
-            logger.debug(f"Ignoring UI driven update")
+            logger.debug("Ignoring UI driven update")
 
     def __update_device_state(self, msoupdate):
         ''' applies the delta from msoupdate to the local cache of the device state. '''
@@ -706,8 +711,8 @@ class SyncHTP1Dialog(QDialog, Ui_syncHtp1Dialog):
         return len(self.__signal_model) > 0 and not self.connectButton.isEnabled()
 
     def __create_pulse(self, c, f):
+        from model.signal import Signal, SingleChannelSignalData
         from scipy.signal import unit_impulse
-        from model.signal import SingleChannelSignalData, Signal
         signal = Signal(f"pulse_{c}", unit_impulse(4 * HTP1_FS, 'mid'), self.__preferences, fs=HTP1_FS)
         return SingleChannelSignalData(name=f"pulse_{c}", filter=f, signal=signal)
 

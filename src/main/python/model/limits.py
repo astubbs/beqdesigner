@@ -3,10 +3,9 @@ import math
 from math import log10
 
 import numpy as np
-from qtpy.QtWidgets import QDialog
-from matplotlib.ticker import EngFormatter, Formatter, NullFormatter, MaxNLocator, AutoMinorLocator
+from matplotlib.ticker import AutoMinorLocator, EngFormatter, Formatter, MaxNLocator, NullFormatter
 from qtpy import QtWidgets
-
+from qtpy.QtWidgets import QDialog
 from ui.limits import Ui_graphLayoutDialog
 from ui.values import Ui_valuesDialog
 

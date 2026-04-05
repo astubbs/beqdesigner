@@ -5,11 +5,10 @@ import os
 from enum import Enum
 
 import numpy as np
-from qtpy.QtWidgets import QDialog, QFileDialog, QDialogButtonBox
-
-from model.codec import signaldata_to_json, bassmanagedsignaldata_to_json
+from model.codec import bassmanagedsignaldata_to_json, signaldata_to_json
 from model.preferences import EXTRACTION_OUTPUT_DIR
 from model.signal import SingleChannelSignalData
+from qtpy.QtWidgets import QDialog, QDialogButtonBox, QFileDialog
 from ui.export import Ui_exportSignalDialog
 
 logger = logging.getLogger('export')

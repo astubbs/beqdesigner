@@ -7,18 +7,23 @@ from pathlib import Path
 from typing import List
 
 import qtawesome as qta
-from qtpy.QtCore import QThreadPool, QRunnable, QObject, Signal
-from qtpy.QtGui import QGuiApplication
-from qtpy.QtWidgets import QDialog, QMessageBox, QFileDialog, QListWidgetItem, QDialogButtonBox
-from sanitize_filename import sanitize
-
-from model.catalogue import DatabaseDownloader, show_alert, load_catalogue, CatalogueEntry
+from model.catalogue import CatalogueEntry, DatabaseDownloader, load_catalogue, show_alert
 from model.jriver.formats import JRIVER_CHANNELS
-from model.minidsp import logger, TwoByFourXmlParser, HDXmlParser, \
-    xml_to_filt
-from model.preferences import BEQ_CONFIG_FILE, BEQ_MERGE_DIR, BEQ_MINIDSP_TYPE, BEQ_DOWNLOAD_DIR, BEQ_EXTRA_DIR, \
-    BEQ_OUTPUT_CHANNELS, BEQ_OUTPUT_MODE
+from model.minidsp import HDXmlParser, TwoByFourXmlParser, logger, xml_to_filt
+from model.preferences import (
+    BEQ_CONFIG_FILE,
+    BEQ_DOWNLOAD_DIR,
+    BEQ_EXTRA_DIR,
+    BEQ_MERGE_DIR,
+    BEQ_MINIDSP_TYPE,
+    BEQ_OUTPUT_CHANNELS,
+    BEQ_OUTPUT_MODE,
+)
 from model.sync import HTP1Parser
+from qtpy.QtCore import QObject, QRunnable, QThreadPool, Signal
+from qtpy.QtGui import QGuiApplication
+from qtpy.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QListWidgetItem, QMessageBox
+from sanitize_filename import sanitize
 from ui.merge import Ui_mergeDspDialog
 
 
@@ -155,20 +160,20 @@ class MergeFiltersDialog(QDialog, Ui_mergeDspDialog):
         if dsp_type.is_minidsp and dsp_type.is_fixed_point_hardware():
             result = QMessageBox.question(self,
                                           'Are you feeling lucky?',
-                                          f"Do you want to automatically optimise filters to fit in the 6 biquad limit? \n\n"
-                                          f"Note this feature is experimental. \n"
-                                          f"You are strongly encouraged to review the generated filters to ensure they are safe to use.\n"
-                                          f"USE AT YOUR OWN RISK!\n\n"
-                                          f"Are you sure you want to continue?",
+                                          "Do you want to automatically optimise filters to fit in the 6 biquad limit? \n\n"
+                                          "Note this feature is experimental. \n"
+                                          "You are strongly encouraged to review the generated filters to ensure they are safe to use.\n"
+                                          "USE AT YOUR OWN RISK!\n\n"
+                                          "Are you sure you want to continue?",
                                           QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                           QMessageBox.StandardButton.No)
             optimise_filters = result == QMessageBox.StandardButton.Yes
         elif dsp_type.is_experimental:
             result = QMessageBox.question(self,
                                           'Generate HTP-1 Config Files?',
-                                          f"Support for HTP-1 config files is experimental and currently untested on an actual device. \n\n"
-                                          f"USE AT YOUR OWN RISK!\n\n"
-                                          f"Are you sure you want to continue?",
+                                          "Support for HTP-1 config files is experimental and currently untested on an actual device. \n\n"
+                                          "USE AT YOUR OWN RISK!\n\n"
+                                          "Are you sure you want to continue?",
                                           QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                           QMessageBox.StandardButton.No)
             should_process = result == QMessageBox.StandardButton.Yes
@@ -274,7 +279,7 @@ class MergeFiltersDialog(QDialog, Ui_mergeDspDialog):
             selected = dialog.selectedFiles()
             if len(selected) > 0:
                 if os.path.abspath(selected[0]) == os.path.abspath(self.__beq_dir):
-                    warning = f"Output directory cannot be inside the input directory, choose a different folder"
+                    warning = "Output directory cannot be inside the input directory, choose a different folder"
                     QMessageBox.critical(self, '', warning, QMessageBox.Ok)
                 else:
                     suffix = 'minidsp' if DspType.parse(self.dspType.currentText()).is_minidsp else 'config'
@@ -305,7 +310,7 @@ class MergeFiltersDialog(QDialog, Ui_mergeDspDialog):
             if len(selected) > 0:
                 if os.path.abspath(selected[0]) == os.path.abspath(self.__beq_dir):
                     QMessageBox.critical(self, '',
-                                         f"User directory cannot be inside the input directory, choose a different folder",
+                                         "User directory cannot be inside the input directory, choose a different folder",
                                          QMessageBox.Ok)
                 else:
                     self.userSourceDir.setText(selected[0])
@@ -582,7 +587,7 @@ class XmlProcessor(QRunnable):
                             suffix = val_provider(e)
                         else:
                             suffix = i
-                            self.__signals.on_failure.emit(e.author, e.formatted_title, f"Duplicate entry")
+                            self.__signals.on_failure.emit(e.author, e.formatted_title, "Duplicate entry")
                         self.__write_to(Path(file_output_dir).joinpath(sanitize(f'{filename}_{suffix}')).with_suffix(
                             self.__parser.file_extension()), e)
                 else:

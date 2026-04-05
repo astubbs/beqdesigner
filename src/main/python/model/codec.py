@@ -3,7 +3,6 @@ import os
 from uuid import uuid4
 
 import numpy as np
-
 from model.iir import Gain
 
 logger = logging.getLogger('codec')
@@ -74,7 +73,7 @@ def signalmodel_from_json(input, preferences):
     :return: the signals
     '''
     signals = [signaldata_from_json(x, preferences) for x in input]
-    from model.signal import SingleChannelSignalData, BassManagedSignalData
+    from model.signal import BassManagedSignalData, SingleChannelSignalData
     single_signals = [x for x in signals if isinstance(x, SingleChannelSignalData)]
     bm_channels = [y for x in signals if isinstance(x, BassManagedSignalData) for y in x.channels]
     channels = single_signals + bm_channels
@@ -110,7 +109,7 @@ def signaldata_from_json(o, preferences):
     :param o: the dict (from json).
     :return: the SignalData (or an error)
     '''
-    from model.signal import SingleChannelSignalData, BassManagedSignalData
+    from model.signal import BassManagedSignalData, SingleChannelSignalData
     if '_type' not in o:
         raise ValueError(f"{o} is not SignalData")
     elif o['_type'] == BassManagedSignalData.__name__:
@@ -172,9 +171,21 @@ def filter_from_json(o):
     :param o: the dict.
     :return: the filter.
     '''
-    from model.iir import Passthrough, PeakingEQ, LowShelf, HighShelf, FirstOrder_LowPass, \
-        FirstOrder_HighPass, SecondOrder_LowPass, SecondOrder_HighPass, AllPass, CompleteFilter, ComplexLowPass, \
-        FilterType, ComplexHighPass
+    from model.iir import (
+        AllPass,
+        CompleteFilter,
+        ComplexHighPass,
+        ComplexLowPass,
+        FilterType,
+        FirstOrder_HighPass,
+        FirstOrder_LowPass,
+        HighShelf,
+        LowShelf,
+        Passthrough,
+        PeakingEQ,
+        SecondOrder_HighPass,
+        SecondOrder_LowPass,
+    )
 
     filt = None
     if '_type' not in o:

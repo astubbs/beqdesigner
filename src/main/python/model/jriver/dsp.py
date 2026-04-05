@@ -3,13 +3,27 @@ from __future__ import annotations
 import logging
 import time
 from builtins import isinstance
-from typing import Dict, List, Tuple, Type, Callable
+from typing import Callable, Dict, List, Tuple, Type
 
-from model.jriver.codec import get_peq_block_order, get_output_format, NoFiltersError, get_peq_key_name, \
-    extract_filters, filts_to_xml, include_filters_in_dsp, item_to_dicts
-from model.jriver.formats import user_channel_indexes, get_channel_name, OutputFormat
-from model.jriver.filter import FilterGraph, create_single_filter, Filter, Divider, complex_filter_classes_by_type, \
-    set_filter_ids
+from model.jriver.codec import (
+    NoFiltersError,
+    extract_filters,
+    filts_to_xml,
+    get_output_format,
+    get_peq_block_order,
+    get_peq_key_name,
+    include_filters_in_dsp,
+    item_to_dicts,
+)
+from model.jriver.filter import (
+    Divider,
+    Filter,
+    FilterGraph,
+    complex_filter_classes_by_type,
+    create_single_filter,
+    set_filter_ids,
+)
+from model.jriver.formats import OutputFormat, get_channel_name, user_channel_indexes
 from model.log import to_millis
 from model.signal import Signal
 

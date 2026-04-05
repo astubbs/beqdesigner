@@ -2,10 +2,9 @@ import logging
 import platform
 
 import requests
-from qtpy.QtCore import Signal, QRunnable, QObject, QAbstractTableModel, QModelIndex, Qt, QVariant
-from qtpy.QtWidgets import QDialog
-
 from mpl import NoCaretStyle
+from qtpy.QtCore import QAbstractTableModel, QModelIndex, QObject, QRunnable, Qt, QVariant, Signal
+from qtpy.QtWidgets import QDialog
 from ui.newversion import Ui_newVersionDialog
 
 logger = logging.getLogger('checker')
@@ -131,8 +130,9 @@ class ReleaseNotesDialog(QDialog, Ui_newVersionDialog):
 
     @staticmethod
     def __convert_to_html(text, issues):
-        from markdown import markdown
         import re
+
+        from markdown import markdown
 
         def inject_description(m):
             id = m.group(1)
