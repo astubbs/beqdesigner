@@ -394,6 +394,61 @@ actual distribution, with held-out films for validation. Until
 then, MeasurementAdvisor is an **honest baseline** that will fail
 on most films but fails in documented, predictable ways.
 
+### E15 - Expose absolute dBFS + optional trim (diagnostic only)
+
+Diagnostic iteration - no algorithm changes, no new formula.
+
+**E15a**: `test_real_media_roundtrip` now logs un-normalised
+absolute dBFS at 5/10/20/40/60/80/120 Hz right after Welch
+spectrum computation, BEFORE normalisation. The normalisation
+step was throwing away mastering-level information; now it's
+visible alongside the existing normalised-curve log.
+
+Full-length absolute dBFS across the 3 fixtures:
+
+| Film | 5Hz | 10Hz | 20Hz | 40Hz | 60Hz | 80Hz | 120Hz | catalogue |
+|---|---|---|---|---|---|---|---|---|
+| EoT | -47.3 | -31.9 | -33.0 | -35.4 | -36.8 | -40.5 | -51.1 | +28 dB |
+| MM  | -69.3 | -68.4 | -39.2 | -28.5 | -37.5 | -40.4 | -50.9 | +15 dB |
+| JW  | -47.6 | -45.0 | -40.6 | -36.9 | -44.8 | -46.7 | -56.1 | +13 dB |
+
+Observations:
+- **EoT's 10 Hz at -31.9 dBFS is HOTTER than its 80 Hz anchor
+  (-40.5)**. In absolute terms, EoT's content IS at the deep
+  bass. The normalised curve (L10=-6.5 dB rel 80) misrepresents
+  this - after normalisation, L10 sits BELOW the 80 Hz anchor,
+  but in absolute dBFS the relationship is inverted.
+- **MM has an absolute 10 Hz cliff**: -68.4 dBFS vs -28.5 at
+  40 Hz. That's a 40 dB drop across one octave (20 → 10 Hz).
+  This matches the catalogue's two-knee structure (shelves at
+  10 Hz AND 18 Hz) and is NOT an artefact of normalisation.
+- **JW is the quietest film** at every frequency. Its gentle
+  catalogue BEQ (+13 dB) matches this - less content, less
+  aggressive correction needed.
+
+**Hypothesis confirmed directionally for MM/JW, ambiguous for EoT**:
+A film's absolute mid-bass energy doesn't obviously predict its
+catalogue gain on 3 data points. EoT's hot 10 Hz level (-32 dBFS)
+suggests the Welch average is being pulled up by showcase
+scenes - which is exactly what the trim-support experiment
+(E15b) exists to check.
+
+**E15b**: Added optional `trim_start_s` / `trim_end_s` fields
+to manifest entries, threaded through `_extract_lfe_wav` into
+ffmpeg `-ss`/`-to` args. Cached WAVs include the trim range
+in the filename so trimmed and full extractions don't collide.
+
+This is a manual DEBUGGING AID - user hand-picks trim ranges
+per film. Not a scaling solution. Not a production feature.
+We mark EoT as an atypical outlier (its opening sequences plus
+the Omega beach scenes, 2-30s plus ~15-20 min in, are known
+community demo material) and leave automated scene detection
+out of scope.
+
+Test status: no change from E14. 27 pass, 3 real-media FAIL.
+E15 delivered diagnostic visibility only; no algorithm changes
+were attempted.
+
 ## Next to try
 
 - [ ] **E12: Self-feedback loop**. Generate initial chain, compute
