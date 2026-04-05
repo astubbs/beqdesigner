@@ -203,12 +203,16 @@ def _fit_peq_at_seed(
         )
         return _rms(band_err + resp)
 
-    bounds = [(band[0], band[1]), (0.3, 4.0), (-30.0, 30.0)]
+    # Q capped at 8 to allow matching narrow catalogue PEQ notches
+    # (e.g. Mad Max's -6 dB @ 11 Hz Q=8). Below Q=8 the fitter tends
+    # to avoid narrow features; above it, chasing single-bin spikes
+    # becomes a real risk.
+    bounds = [(band[0], band[1]), (0.3, 8.0), (-30.0, 30.0)]
     clamped_freq = float(np.clip(seed_freq, band[0], band[1]))
     clamped_gain = float(np.clip(seed_gain, -30.0, 30.0))
     best_fun = float("inf")
     best_x = None
-    for q_seed in (0.7, 1.5, 3.0):
+    for q_seed in (0.7, 1.5, 3.0, 6.0):
         seeds = (clamped_freq, q_seed, clamped_gain)
         result = minimize(objective, x0=seeds, method="L-BFGS-B", bounds=bounds)
         if result.fun < best_fun:
@@ -360,6 +364,20 @@ def infer_correction_from_measured(
             advice.source, advice.max_gain_db, advice.knee_hz,
             advice.confidence, advice.reasoning,
         )
+        if advice.filters is not None:
+            # Most specific advice: use the prescribed chain directly as
+            # the correction target. Lets the advisor prescribe multi-
+            # knee structures a single-cascade target can't reach.
+            log.info(
+                "advisor correction target: %d explicit filters from advice",
+                len(advice.filters),
+            )
+            correction = evaluate_filter_chain(
+                list(advice.filters), freqs_hz, fs=DEFAULT_FS,
+            )
+            if float(correction.max()) < 1.0:
+                return None
+            return correction
         if advice.max_gain_db < 1.0:
             return None
         if advice.knee_hz is not None:

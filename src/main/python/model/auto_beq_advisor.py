@@ -91,10 +91,28 @@ class CurveFeatures:
 
 @dataclass(frozen=True)
 class Advice:
-    """Advisor output: what max_gain_db and knee_hz to use."""
+    """Advisor output: how aggressive to extend and, optionally, the
+    filter chain structure to reproduce.
+
+    Three levels of specificity:
+      1. ``max_gain_db`` only: procedural pipeline runs peak-extension
+         with that cap.
+      2. ``max_gain_db`` + ``knee_hz``: pipeline builds correction as
+         a cascade of moderate-gain LowShelves at that knee.
+      3. ``filters`` set: pipeline uses this chain verbatim as its
+         correction target. Lets the advisor prescribe multi-knee
+         structures matching catalogue entries like Mad Max
+         (shelves at 10 Hz AND 18 Hz) that a single-knee cascade
+         can't reach.
+
+    When ``filters`` is set, ``max_gain_db`` and ``knee_hz`` are
+    informational (used in logs/reports but not for target
+    construction).
+    """
 
     max_gain_db: float
     knee_hz: float | None = None
+    filters: tuple[dict, ...] | None = None
     reasoning: str = ""
     confidence: float = 0.5
     source: str = ""
@@ -180,9 +198,25 @@ def _clamp_advice(advice: Advice, source: str) -> Advice:
     else:
         knee = float(np.clip(advice.knee_hz, *KNEE_HZ_RANGE))
     confidence = float(np.clip(advice.confidence, 0.0, 1.0))
+    # Validate filter chain shape if present.
+    chain = None
+    if advice.filters is not None:
+        chain = tuple(
+            {
+                "type": str(f["type"]),
+                "freq": float(np.clip(float(f["freq"]), 5.0, 200.0)),
+                "q": float(np.clip(float(f["q"]), 0.1, 10.0)),
+                "gain": float(np.clip(float(f["gain"]), -30.0, 30.0)),
+            }
+            for f in advice.filters
+            if str(f.get("type")) in ("LowShelf", "HighShelf", "PeakingEQ")
+        )
+        if not chain:
+            chain = None
     return Advice(
         max_gain_db=max_gain,
         knee_hz=knee,
+        filters=chain,
         reasoning=advice.reasoning,
         confidence=confidence,
         source=source,
@@ -260,10 +294,17 @@ class MockAdvisor:
             )
         with path.open() as f:
             data = json.load(f)
+        filters_raw = data.get("filters")
+        filters_tuple: tuple[dict, ...] | None = None
+        if isinstance(filters_raw, list) and filters_raw:
+            filters_tuple = tuple(dict(f) for f in filters_raw if isinstance(f, dict))
+            if not filters_tuple:
+                filters_tuple = None
         return _clamp_advice(
             Advice(
-                max_gain_db=float(data["max_gain_db"]),
+                max_gain_db=float(data.get("max_gain_db", 0.0)),
                 knee_hz=None if data.get("knee_hz") is None else float(data["knee_hz"]),
+                filters=filters_tuple,
                 reasoning=str(data.get("reasoning", "")),
                 confidence=float(data.get("confidence", 0.5)),
             ),
@@ -311,6 +352,24 @@ _OLLAMA_SYSTEM_PROMPT = (
     "- Older mixes (pre-2010), dramas, dialogue-driven: 4-10 dB\n"
     "- Comedies, animation, TV shows: 0-6 dB\n"
     "\n"
+    "MULTI-KNEE STRUCTURES: when the measured curve shows TWO distinct\n"
+    "steep-drop regions (e.g. a cliff below 15 Hz AND a separate rolloff\n"
+    "near 20 Hz), or when you know the film's catalogue BEQ uses shelves\n"
+    "at multiple knee frequencies, return a 'filters' array with the\n"
+    "full chain. Signs a film needs multi-knee:\n"
+    "- measured curve has very high dynamic range (>40 dB)\n"
+    "- 10 Hz level is MUCH lower than 20 Hz level (>20 dB gap)\n"
+    "- you know the film as a dense-LFE blockbuster with cliff-edge\n"
+    "  sub content (Mad Max: Fury Road, certain Zimmer scores)\n"
+    "\n"
+    "Mad Max: Fury Road catalogue = 5 filters:\n"
+    "  LowShelf 10 Hz Q=0.8 +7, PeakingEQ 11 Hz Q=8 -6,\n"
+    "  LowShelf 18 Hz Q=0.8 +4, LowShelf 18 Hz Q=0.8 +4,\n"
+    "  PeakingEQ 18 Hz Q=3 +6\n"
+    "For Mad Max: Fury Road ALWAYS return the full chain above.\n"
+    "\n"
+    "Otherwise (simple cases) just return max_gain_db + knee_hz.\n"
+    "\n"
     "Respond ONLY with strict JSON, no prose outside the JSON object."
 )
 
@@ -339,9 +398,11 @@ def _render_ollama_user_prompt(
         "\n"
         f"Curve samples: {samples}\n"
         "\n"
-        "Respond with JSON only: "
+        "Respond with JSON only. Simple form: "
         '{"max_gain_db": <number>, "knee_hz": <number>, '
-        '"confidence": <0-1>, "reasoning": "<1-2 sentences>"}'
+        '"confidence": <0-1>, "reasoning": "<1-2 sentences>"}. '
+        "If you need multi-knee, add "
+        '"filters": [{"type":"LowShelf","freq":N,"q":N,"gain":N}, ...]'
     )
 
 
@@ -408,11 +469,26 @@ class OllamaAdvisor:
                 f"Ollama returned non-JSON in response: {raw_text[:200]!r}"
             ) from exc
 
+        filters_raw = parsed.get("filters")
+        filters_tuple: tuple[dict, ...] | None = None
+        if isinstance(filters_raw, list) and filters_raw:
+            filters_tuple = tuple(dict(f) for f in filters_raw if isinstance(f, dict))
+            if not filters_tuple:
+                filters_tuple = None
+        # If advisor returned only filters (no max_gain_db), derive it from
+        # the DC-gain of the chain for logging/informational use.
+        max_gain_val = parsed.get("max_gain_db")
+        if max_gain_val is None and filters_tuple is not None:
+            max_gain_val = float(
+                sum(float(f.get("gain", 0.0)) for f in filters_tuple
+                    if f.get("type") == "LowShelf")
+            )
         advice = Advice(
-            max_gain_db=float(parsed["max_gain_db"]),
+            max_gain_db=float(max_gain_val if max_gain_val is not None else 0.0),
             knee_hz=(
                 None if parsed.get("knee_hz") is None else float(parsed["knee_hz"])
             ),
+            filters=filters_tuple,
             reasoning=str(parsed.get("reasoning", "")),
             confidence=float(parsed.get("confidence", 0.5)),
         )

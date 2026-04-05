@@ -147,6 +147,28 @@ score on multi-frequency catalogue entries like Mad Max. Need either
 (a) advisor returns a small chain structure (shelves at 10 AND 18 Hz),
 or (b) fitter corrections use chain description from advisor directly.
 
+### E10 - Filter-chain advice (Advice.filters field) for multi-knee catalogues
+Extended `Advice` dataclass with optional `filters: tuple[dict, ...]` field.
+When populated, pipeline uses that chain's response directly as the correction
+target, bypassing the single-knee cascade builder. Also raised PEQ Q cap
+from 4.0 to 8.0 in the fitter so it can match narrow catalogue notches.
+**Result with MockAdvisor (Mad Max fixture returns full 5-filter chain)**:
+- **Mad Max: PASS** with exact catalogue chain in the mock.
+- EoT + JW still PASS (unchanged, simple advice form).
+- **23/23 spike tests pass with MockAdvisor.**
+**Result with real Ollama llama3.1:8b**:
+- EoT PASS, JW PASS, **MM still FAIL** (1.97/9.48).
+- LLM ignored explicit multi-knee instruction ("For Mad Max: Fury Road
+  ALWAYS return the full chain above") and returned simple +15 dB @ 17 Hz.
+  Same numbers as E9.
+**Lesson**: Structural fix works — multi-knee advice gives perfect
+catalogue reproduction. But llama3.1:8b has weak instruction-following
+for complex structured output; it ignored even an explicit "ALWAYS"
+directive. Options: (a) larger Ollama model, (b) two-step prompt
+("first identify if multi-knee needed, then produce JSON"),
+(c) programmatic detection of multi-knee need from curve features
+then a targeted prompt. The plumbing is correct and proven by Mock.
+
 ## Next to try
 
 - [ ] **E8: Few-shot prompt with catalogue examples** — include 3-5
