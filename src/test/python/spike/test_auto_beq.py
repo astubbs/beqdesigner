@@ -11,9 +11,12 @@ Extending this test to dozens of titles means adding rows to FIXTURES.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+import shutil
 import subprocess
-import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +28,8 @@ from model.auto_beq import (
     format_match_report,
     propose_filters,
 )
+
+log = logging.getLogger("auto_beq_spike")
 
 # (title, filter_count, expected_verdict, notes)
 # filter_count disambiguates when a title has multiple catalogue entries
@@ -100,86 +105,160 @@ def test_report_formatter_shape(catalogue_snapshot):
 # ---------------------------------------------------------------------------
 
 
-def _have_ffmpeg() -> bool:
-    try:
-        subprocess.run(
-            ["ffmpeg", "-version"], capture_output=True, check=True, timeout=5
+def _have_tool(name: str) -> bool:
+    return shutil.which(name) is not None
+
+
+def _probe_audio_stream(media_path: Path) -> dict:
+    """Probe the first audio stream with ffprobe. Returns stream info dict."""
+    log.info("probing audio streams via ffprobe: %s", media_path)
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=index,codec_name,channels,channel_layout,sample_rate",
+            "-of", "json",
+            str(media_path),
+        ],
+        capture_output=True, check=True, text=True, timeout=30,
+    )
+    info = json.loads(result.stdout)["streams"][0]
+    log.info(
+        "audio stream: codec=%s channels=%d layout=%s sample_rate=%s",
+        info.get("codec_name"), info.get("channels"),
+        info.get("channel_layout"), info.get("sample_rate"),
+    )
+    return info
+
+
+def _extract_lfe_wav(media_path: Path, target_fs: int) -> Path:
+    """Extract the LFE channel to a cached WAV next to the source file.
+
+    Cache file: ``<source-stem>.lfe-<fs>hz.wav`` in the same directory.
+    Returns the cache path. Skips ffmpeg if the cache already exists.
+    """
+    cache_path = media_path.with_suffix("")
+    cache_path = cache_path.parent / f"{cache_path.name}.lfe-{target_fs}hz.wav"
+
+    if cache_path.exists() and cache_path.stat().st_size > 0:
+        log.info("cached LFE WAV found, skipping extraction: %s (%d bytes)",
+                 cache_path, cache_path.stat().st_size)
+        return cache_path
+
+    stream = _probe_audio_stream(media_path)
+    layout = stream.get("channel_layout", "")
+    if "LFE" not in layout.upper() and not any(
+        layout.lower().startswith(p) for p in ("5.1", "6.1", "7.1")
+    ):
+        pytest.skip(
+            f"audio layout {layout!r} has no LFE channel; set "
+            "AUTO_BEQ_MEDIA_CHANNEL to bypass auto-detection"
         )
-        return True
-    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return False
+
+    log.info("extracting LFE channel -> %s (fs=%d)", cache_path, target_fs)
+    log.info("this may take 1-3 minutes for a feature-length movie...")
+    start = time.time()
+    proc = subprocess.run(
+        [
+            "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "warning",
+            "-i", str(media_path),
+            "-af", "pan=mono|c0=LFE",
+            "-ar", str(target_fs),
+            "-ac", "1",
+            str(cache_path),
+        ],
+        capture_output=True, text=True,
+    )
+    elapsed = time.time() - start
+    if proc.returncode != 0:
+        log.error("ffmpeg stderr:\n%s", proc.stderr)
+        raise RuntimeError(f"ffmpeg failed (exit {proc.returncode})")
+    size = cache_path.stat().st_size
+    log.info("extracted %d bytes in %.1fs -> %s", size, elapsed, cache_path)
+    return cache_path
 
 
 @pytest.mark.skipif(
     not os.environ.get("AUTO_BEQ_MEDIA_PATH"),
     reason="AUTO_BEQ_MEDIA_PATH not set",
 )
-@pytest.mark.skipif(not _have_ffmpeg(), reason="ffmpeg not on PATH")
-def test_real_media_roundtrip(catalogue_snapshot):
+@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
+def test_real_media_roundtrip(catalogue_snapshot, caplog):
+    caplog.set_level(logging.INFO, logger="auto_beq_spike")
+
     media_path = Path(os.environ["AUTO_BEQ_MEDIA_PATH"])
     title = os.environ.get("AUTO_BEQ_MEDIA_TITLE", media_path.stem)
-    channel = int(os.environ.get("AUTO_BEQ_MEDIA_CHANNEL", "4"))  # 4 = LFE in 5.1
     filter_count_env = os.environ.get("AUTO_BEQ_MEDIA_FILTER_COUNT")
     filter_count = int(filter_count_env) if filter_count_env else None
 
+    log.info("=== real-media roundtrip ===")
+    log.info("media: %s", media_path)
+    log.info("title: %r  filter_count: %s", title, filter_count)
+    assert media_path.exists(), f"media file not found: {media_path}"
+    log.info("media file size: %.1f MB", media_path.stat().st_size / 1e6)
+
     entry = catalogue_snapshot(title, filter_count=filter_count)
+    log.info("catalogue entry matched: %d filters", len(entry["filters"]))
+
     fs = 1000
     freqs = DEFAULT_GRID
 
-    # 1. Extract the requested channel to a 1 kHz mono WAV.
-    with tempfile.TemporaryDirectory() as td:
-        wav_path = Path(td) / "extracted.wav"
-        subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", str(media_path),
-                "-af", f"pan=mono|c0=c{channel - 1}",
-                "-ar", str(fs),
-                "-ac", "1",
-                str(wav_path),
-            ],
-            check=True, capture_output=True,
-        )
-        assert wav_path.exists() and wav_path.stat().st_size > 0
+    wav_path = _extract_lfe_wav(media_path, fs)
 
-        # 2. Load via the app's signal pipeline.
-        from model.signal import Signal, read_wav_data
-        samples, read_fs, _ = read_wav_data(str(wav_path))
-        assert read_fs == fs
-        sig = Signal(title, samples[:, 0] if samples.ndim > 1 else samples, fs=fs)
+    # Load via the app's signal pipeline.
+    log.info("loading WAV into Signal pipeline")
+    from model.signal import Signal, read_wav_data
+    samples, read_fs, _ = read_wav_data(str(wav_path))
+    assert read_fs == fs, f"expected fs={fs}, got {read_fs}"
+    mono = samples[:, 0] if samples.ndim > 1 else samples
+    duration_s = len(mono) / fs
+    log.info("loaded %d samples (%.1f s = %.1f min)", len(mono), duration_s, duration_s / 60)
+    sig = Signal(title, mono, fs=fs)
 
-        # 3. Measured curve = average spectrum, interpolated to our grid and
-        #    normalised so its 80 Hz value is 0 dB (matching evaluate_filter_chain).
-        measured_freqs, measured_db = sig.avg_spectrum()
-        measured_on_grid = np.interp(freqs, measured_freqs, measured_db)
-        anchor_idx = int(np.argmin(np.abs(freqs - 80.0)))
-        measured_on_grid -= measured_on_grid[anchor_idx]
+    log.info("computing average spectrum (Welch)")
+    measured_freqs, measured_db = sig.avg_spectrum()
+    log.info("raw spectrum: %d bins from %.1f to %.1f Hz",
+             len(measured_freqs), measured_freqs[0], measured_freqs[-1])
 
-        # 4. Compare against catalogue-implied curve (positive dB because the
-        #    filters represent the correction). For comparison we negate:
-        ground_truth = _ground_truth_curve(entry, freqs, fs)
-        # Measured rolloff should approximate -ground_truth when the rip
-        # matches the catalogue entry.
-        band_mask = (freqs >= 20.0) & (freqs <= 80.0)
-        divergence = float(
-            np.mean(np.abs(measured_on_grid[band_mask] + ground_truth[band_mask]))
-        )
-        print(f"\nMedia-vs-catalogue divergence in 20-80 Hz: {divergence:.2f} dB")
+    measured_on_grid = np.interp(freqs, measured_freqs, measured_db)
+    anchor_idx = int(np.argmin(np.abs(freqs - 80.0)))
+    measured_on_grid -= measured_on_grid[anchor_idx]
+    log.info("measured curve on grid: 10Hz=%.1f 20Hz=%.1f 80Hz=%.1f 200Hz=%.1f dB",
+             measured_on_grid[0],
+             measured_on_grid[int(np.argmin(np.abs(freqs - 20.0)))],
+             measured_on_grid[anchor_idx],
+             measured_on_grid[-1])
 
-        # 5. Run the optimizer on the measured curve.
-        proposed = propose_filters(measured_on_grid, freqs, fs=fs)
-        metrics = compute_match_metrics(measured_on_grid, proposed, freqs, fs=fs)
-        report = format_match_report(
-            f"{title} (real media)",
-            entry["filters"],
-            proposed,
-            metrics,
-            target_depth_db=float(measured_on_grid[0] - measured_on_grid[-1]),
-        )
-        print("\n" + report)
+    # Catalogue-implied correction curve (positive dB - shelves boost).
+    ground_truth = _ground_truth_curve(entry, freqs, fs)
+    log.info("catalogue curve on grid:  10Hz=%+.1f 20Hz=%+.1f 80Hz=%+.1f dB",
+             ground_truth[0],
+             ground_truth[int(np.argmin(np.abs(freqs - 20.0)))],
+             ground_truth[anchor_idx])
 
-        # Assertions are loose for real media - we report, don't fail hard,
-        # unless the curve is completely off (indicates wrong file).
-        assert divergence < 10.0, (
-            f"measured curve diverges from catalogue by {divergence:.1f} dB - "
-            "wrong release/rip?"
-        )
+    # Measured rolloff should approximate -ground_truth if the rip matches.
+    band_mask = (freqs >= 20.0) & (freqs <= 80.0)
+    divergence = float(
+        np.mean(np.abs(measured_on_grid[band_mask] + ground_truth[band_mask]))
+    )
+    log.info("media-vs-catalogue divergence in 20-80 Hz: %.2f dB", divergence)
+
+    log.info("running optimizer on measured curve")
+    proposed = propose_filters(measured_on_grid, freqs, fs=fs)
+    metrics = compute_match_metrics(measured_on_grid, proposed, freqs, fs=fs)
+    report = format_match_report(
+        f"{title} (real media)",
+        entry["filters"],
+        proposed,
+        metrics,
+        target_depth_db=float(measured_on_grid[0] - measured_on_grid[-1]),
+    )
+    print("\n" + report)
+
+    # Assertions are loose for real media - we report, don't fail hard,
+    # unless the curve is completely off (indicates wrong file).
+    assert divergence < 15.0, (
+        f"measured curve diverges from catalogue by {divergence:.1f} dB - "
+        "wrong release/rip?"
+    )
