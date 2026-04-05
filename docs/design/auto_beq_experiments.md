@@ -247,6 +247,77 @@ overfitting gave us.
 MM result is encouraging: the general principles got the multi-knee
 chain close to PASS without any Mad-Max-specific hardcoding.
 
+### E12 - Self-feedback refinement loop
+Added a 4th step to OllamaAdvisor.advise(): after producing an initial
+chain (steps 1-3), evaluate its response at the curve-sample frequencies
+and show the LLM an overlay (measured / chain-adds / corrected) plus
+a pre-computed diagnostic (summed shelf gain, tier range, WITHIN/BELOW/
+ABOVE status). LLM picks ONE action: accept, scale_gain, shift_knee,
+or add_notch. Loop up to 3 times.
+
+**Attempt 1 (v1 refine prompt)**: LLM kept saying "scale down, gain
+exceeds measured rolloff" on every pass, converging toward flattening
+the measurement. Pushed EoT worse, reduced JW from PASS to MARGINAL,
+kept MM at MARGINAL. Classic wrong-objective failure.
+
+**Attempt 2 (v2 refine prompt: "BEQ EXTENDS beyond measured")**: LLM
+started adding notches everywhere because we told it to watch
+"overshoot above shoulder peak" - but BEQ intentionally lifts deep
+bass ABOVE measured shoulder. Our diagnostic definition was wrong.
+
+**Attempt 3 (v3 refine prompt: simple decision table on summed gain
+vs tier range)**: LLM follows the rules. For EoT at tier=blockbuster
+with +18 dB summed gain -> "WITHIN RANGE" -> accept on pass 1. Loop
+no longer hurts.
+
+BUT EoT still FAILs because **tier classification is wrong**
+(blockbuster, not reference). The loop can't fix upstream mistakes.
+The loop prevents the LLM from over-correcting toward flattening,
+which is a real win, but the ceiling on EoT is set by Step 1's
+tier choice.
+
+**Lesson**: Self-feedback works as a safety net that keeps the LLM
+honest once a tier is picked. It does NOT rescue bad tier picks.
+For the small LLM (llama3.1:8b) to classify "reference" tier without
+name lookups, we may need either:
+- A separate LLM call to read the tier definition as a test and
+  re-evaluate before committing
+- A bigger model
+- Accept that small-LLM EoT-class titles need explicit fixtures or
+  a community-curated reference list.
+
+Also: this test pass was partial - MM and JW are on network volumes
+that were unmounted. Only EoT ran.
+
+### E12 full run (all 3 films, volumes mounted)
+
+| Film       | Tier (correct?)       | Gain   | Mean    | Max      | Result |
+|------------|-----------------------|--------|---------|----------|--------|
+| EoT        | blockbuster (WRONG)   | +18 dB | 7.12 dB | 13.04 dB | FAIL |
+| Mad Max    | blockbuster (correct) | +18 dB | 1.98 dB |  8.73 dB | FAIL |
+| John Wick  | action (correct)      | ~+13 dB| <2 dB   | <5 dB    | PASS |
+
+Mad Max: **mean 0.02 dB over threshold**. The loop stopped at
+pass 1 (accept) because summed gain +18 was within blockbuster
+tier range. It didn't propose the notch at 11 Hz that catalogue has,
+which is the entire source of the 8.73 dB max error.
+
+Comparison to E11 (OVERFIT) results:
+- JW: PASS -> PASS (unchanged)
+- MM: MARGINAL 1.03 -> FAIL 1.98 (loop stops too early without
+  the Mad-Max-specific prompt hint about notches)
+- EoT: PASS 0.73 -> FAIL 7.12 (tier wrong, loop can't fix it)
+
+**Lesson**: the feedback loop prevents the LLM from over-correcting
+toward flattening (compared to E12-v1 which made things worse), and
+it makes John Wick robust. But it can't rescue:
+- Wrong upstream tier classification (EoT)
+- Missing notches that need cinema-specific knowledge (MM)
+
+The true ceiling of llama3.1:8b without film-specific hints is
+roughly "action tier films pass, reference tier films fail by ~5-10 dB,
+blockbuster tier with multi-knee needs notches we can't auto-detect".
+
 ## Next to try
 
 - [ ] **E12: Self-feedback loop**. Generate initial chain, compute

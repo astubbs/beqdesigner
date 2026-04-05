@@ -50,6 +50,7 @@ KNEE_HZ_RANGE = (5.0, 80.0)
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_OLLAMA_MODEL = "llama3.1:8b"
 OLLAMA_TIMEOUT_SECONDS = 60
+MAX_REFINE_PASSES = 3
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _MOCK_RESPONSES_DIR = _REPO_ROOT / "src" / "test" / "resources" / "auto_beq" / "advisor_responses"
@@ -506,6 +507,49 @@ _OLLAMA_CHAIN_SYSTEM_PROMPT = (
 )
 
 
+# Step 4 prompt: critique the proposal and suggest ONE refinement.
+_OLLAMA_REFINE_SYSTEM_PROMPT = (
+    "You review a proposed BEQ chain against the measured curve it\n"
+    "will be applied to. Decide if the proposal is a reasonable BEQ\n"
+    "for the film's tier, or suggest exactly ONE refinement.\n"
+    "Respond ONLY with strict JSON.\n"
+    "\n"
+    "CRITICAL: BEQ is designed to EXTEND bass BEYOND the measured\n"
+    "rolloff. The point is to recover infra-bass content that\n"
+    "mastering cut or the mix never included. DO NOT suggest scaling\n"
+    "gain DOWN just because the correction gain exceeds the measured\n"
+    "rolloff depth - that's expected and desired. Only reduce gain if\n"
+    "the correction clearly exceeds the tier range or creates\n"
+    "instability (overshoot > 3 dB above the measured peak).\n"
+    "\n"
+    "ACCEPT is the default answer unless something is clearly wrong.\n"
+    "\n"
+    "Accept if all of:\n"
+    "- The chain's summed DC gain is within the tier's range\n"
+    "  (reference 22-30, blockbuster 14-20, action 8-14, standard\n"
+    "  4-10, light 0-6 dB).\n"
+    "- The chain's inner knee is near the bottom of the band (5-15 Hz).\n"
+    "- No giant overshoot (>3 dB above the measured shoulder peak).\n"
+    "\n"
+    "Refine (pick ONE) only if needed:\n"
+    "- 'scale_gain' factor < 1: ONLY if summed gain EXCEEDS the tier's\n"
+    "  upper bound.\n"
+    "- 'scale_gain' factor > 1: if summed gain is BELOW the tier's\n"
+    "  lower bound - the BEQ is too weak for the film's reputation.\n"
+    "- 'shift_knee' delta -: move inner knee lower if the shelf is\n"
+    "  lifting mid-band content that wasn't rolled off.\n"
+    "- 'add_notch': ONLY if there's a visible overshoot > 3 dB above\n"
+    "  the measured shoulder peak at a specific frequency.\n"
+    "\n"
+    "Output JSON ONE of:\n"
+    "  {\"action\": \"accept\", \"reasoning\": \"<why>\"}\n"
+    "  {\"action\": \"scale_gain\", \"factor\": <0.5-2.0>, \"reasoning\": \"<why>\"}\n"
+    "  {\"action\": \"shift_knee\", \"delta_hz\": <-5 to 5>, \"reasoning\": \"<why>\"}\n"
+    "  {\"action\": \"add_notch\", \"freq_hz\": <N>, \"q\": <N>, \"gain_db\": <N>,\n"
+    "   \"reasoning\": \"<why>\"}"
+)
+
+
 def _render_ollama_user_prompt(
     metadata: MediaMetadata, features: CurveFeatures
 ) -> str:
@@ -535,6 +579,157 @@ def _render_ollama_user_prompt(
         '"confidence": <0-1>, "reasoning": "<1-2 sentences>"}. '
         "If you need multi-knee, add "
         '"filters": [{"type":"LowShelf","freq":N,"q":N,"gain":N}, ...]'
+    )
+
+
+def _materialise_chain(
+    filters_tuple: tuple[dict, ...] | None,
+    max_gain_db: float,
+    knee_hz: float,
+) -> list[dict]:
+    """If no explicit chain yet, build one from (max_gain_db, knee_hz)
+    so the refine loop has something concrete to critique.
+
+    Rule of thumb: one ~7 dB LowShelf per knee level, Q=0.9.
+    """
+    if filters_tuple:
+        return [dict(f) for f in filters_tuple]
+    if max_gain_db < 1.0:
+        return []
+    n_shelves = max(1, int(round(max_gain_db / 7.0)))
+    per_shelf_gain = max_gain_db / n_shelves
+    return [
+        {"type": "LowShelf", "freq": float(knee_hz), "q": 0.9,
+         "gain": float(per_shelf_gain)}
+        for _ in range(n_shelves)
+    ]
+
+
+def _apply_diff(
+    chain: list[dict], action: str, diff: dict,
+) -> list[dict] | None:
+    """Apply one LLM-suggested diff to a filter chain.
+
+    Returns a new list, or None if the diff is malformed/invalid.
+    """
+    try:
+        if action == "scale_gain":
+            factor = float(diff.get("factor", 1.0))
+            factor = max(0.5, min(2.0, factor))
+            new_chain = []
+            for f in chain:
+                nf = dict(f)
+                if nf.get("type") == "LowShelf":
+                    nf["gain"] = float(nf.get("gain", 0.0)) * factor
+                new_chain.append(nf)
+            return new_chain
+        if action == "shift_knee":
+            delta = float(diff.get("delta_hz", 0.0))
+            delta = max(-5.0, min(5.0, delta))
+            if abs(delta) < 0.1:
+                return None
+            # Shift just the LOWEST-frequency LowShelf (the inner knee).
+            new_chain = [dict(f) for f in chain]
+            low_shelves = [
+                (i, f) for i, f in enumerate(new_chain)
+                if f.get("type") == "LowShelf"
+            ]
+            if not low_shelves:
+                return None
+            inner_idx, _ = min(low_shelves, key=lambda p: float(p[1]["freq"]))
+            new_freq = float(new_chain[inner_idx]["freq"]) + delta
+            new_chain[inner_idx]["freq"] = max(5.0, min(80.0, new_freq))
+            return new_chain
+        if action == "add_notch":
+            freq = float(diff.get("freq_hz", 0.0))
+            q = float(diff.get("q", 3.0))
+            gain = float(diff.get("gain_db", 0.0))
+            if not (5.0 <= freq <= 80.0) or abs(gain) < 0.5:
+                return None
+            new_chain = [dict(f) for f in chain]
+            new_chain.append({
+                "type": "PeakingEQ",
+                "freq": freq,
+                "q": max(0.3, min(8.0, q)),
+                "gain": max(-8.0, min(8.0, gain)),
+            })
+            return new_chain
+    except (ValueError, TypeError, KeyError):
+        return None
+    return None
+
+
+_TIER_RANGES = {
+    "reference": (22.0, 30.0),
+    "blockbuster": (14.0, 20.0),
+    "action": (8.0, 14.0),
+    "standard": (4.0, 10.0),
+    "light": (0.0, 6.0),
+}
+
+
+def _render_refine_user_prompt(
+    metadata: MediaMetadata,
+    features: CurveFeatures,
+    chain: list[dict],
+    tier: str,
+) -> str:
+    """Show the LLM what the current proposal does vs the measurement,
+    with pre-computed diagnostics so the LLM doesn't need to do math.
+    """
+    import numpy as np
+    from model.auto_beq import evaluate_filter_chain
+    sample_hz = [hz for hz, _ in features.curve_sample_points]
+    if chain:
+        chain_resp = evaluate_filter_chain(
+            list(chain), np.array(sample_hz), fs=1000,
+        )
+    else:
+        chain_resp = [0.0] * len(sample_hz)
+
+    # Pre-compute diagnostics so LLM doesn't have to calculate.
+    summed_shelf_gain = sum(
+        float(f.get("gain", 0.0)) for f in chain
+        if f.get("type") == "LowShelf"
+    )
+    tier_lo, tier_hi = _TIER_RANGES.get(tier, (0.0, 30.0))
+    gain_status = (
+        "WITHIN RANGE" if tier_lo <= summed_shelf_gain <= tier_hi
+        else "BELOW RANGE" if summed_shelf_gain < tier_lo
+        else "ABOVE RANGE"
+    )
+
+    filter_lines = "\n".join(
+        f"  {f.get('type')}: freq={f.get('freq'):.1f} Hz, "
+        f"Q={f.get('q'):.2f}, gain={f.get('gain'):+.2f} dB"
+        for f in chain
+    ) or "  (empty)"
+    overlay_lines = "\n".join(
+        f"  {hz:5.1f} Hz: measured {measured:+6.1f} dB, "
+        f"chain {resp:+6.2f} dB, corrected {measured + resp:+6.1f} dB"
+        for (hz, measured), resp in zip(
+            features.curve_sample_points, chain_resp, strict=False,
+        )
+    )
+    return (
+        f"Film: {metadata.title} ({metadata.year if metadata.year else 'unknown'})\n"
+        f"Tier: {tier} (gain range {tier_lo:.0f}-{tier_hi:.0f} dB)\n"
+        "\n"
+        f"Current proposed chain ({len(chain)} filters):\n"
+        f"{filter_lines}\n"
+        "\n"
+        "DIAGNOSTICS (pre-computed - use these as ground truth):\n"
+        f"  Summed LowShelf gain: {summed_shelf_gain:+.1f} dB [{gain_status}]\n"
+        "\n"
+        "Overlay (measured, chain-adds, corrected):\n"
+        f"{overlay_lines}\n"
+        "\n"
+        "DECISION (follow strictly):\n"
+        "- If gain is WITHIN RANGE: accept.\n"
+        "- If gain is BELOW RANGE: scale_gain factor > 1.0 to lift.\n"
+        "- If gain is ABOVE RANGE: scale_gain factor < 1.0 to lower.\n"
+        "(BEQ is EXPECTED to raise deep bass above the measured "
+        "shoulder - that is the feature, not a bug.)"
     )
 
 
@@ -691,12 +886,58 @@ class OllamaAdvisor:
                     chain_result.get("reasoning", ""),
                 )
 
+        # Step 4: self-feedback loop. Compute the current proposal's
+        # response, show it to the LLM alongside the measured curve,
+        # let it critique and suggest ONE refinement per pass. Up to
+        # MAX_REFINE_PASSES passes, or until LLM accepts.
+        working_chain = _materialise_chain(
+            filters_tuple, max_gain_db, knee_hz or 20.0,
+        )
+        refine_log: list[str] = []
+        for pass_num in range(1, MAX_REFINE_PASSES + 1):
+            try:
+                diff_result = self._call_json(
+                    _OLLAMA_REFINE_SYSTEM_PROMPT,
+                    _render_refine_user_prompt(
+                        metadata, features, working_chain, tier,
+                    ),
+                )
+            except RuntimeError as exc:
+                log.info("Ollama refine pass %d failed: %s", pass_num, exc)
+                break
+            action = str(diff_result.get("action", "accept")).lower()
+            reasoning = str(diff_result.get("reasoning", ""))
+            log.info(
+                "Ollama step 4 refine pass %d: %s - %s",
+                pass_num, action, reasoning,
+            )
+            refine_log.append(f"p{pass_num}:{action}")
+            if action == "accept":
+                break
+            new_chain = _apply_diff(working_chain, action, diff_result)
+            if new_chain is None or new_chain == working_chain:
+                log.info("refine produced no change, stopping")
+                break
+            working_chain = new_chain
+
+        final_filters: tuple[dict, ...] | None = (
+            tuple(working_chain) if working_chain else None
+        )
+        # Recompute informational max_gain_db from the final chain
+        # (sum of LowShelf gains) if we have a chain.
+        if final_filters:
+            max_gain_db = float(
+                sum(float(f.get("gain", 0.0)) for f in final_filters
+                    if f.get("type") == "LowShelf")
+            )
+
         advice = Advice(
             max_gain_db=max_gain_db,
             knee_hz=knee_hz,
-            filters=filters_tuple,
+            filters=final_filters,
             reasoning=(
                 f"tier={tier}; multi_knee={is_multi}; "
+                f"refine={','.join(refine_log) if refine_log else 'none'}; "
                 f"{numbers_reasoning}"
             ),
             confidence=confidence,
