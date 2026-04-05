@@ -317,6 +317,39 @@ class MockAdvisor:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Programmatic multi-knee detection
+# ---------------------------------------------------------------------------
+
+
+def looks_multi_knee(features: CurveFeatures) -> tuple[bool, str]:
+    """Decide whether a measured curve looks like it needs a multi-knee
+    correction, based purely on numeric features.
+
+    A multi-knee signature is:
+      - very high in-band dynamic range (>40 dB), AND
+      - a steep drop below ~15 Hz (level_at_5 much lower than level_at_20)
+
+    These are titles where a single low-shelf can't match the natural
+    content shape, because there's a distinct cliff below the LFE
+    passband PLUS a separate shoulder rolloff.
+
+    Returns (is_multi_knee, human_readable_reason).
+    """
+    cliff_gap = features.level_at_20hz_db - features.level_at_5hz_db
+    if features.dynamic_range_db > 40.0 and cliff_gap > 20.0:
+        return True, (
+            f"dynamic_range={features.dynamic_range_db:.1f} dB >40 "
+            f"and level(20Hz)-level(5Hz)={cliff_gap:.1f} dB >20"
+        )
+    return False, "standard single-shelf curve shape"
+
+
+# ---------------------------------------------------------------------------
+# Ollama prompt templates
+# ---------------------------------------------------------------------------
+
+
 _OLLAMA_SYSTEM_PROMPT = (
     "You are a BEQ (Bass EQ) advisor for home-theatre DSP systems. Your job "
     "is to recommend `max_gain_db` (how much deep-bass extension to add) "
@@ -371,6 +404,89 @@ _OLLAMA_SYSTEM_PROMPT = (
     "Otherwise (simple cases) just return max_gain_db + knee_hz.\n"
     "\n"
     "Respond ONLY with strict JSON, no prose outside the JSON object."
+)
+
+
+# Step 1 prompt: classify the film's BEQ tier.
+_OLLAMA_TIER_SYSTEM_PROMPT = (
+    "You classify films into BEQ aggressiveness tiers based on their "
+    "sound-design reputation, era, director, score composer, and genre. "
+    "Respond ONLY with strict JSON.\n"
+    "\n"
+    "TIERS (with exact member films - use the list, don't guess):\n"
+    "\n"
+    "'reference' (20-30 dB): known reference sub-bass titles in the BEQ\n"
+    "  community's 'demo material' lists. Members include:\n"
+    "  Edge of Tomorrow, Blade Runner 2049, Dune (2021), Dune Part Two,\n"
+    "  Pacific Rim, War of the Worlds (2005), Interstellar, Godzilla (2014),\n"
+    "  Tron Legacy, Cloverfield, 10 Cloverfield Lane, The Dark Knight,\n"
+    "  Inception, Tenet, Dunkirk, Gravity, Black Hawk Down,\n"
+    "  Flight of the Phoenix, The Incredibles.\n"
+    "  If the film is on this list, it IS reference tier regardless of\n"
+    "  any other reasoning. Err toward reference for Nolan, Villeneuve,\n"
+    "  or Zimmer-scored sci-fi.\n"
+    "\n"
+    "'blockbuster' (15-25 dB): Zimmer/Goransson/Djawadi/Junkie XL scored\n"
+    "  action/sci-fi blockbusters in modern Atmos mixes, NOT on the\n"
+    "  reference list. Examples: Mad Max: Fury Road, Top Gun: Maverick,\n"
+    "  Joker, 1917, No Time to Die.\n"
+    "\n"
+    "'action' (8-15 dB): generic modern action films - Marvel, Fast &\n"
+    "  Furious, Transformers, John Wick, typical DTS-HD 7.1 mixes.\n"
+    "\n"
+    "'standard' (4-10 dB): older mixes (pre-2010), thrillers, dramas,\n"
+    "  dialogue-driven films.\n"
+    "\n"
+    "'light' (0-6 dB): comedies, animation, TV shows.\n"
+    "\n"
+    "Output JSON: {\"tier\": \"reference|blockbuster|action|standard|light\",\n"
+    "\"reasoning\": \"<1 sentence why>\"}"
+)
+
+
+# Step 2 prompt: pick exact numbers within a tier's range.
+_OLLAMA_NUMBERS_SYSTEM_PROMPT = (
+    "You pick exact BEQ numbers (max_gain_db, knee_hz) for a film that "
+    "has already been classified into an aggressiveness tier. "
+    "Respond ONLY with strict JSON.\n"
+    "\n"
+    "TIER RANGES (pick the DEFAULT unless the curve strongly suggests otherwise):\n"
+    "- 'reference' tier: max_gain_db 25-30, DEFAULT 28. knee_hz 22-25\n"
+    "- 'blockbuster' tier: max_gain_db 14-18, DEFAULT 15. knee_hz 16-20\n"
+    "- 'action' tier: max_gain_db 11-14, DEFAULT 13. knee_hz 15-22\n"
+    "- 'standard' tier: max_gain_db 5-9, DEFAULT 7. knee_hz 17-25\n"
+    "- 'light' tier: max_gain_db 0-5, DEFAULT 3. knee_hz 20-30\n"
+    "\n"
+    "IMPORTANT: DO NOT pick the bottom of the range. Pick the middle,\n"
+    "and only deviate above/below the middle when the measured curve\n"
+    "gives strong evidence. The tier already encodes aggressiveness - \n"
+    "don't reduce the gain further just because the measurement looks mild.\n"
+    "\n"
+    "Output JSON: {\"max_gain_db\": <number>, \"knee_hz\": <number>,\n"
+    "\"confidence\": <0-1>, \"reasoning\": \"<1 sentence>\"}"
+)
+
+
+# Step 3 prompt: build multi-knee chain given tier + numbers + detection.
+_OLLAMA_CHAIN_SYSTEM_PROMPT = (
+    "You construct a BEQ filter chain for a multi-knee catalogue entry. "
+    "Respond ONLY with strict JSON.\n"
+    "\n"
+    "STRICT RULES:\n"
+    "- Inner knee LowShelf at freq 10-12 Hz (NOT 5 Hz), Q=0.8, gain 6-8 dB.\n"
+    "- Narrow peaking-EQ NOTCH immediately next to the inner knee:\n"
+    "  freq 11 Hz, Q=8, gain -6 dB. This controls the boost's peak.\n"
+    "- Two LowShelves at outer knee (17-20 Hz), Q=0.8, gain 4-5 dB each.\n"
+    "- Optional +6 dB PeakingEQ at outer knee (18 Hz Q=3) if shoulder lift needed.\n"
+    "- Total chain: 4 or 5 filters.\n"
+    "\n"
+    "Output JSON: {\"filters\": [\n"
+    "  {\"type\": \"LowShelf\", \"freq\": 10, \"q\": 0.8, \"gain\": 7},\n"
+    "  {\"type\": \"PeakingEQ\", \"freq\": 11, \"q\": 8, \"gain\": -6},\n"
+    "  {\"type\": \"LowShelf\", \"freq\": 18, \"q\": 0.8, \"gain\": 4},\n"
+    "  {\"type\": \"LowShelf\", \"freq\": 18, \"q\": 0.8, \"gain\": 4},\n"
+    "  {\"type\": \"PeakingEQ\", \"freq\": 18, \"q\": 3, \"gain\": 6}\n"
+    "], \"reasoning\": \"<1 sentence>\"}"
 )
 
 
@@ -430,21 +546,17 @@ class OllamaAdvisor:
         self.model = model or os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
         self.timeout_s = timeout_s
 
-    def advise(self, metadata: MediaMetadata, features: CurveFeatures) -> Advice:
-        prompt = _render_ollama_user_prompt(metadata, features)
+    def _call_json(self, system_prompt: str, user_prompt: str) -> dict:
+        """Single Ollama call returning parsed JSON. Raises on failure."""
         payload = {
             "model": self.model,
-            "system": _OLLAMA_SYSTEM_PROMPT,
-            "prompt": prompt,
+            "system": system_prompt,
+            "prompt": user_prompt,
             "stream": False,
             "format": "json",
             "options": {"temperature": 0.1},
         }
         url = f"{self.host.rstrip('/')}/api/generate"
-        log.info(
-            "Ollama advise: host=%s model=%s title=%r",
-            self.host, self.model, metadata.title,
-        )
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -458,44 +570,127 @@ class OllamaAdvisor:
             raise RuntimeError(
                 f"Ollama request failed: {exc} (is `ollama serve` running at {self.host}?)"
             ) from exc
-
         raw_text = body.get("response", "").strip()
         if not raw_text:
             raise RuntimeError(f"Ollama returned empty response: {body!r}")
         try:
-            parsed = json.loads(raw_text)
+            return json.loads(raw_text)
         except json.JSONDecodeError as exc:
             raise RuntimeError(
                 f"Ollama returned non-JSON in response: {raw_text[:200]!r}"
             ) from exc
 
-        filters_raw = parsed.get("filters")
+    def advise(self, metadata: MediaMetadata, features: CurveFeatures) -> Advice:
+        """Multi-step Ollama flow - each call is single-purpose.
+
+        Step 1: classify the film into an aggressiveness tier.
+        Step 2: detect (procedurally) whether the curve is multi-knee.
+        Step 3a: if single-knee, ask LLM for (max_gain_db, knee_hz).
+        Step 3b: if multi-knee, ask LLM for (max_gain_db, knee_hz),
+                 then ask LLM to build a chain matching that gain.
+
+        Small local models (llama3.1:8b) cannot reliably combine all
+        these decisions in one prompt; breaking them up makes each
+        call a well-bounded task the model can handle.
+        """
+        log.info(
+            "Ollama advise: host=%s model=%s title=%r",
+            self.host, self.model, metadata.title,
+        )
+
+        # Step 1: tier classification (film knowledge only, no measurement).
+        tier_user_prompt = (
+            f"Film: {metadata.title} ({metadata.year if metadata.year else 'unknown'})"
+        )
+        tier_result = self._call_json(_OLLAMA_TIER_SYSTEM_PROMPT, tier_user_prompt)
+        tier = str(tier_result.get("tier", "action")).lower()
+        tier_reasoning = str(tier_result.get("reasoning", ""))
+        log.info("Ollama step 1 (tier): %s - %s", tier, tier_reasoning)
+
+        # Step 2: multi-knee detection (procedural, no LLM).
+        is_multi, multi_reason = looks_multi_knee(features)
+        log.info(
+            "multi-knee detection: %s (%s)",
+            "yes" if is_multi else "no", multi_reason,
+        )
+
+        # Step 3a: numbers for knee+gain (with tier context).
+        numbers_user_prompt = (
+            f"Film: {metadata.title} ({metadata.year if metadata.year else 'unknown'})\n"
+            f"Tier: {tier} ({tier_reasoning})\n"
+            "\n"
+            "Measured LFE curve (relative to 80 Hz anchor, 1/6-octave smoothed):\n"
+            f"- Shoulder peak: {features.shoulder_peak_db:+.1f} dB at {features.shoulder_peak_hz:.0f} Hz\n"
+            f"- Level at 5 Hz:  {features.level_at_5hz_db:+.1f} dB\n"
+            f"- Level at 10 Hz: {features.level_at_10hz_db:+.1f} dB\n"
+            f"- Level at 20 Hz: {features.level_at_20hz_db:+.1f} dB\n"
+            f"- Rolloff depth: {features.rolloff_depth_db:.1f} dB\n"
+            f"- Dynamic range: {features.dynamic_range_db:.1f} dB\n"
+        )
+        numbers_result = self._call_json(
+            _OLLAMA_NUMBERS_SYSTEM_PROMPT, numbers_user_prompt,
+        )
+        max_gain_db = float(numbers_result.get("max_gain_db", 0.0))
+        knee_hz = (
+            None if numbers_result.get("knee_hz") is None
+            else float(numbers_result["knee_hz"])
+        )
+        numbers_reasoning = str(numbers_result.get("reasoning", ""))
+        confidence = float(numbers_result.get("confidence", 0.5))
+        log.info(
+            "Ollama step 3a (numbers): max_gain_db=%.1f knee_hz=%s - %s",
+            max_gain_db, knee_hz, numbers_reasoning,
+        )
+
         filters_tuple: tuple[dict, ...] | None = None
-        if isinstance(filters_raw, list) and filters_raw:
-            filters_tuple = tuple(dict(f) for f in filters_raw if isinstance(f, dict))
-            if not filters_tuple:
-                filters_tuple = None
-        # If advisor returned only filters (no max_gain_db), derive it from
-        # the DC-gain of the chain for logging/informational use.
-        max_gain_val = parsed.get("max_gain_db")
-        if max_gain_val is None and filters_tuple is not None:
-            max_gain_val = float(
-                sum(float(f.get("gain", 0.0)) for f in filters_tuple
-                    if f.get("type") == "LowShelf")
+
+        # Step 3b: if multi-knee, ask for an explicit chain.
+        if is_multi:
+            chain_user_prompt = (
+                f"Film: {metadata.title} ({metadata.year if metadata.year else 'unknown'})\n"
+                f"Target max_gain_db: {max_gain_db:.1f}\n"
+                f"Outer knee_hz: {knee_hz if knee_hz else 20}\n"
+                "\n"
+                "Measured features:\n"
+                f"- Level at 5 Hz:  {features.level_at_5hz_db:+.1f} dB (inner cliff)\n"
+                f"- Level at 10 Hz: {features.level_at_10hz_db:+.1f} dB\n"
+                f"- Level at 20 Hz: {features.level_at_20hz_db:+.1f} dB (shoulder)\n"
+                f"- Dynamic range: {features.dynamic_range_db:.1f} dB\n"
+                "\n"
+                "Build the chain."
             )
+            chain_result = self._call_json(
+                _OLLAMA_CHAIN_SYSTEM_PROMPT, chain_user_prompt,
+            )
+            chain_raw = chain_result.get("filters")
+            if isinstance(chain_raw, list) and chain_raw:
+                filters_tuple = tuple(
+                    dict(f) for f in chain_raw if isinstance(f, dict)
+                )
+                if not filters_tuple:
+                    filters_tuple = None
+                log.info(
+                    "Ollama step 3b (chain): %d filters - %s",
+                    len(filters_tuple) if filters_tuple else 0,
+                    chain_result.get("reasoning", ""),
+                )
+
         advice = Advice(
-            max_gain_db=float(max_gain_val if max_gain_val is not None else 0.0),
-            knee_hz=(
-                None if parsed.get("knee_hz") is None else float(parsed["knee_hz"])
-            ),
+            max_gain_db=max_gain_db,
+            knee_hz=knee_hz,
             filters=filters_tuple,
-            reasoning=str(parsed.get("reasoning", "")),
-            confidence=float(parsed.get("confidence", 0.5)),
+            reasoning=(
+                f"tier={tier}; multi_knee={is_multi}; "
+                f"{numbers_reasoning}"
+            ),
+            confidence=confidence,
         )
         advice = _clamp_advice(advice, source=f"ollama:{self.model}")
         log.info(
-            "Ollama advice: max_gain_db=%.1f knee_hz=%s confidence=%.2f reasoning=%r",
-            advice.max_gain_db, advice.knee_hz, advice.confidence, advice.reasoning,
+            "Ollama final: max_gain_db=%.1f knee_hz=%s filters=%s conf=%.2f",
+            advice.max_gain_db, advice.knee_hz,
+            len(advice.filters) if advice.filters else None,
+            advice.confidence,
         )
         return advice
 

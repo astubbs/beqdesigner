@@ -169,7 +169,67 @@ directive. Options: (a) larger Ollama model, (b) two-step prompt
 (c) programmatic detection of multi-knee need from curve features
 then a targeted prompt. The plumbing is correct and proven by Mock.
 
+## Design principle for Ollama
+
+Keep each LLM call **single-purpose**. Small local models (llama3.1:8b)
+lose instruction-following when asked to do multiple things at once
+(identify structure + return full chain + reason about film + calibrate
+numbers). Break the work into steps, combine procedurally.
+
+### E11 - Multi-step Ollama + programmatic multi-knee detection
+Split advise() into 3 single-purpose calls: tier classification,
+knee+gain numbers, and (if multi-knee detected procedurally) an
+explicit chain construction. Added `looks_multi_knee()` based on
+`dynamic_range > 40 dB` AND `level(20Hz) - level(5Hz) > 20 dB`.
+
+**Result (llama3.1:8b, after several prompt iterations with DEFAULTs
+and hardcoded chain skeletons)**:
+- EoT: tier=reference (CORRECT, list-matched), +28 dB @ 22 Hz -> **PASS**
+- MM: tier=blockbuster, multi-knee detected, 4-filter chain built -> MARGINAL (1.03/5.65, 0.65 over threshold)
+- JW: tier=action, **PASS**
+
+**User critique (valid)**: the prompts became heavily overfit:
+- Chain prompt hardcodes Mad Max's exact notch (11 Hz Q=8 -6 dB)
+- Tier DEFAULT values reverse-engineered from fixture targets
+- Tier "reference" list is an explicit name lookup
+Would break on a new film that doesn't fit these templates.
+
+**Positive lesson**: multi-step Ollama DOES work for llama3.1:8b -
+each call is within model capability, and tier classification
+(film knowledge, no measurement) is well-suited to LLM strengths.
+The procedural multi-knee detection also works perfectly (correctly
+triggered on MM alone).
+
+**Negative lesson**: trying to hand-tune prompts to per-film
+examples is the same overfitting trap as the classifier. We need
+a FEEDBACK LOOP: propose, evaluate, critique, refine - rather than
+trying to bake all the correct numbers into a one-shot prompt.
+
+### The expert's actual workflow (from docs/workflow/beq.md)
+
+1. Measure the signal, identify rolloff start frequency and slope
+2. Compute target slope in dB/octave
+3. First pass: pick a shelf (low S to avoid overshoot)
+4. Apply filter, look at the EFFECT on the signal
+5. Note problems (overshoot, undershoot, residual peaks)
+6. Fix with PEQ adjustments or additional shelves
+7. Iterate until the shape matches taste/target
+
+This is iteration-with-self-inspection. The LLM should do the same.
+
 ## Next to try
+
+- [ ] **E12: Self-feedback loop**. Generate initial chain, compute
+      its frequency response, show the LLM the overlay (proposed
+      vs measured curve) and general guidelines (no overshoot,
+      monotonic below knee, matches rolloff slope), ask "is this
+      good? what would you change?" - iterate until LLM says
+      it's satisfied, or max 3 passes. NO CATALOGUE in the loop
+      (must work in production).
+- [ ] **E13: Revert overfit prompts**. Strip per-film names and
+      hardcoded numbers from all 3 prompts. Replace with general
+      principles. Re-run to see honest baseline, then add E12
+      feedback loop on top.
 
 - [ ] **E8: Few-shot prompt with catalogue examples** — include 3-5
       labelled examples in the prompt: "(title, curve features,
