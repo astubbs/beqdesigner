@@ -13,12 +13,19 @@ scope for this iteration (see docs/design/auto_beq.md).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 from model.iir import HighShelf, LowShelf, PeakingEQ
 from scipy import signal as sps
 from scipy.optimize import minimize
+
+if TYPE_CHECKING:
+    from model.auto_beq_advisor import Advisor, MediaMetadata
+
+log = logging.getLogger("auto_beq")
 
 DEFAULT_FS = 1000
 # BEQ filters extend infra-bass below 20 Hz, so the scoring band must reach
@@ -296,6 +303,8 @@ def infer_correction_from_measured(
     band: tuple[float, float] = DEFAULT_BAND,
     peak_search_band: tuple[float, float] = (15.0, 40.0),
     max_gain_db: float | None = None,
+    advisor: Advisor | None = None,
+    metadata: MediaMetadata | None = None,
 ) -> np.ndarray | None:
     """Heuristic: build a target-correction curve from a measured LFE curve.
 
@@ -328,8 +337,65 @@ def infer_correction_from_measured(
     peak_vals = measured_curve_db[peak_mask]
     peak_freq = float(peak_freqs[int(np.argmax(peak_vals))])
 
-    # Use classifier-selected cap unless caller overrode it.
+    # Advisor path: delegate the aggressiveness + knee decisions to an
+    # Advisor (heuristic/mock/ollama). The advisor sees film metadata
+    # and a summarised view of the measured curve, and returns the
+    # numeric knobs the procedural pipeline needs.
+    #
+    # When the advisor gives BOTH max_gain_db and knee_hz, its answer
+    # is authoritative: we build the correction curve as the frequency
+    # response of a single LowShelf(fs, knee_hz, 0.7, max_gain_db),
+    # and the fitter reproduces it. This bypasses peak-extension
+    # entirely so aggressive catalogue-style boosts (+28 dB) aren't
+    # clamped to the content's measured shoulder level.
     profile = "unclassified"
+    if advisor is not None and metadata is not None:
+        from model.auto_beq_advisor import extract_curve_features
+        features = extract_curve_features(
+            measured_curve_db, freqs_hz, band=band, peak_search_band=peak_search_band
+        )
+        advice = advisor.advise(metadata, features)
+        log.info(
+            "advisor[%s]: max_gain_db=%.1f knee_hz=%s confidence=%.2f reasoning=%r",
+            advice.source, advice.max_gain_db, advice.knee_hz,
+            advice.confidence, advice.reasoning,
+        )
+        if advice.max_gain_db < 1.0:
+            return None
+        if advice.knee_hz is not None:
+            # Fully-specified advice: build correction as a CASCADE of
+            # LowShelves matching typical catalogue construction.
+            # Catalogue authors cascade moderate-gain shelves
+            # (+4-7 dB each Q=0.8-1.0) to reach deep extension; a
+            # single large shelf has a different knee shape.
+            #
+            # Rule of thumb: one shelf per ~7 dB of requested gain.
+            # For Mad Max (+15 dB) -> 2 shelves of +7.5 dB each.
+            # For EoT (+28 dB) -> 4 shelves of +7 dB each.
+            # For John Wick (+13 dB) -> 2 shelves of +6.5 dB each.
+            n_shelves = max(1, int(round(advice.max_gain_db / 7.0)))
+            per_shelf_gain = advice.max_gain_db / n_shelves
+            shelf_chain = [
+                {"type": "LowShelf", "freq": float(advice.knee_hz),
+                 "q": 0.9, "gain": float(per_shelf_gain)}
+                for _ in range(n_shelves)
+            ]
+            log.info(
+                "advisor correction target: %d cascaded LowShelf @ %.1f Hz Q=0.9 +%.2f dB each",
+                n_shelves, advice.knee_hz, per_shelf_gain,
+            )
+            correction = evaluate_filter_chain(
+                shelf_chain, freqs_hz, fs=DEFAULT_FS,
+            )
+            if float(correction.max()) < 1.0:
+                return None
+            return correction
+        # Partial advice: cap-only, fall through to peak-extension.
+        max_gain_db = advice.max_gain_db
+        profile = "advisor"
+
+    # Fall back to classifier cap if advisor didn't produce one and
+    # caller didn't override.
     if max_gain_db is None:
         profile, max_gain_db = classify_content(
             measured_curve_db, freqs_hz, band=band, peak_search_band=peak_search_band
@@ -379,17 +445,23 @@ def propose_filters_from_measured(
     fs: int = DEFAULT_FS,
     band: tuple[float, float] = DEFAULT_BAND,
     max_filters: int = 6,
+    advisor: Advisor | None = None,
+    metadata: MediaMetadata | None = None,
 ) -> list[dict]:
     """Production API: given a measured LFE curve, propose BEQ filters.
 
     Pipeline:
-      1. Infer a correction curve from the measured curve
-         (conservative peak-extension heuristic).
-      2. Fit an N-filter IIR chain that reproduces that correction.
+      1. (Optional) advisor consults film metadata + curve features
+         and picks max_gain_db / knee_hz.
+      2. Build a correction curve (conservative peak-extension).
+      3. Fit an N-filter IIR chain that reproduces that correction.
 
     Returns an empty list if the measured curve doesn't need extension.
     """
-    correction = infer_correction_from_measured(measured_curve_db, freqs_hz, band=band)
+    correction = infer_correction_from_measured(
+        measured_curve_db, freqs_hz, band=band,
+        advisor=advisor, metadata=metadata,
+    )
     if correction is None:
         return []
     # The fitter treats its input as "cancel this curve". We want the

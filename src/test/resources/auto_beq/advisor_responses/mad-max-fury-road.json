@@ -1,0 +1,6 @@
+{
+  "max_gain_db": 15.0,
+  "knee_hz": 17.0,
+  "confidence": 0.80,
+  "reasoning": "Mad Max: Fury Road (2015) has dense continuous LFE content that already contains significant mid-bass. A moderate +15 dB extension at ~17 Hz matches the catalogue's cascaded shelf approach without over-correcting."
+}

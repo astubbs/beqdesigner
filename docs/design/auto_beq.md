@@ -1,5 +1,9 @@
 # Auto-BEQ — Automated Filter Suggestion
 
+**Companion docs:**
+- [`auto_beq_plan.md`](auto_beq_plan.md) — current iteration's implementation plan (LLM-assisted Advisor)
+- [`auto_beq_experiments.md`](auto_beq_experiments.md) — append-only log of experiments tried, results, lessons
+
 **Status:** spike, not shipped. Tests green on 5 synthetic + 2
 real-media fixtures (Edge of Tomorrow and Mad Max: Fury Road). The
 N-filter iterative fitter reproduces real catalogue entries'

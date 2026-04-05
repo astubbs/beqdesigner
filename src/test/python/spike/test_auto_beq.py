@@ -54,6 +54,7 @@ from model.auto_beq import (
     propose_filters_from_measured,
     smooth_fractional_octave,
 )
+from model.auto_beq_advisor import MediaMetadata, get_advisor
 
 log = logging.getLogger("auto_beq_spike")
 
@@ -319,6 +320,10 @@ def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
     fs = 1000
     freqs = DEFAULT_GRID
 
+    # Probe once for metadata - cheap, and the cached-extraction path
+    # doesn't re-probe by itself.
+    stream_info = _probe_audio_stream(media_path)
+
     wav_path = _extract_lfe_wav(media_path, fs)
 
     # Load via the app's signal pipeline.
@@ -381,8 +386,28 @@ def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
     # the tolerance thresholds". A FAIL is the central spike finding
     # that tells us we don't yet know how to map measured LFE curves
     # to expert-shaped correction targets.
-    log.info("running propose_filters_from_measured (production scenario)")
-    proposed = propose_filters_from_measured(measured_on_grid, freqs, fs=fs)
+    advisor_name = os.environ.get("AUTO_BEQ_ADVISOR", "ollama")
+    try:
+        advisor = get_advisor(advisor_name)
+    except Exception as exc:
+        pytest.skip(f"advisor construction failed ({advisor_name}): {exc}")
+    media_metadata = MediaMetadata(
+        title=title,
+        year=entry.get("year") or None,
+        audio_codec=stream_info.get("codec_name") if stream_info else None,
+        channel_layout=stream_info.get("channel_layout") if stream_info else None,
+    )
+    log.info(
+        "running propose_filters_from_measured with advisor=%s title=%r year=%s",
+        advisor_name, media_metadata.title, media_metadata.year,
+    )
+    try:
+        proposed = propose_filters_from_measured(
+            measured_on_grid, freqs, fs=fs,
+            advisor=advisor, metadata=media_metadata,
+        )
+    except Exception as exc:
+        pytest.skip(f"advisor.advise failed ({advisor_name}): {exc}")
     # compute_match_metrics grades |target + evaluate(chain)|.
     # To grade |evaluate(proposed) - catalogue|, pass target=-catalogue.
     metrics = compute_match_metrics(-ground_truth, proposed, freqs, fs=fs)

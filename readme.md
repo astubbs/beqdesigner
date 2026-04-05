@@ -153,6 +153,39 @@ their `.ui` sources.
   git SHA into this file at build time; running from source without it falls
   back to `0.0.0-alpha.1`.
 
+## Active spike: auto-BEQ "magic wand" (feats/magic-wand branch)
+
+This branch contains an **in-flight research spike** exploring whether
+BEQ filter chains can be proposed automatically from a measured LFE
+curve — "take the human out of BEQ-making". It is NOT production code
+and will be cleaned up/removed before any merge to main. The spike
+lives alongside the regular codebase in its own subtree
+(`src/main/python/model/auto_beq*.py`,
+`src/test/python/spike/`, `scripts/spike_auto_beq.py`,
+`scripts/run-spike-tests.sh`).
+
+Read in this order if you're picking up the spike mid-flight:
+
+1. **Vision** — [`docs/design/auto_beq.md`](docs/design/auto_beq.md):
+   what the feature is for, the three-tier roadmap (magic-wand button
+   → ezBEQ send → HA zero-touch), pipeline architecture, validation
+   methodology, known limitations.
+2. **Plan for this iteration** —
+   [`docs/design/auto_beq_plan.md`](docs/design/auto_beq_plan.md):
+   the LLM-assisted Advisor abstraction currently being built
+   (heuristic / mock / Ollama backends, library-sweep benchmark).
+3. **Running log** —
+   [`docs/design/auto_beq_experiments.md`](docs/design/auto_beq_experiments.md):
+   append-only record of every experiment tried, what worked, what
+   failed, and why. Source of truth for "did we already try X".
+
+Run the spike test suite:
+
+```sh
+AUTO_BEQ_ADVISOR=mock bash scripts/run-spike-tests.sh     # deterministic
+AUTO_BEQ_ADVISOR=ollama bash scripts/run-spike-tests.sh   # needs ollama serve
+```
+
 ## Further reading
 
 - User guide, workflows and UI reference: <https://beqdesigner.readthedocs.io/>

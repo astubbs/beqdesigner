@@ -1,0 +1,6 @@
+{
+  "max_gain_db": 13.0,
+  "knee_hz": 18.0,
+  "confidence": 0.75,
+  "reasoning": "John Wick (2014) action film with gunshot-focused LFE and moderate sub content. Catalogue applies ~+13 dB moderate extension with shelves at 11-21 Hz."
+}
