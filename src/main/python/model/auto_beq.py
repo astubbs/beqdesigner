@@ -21,8 +21,10 @@ from scipy import signal as sps
 from scipy.optimize import minimize
 
 DEFAULT_FS = 1000
-DEFAULT_BAND = (20.0, 80.0)
-DEFAULT_GRID = np.logspace(np.log10(10.0), np.log10(200.0), 200)
+# BEQ filters extend infra-bass below 20 Hz, so the scoring band must reach
+# down there - otherwise most of the correction happens outside the band.
+DEFAULT_BAND = (5.0, 80.0)
+DEFAULT_GRID = np.logspace(np.log10(5.0), np.log10(200.0), 240)
 
 
 @dataclass(frozen=True)
@@ -165,8 +167,10 @@ def propose_filters(
     knee_hz, depth_db = knee
 
     # Shelf seed: freq at knee, gain at rolloff depth, Q ~0.7 (Butterworth).
-    shelf_seeds = (max(knee_hz, 20.0), 0.7, min(max(depth_db, 1.0), 18.0))
-    shelf_bounds = [(15.0, 120.0), (0.3, 2.0), (0.0, 18.0)]
+    # Gain ceiling is raised to 30 dB to cover deep-extension catalogue entries
+    # (e.g. Edge of Tomorrow's 4x-cascaded-shelf chain ~+28 dB at 10 Hz).
+    shelf_seeds = (max(knee_hz, 18.0), 0.7, min(max(depth_db, 1.0), 30.0))
+    shelf_bounds = [(10.0, 120.0), (0.3, 2.0), (0.0, 30.0)]
     shelf, shelf_err = _fit_single_filter(
         target_curve_db, freqs_hz, fs, "LowShelf", shelf_seeds, shelf_bounds, band
     )
