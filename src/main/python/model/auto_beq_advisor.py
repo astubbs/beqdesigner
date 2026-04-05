@@ -147,16 +147,29 @@ def extract_curve_features(
     peak_mask = band_mask & (freqs_hz >= peak_search_band[0]) & (freqs_hz <= peak_search_band[1])
     band_vals = curve_db[band_mask]
 
+    # Robust local sampler: mean across +/- 1/6 octave around target.
+    # Raw curves have narrow resonances and notches that a single-bin
+    # lookup picks up as noise. A local octave-window average is what
+    # the expert's eye does when reading a smoothed curve.
+    def _at(target_hz: float, half_octave: float = 1.0 / 6.0) -> float:
+        lo = target_hz * (2.0 ** -half_octave)
+        hi = target_hz * (2.0 ** half_octave)
+        window = (freqs_hz >= lo) & (freqs_hz <= hi)
+        if not window.any():
+            idx = int(np.argmin(np.abs(freqs_hz - target_hz)))
+            return float(curve_db[idx])
+        return float(curve_db[window].mean())
+
+    # Peak uses a smoothed view too (same half-octave window).
     if peak_mask.any():
-        peak_level = float(curve_db[peak_mask].max())
-        peak_freq = float(freqs_hz[peak_mask][int(np.argmax(curve_db[peak_mask]))])
+        peak_freqs_in_band = freqs_hz[peak_mask]
+        # Evaluate each candidate frequency as a local mean.
+        peak_smoothed = np.array([_at(float(f)) for f in peak_freqs_in_band])
+        peak_level = float(peak_smoothed.max())
+        peak_freq = float(peak_freqs_in_band[int(np.argmax(peak_smoothed))])
     else:
         peak_level = float(band_vals.max())
         peak_freq = float(freqs_hz[band_mask][int(np.argmax(band_vals))])
-
-    def _at(target_hz: float) -> float:
-        idx = int(np.argmin(np.abs(freqs_hz - target_hz)))
-        return float(curve_db[idx])
 
     level_5 = _at(5.0)
     level_10 = _at(10.0)
@@ -252,6 +265,179 @@ class HeuristicAdvisor:
         return _clamp_advice(
             Advice(max_gain_db=max_gain, knee_hz=None, reasoning=reasoning, confidence=0.3),
             source="heuristic",
+        )
+
+
+# ---------------------------------------------------------------------------
+# MeasurementAdvisor - pure signal-processing, no film knowledge
+# ---------------------------------------------------------------------------
+
+
+_MAX_TOTAL_CHAIN_GAIN_DB = 18.0
+
+
+def _measurement_chain(features: CurveFeatures) -> tuple[dict, ...] | None:
+    """Build an explicit 2-knee LowShelf chain for multi-knee cases.
+
+    Split by measured deficits (no magic ratio):
+      outer_gain = shoulder_peak - level_at_20hz  (lift 20 Hz to peak)
+      inner_gain = level_at_20hz - level_at_10hz  (lift 10 Hz to L20)
+
+    Then scale the total chain gain down if it exceeds
+    ``_MAX_TOTAL_CHAIN_GAIN_DB``. Cliff-class measurements (e.g. Mad
+    Max with 30 dB deficit between 10 Hz and 20 Hz) produce deficits
+    much larger than any realistic BEQ needs, so we preserve the
+    deficit RATIO between inner and outer knees but cap the total
+    summed DC gain.
+
+    Returns None when no meaningful multi-knee chain is warranted
+    (both deficits < 1 dB).
+    """
+    outer_knee_hz = float(np.clip(features.shoulder_peak_hz, 12.0, 40.0))
+    inner_knee_hz = float(np.clip(features.shoulder_peak_hz / 2.0, 8.0, 14.0))
+    outer_gain = max(0.0, features.shoulder_peak_db - features.level_at_20hz_db)
+    inner_gain = max(0.0, features.level_at_20hz_db - features.level_at_10hz_db)
+    total = outer_gain + inner_gain
+    if total < 1.0:
+        return None
+    # Cliff scaling: preserve the ratio, cap the sum.
+    if total > _MAX_TOTAL_CHAIN_GAIN_DB:
+        scale = _MAX_TOTAL_CHAIN_GAIN_DB / total
+        inner_gain *= scale
+        outer_gain *= scale
+    chain: list[dict] = []
+    if inner_gain > 1.0:
+        chain.append({
+            "type": "LowShelf",
+            "freq": inner_knee_hz,
+            "q": 0.8,
+            "gain": float(inner_gain),
+        })
+    if outer_gain > 1.0:
+        chain.append({
+            "type": "LowShelf",
+            "freq": outer_knee_hz,
+            "q": 0.8,
+            "gain": float(outer_gain),
+        })
+    if not chain:
+        return None
+    return tuple(chain)
+
+
+class MeasurementAdvisor:
+    """Derive BEQ gain + knee purely from the measured CurveFeatures.
+
+    Core idea (from the user's insight + docs/workflow/beq.md):
+    The BEQ target gain is NOT a property of the film's genre or
+    reputation. It is a property of the MEASURED signal:
+
+      - Shoulder peak tells us "how loud the LFE shoulder reaches".
+      - Deficit at 10 Hz = shoulder_peak - level_at_10hz tells us
+        how far below the shoulder the deep bass sits.
+      - Slope between 10 and 20 Hz (level_at_20 - level_at_10) tells
+        us how aggressive the natural rolloff is.
+
+    Formula (single-knee path):
+      max_gain_db = deficit_at_10hz + max(0, slope_db_per_oct)
+      knee_hz     = shoulder_peak_hz
+
+    i.e. "lift 10 Hz up to the shoulder, then carry the slope one
+    more octave down to 5 Hz". This matches the expert workflow in
+    docs/workflow/beq.md ("project the slope into the infra").
+
+    Multi-knee path: trigger when slope > 15 dB/oct OR the existing
+    looks_multi_knee() heuristic fires. Emit an explicit chain with
+    two LowShelves (inner at shoulder/2, outer at shoulder), split
+    by measured deficits - no magic ratio.
+
+    Ignores `metadata` entirely. No film knowledge, no LLM, no tier.
+
+    ==== Failure modes (documented honestly) ====
+    1. Aesthetic catalogue choices divorced from measurement:
+       a film where the catalogue author prescribed more/less gain
+       than the signal suggests. We cannot see intent from the curve.
+    2. Dialog-dominant films with no LFE shoulder (peak < 2 dB):
+       we return max_gain_db=0 (no correction) rather than guessing.
+    3. Overshoot-compensation PEQs (e.g. Mad Max's -6 dB @ 11 Hz Q=8)
+       are NOT emitted. The downstream N-filter fitter may add them
+       automatically; otherwise residual error shows in max_abs_err.
+
+    ==== Future hypothesis (not implemented yet) ====
+    The user's full conjecture is that absolute mid-bass energy
+    (how LOUD the 40-80 Hz band is in unnormalised terms) correlates
+    with mastering aggressiveness: "films with bigger explosions were
+    mastered with more infra cut". Our current CurveFeatures are
+    normalised to 80 Hz, so we can't test this yet. Future iteration
+    may add `absolute_mid_bass_rms_db` and a correction term.
+    """
+
+    name = "measurement"
+
+    # Slope (dB/octave) above which a single LowShelf cannot cleanly
+    # match the rolloff and we need a multi-knee chain.
+    _MULTI_KNEE_SLOPE_THRESHOLD = 15.0
+
+    # Shoulder peak below this (in dB relative to 80 Hz) means the
+    # film has no meaningful LFE shoulder - probably dialogue-heavy.
+    _MIN_SHOULDER_PEAK_DB = 2.0
+
+    def advise(self, metadata: MediaMetadata, features: CurveFeatures) -> Advice:
+        # Guard: dialogue-dominant / flat curves have low peak AND
+        # low dynamic range. A cliff-class film can have a low
+        # shoulder peak (because the bottom dropped so far) but will
+        # still have a large dynamic range - we want to correct those.
+        if (
+            features.shoulder_peak_db < self._MIN_SHOULDER_PEAK_DB
+            and features.dynamic_range_db < 15.0
+        ):
+            return _clamp_advice(
+                Advice(
+                    max_gain_db=0.0,
+                    knee_hz=None,
+                    reasoning=(
+                        f"shoulder_peak={features.shoulder_peak_db:.1f} dB "
+                        f"dynamic_range={features.dynamic_range_db:.1f} dB: "
+                        "no LFE shoulder, no correction proposed"
+                    ),
+                    confidence=0.8,
+                ),
+                source="measurement",
+            )
+
+        deficit_at_10hz = features.shoulder_peak_db - features.level_at_10hz_db
+        slope = features.rolloff_slope_db_per_oct
+        extension = max(0.0, slope)
+        max_gain_db = deficit_at_10hz + extension
+        knee_hz = float(features.shoulder_peak_hz)
+
+        # Decide on multi-knee path.
+        is_multi_knee_slope = slope > self._MULTI_KNEE_SLOPE_THRESHOLD
+        is_multi_knee_dynamic, _ = looks_multi_knee(features)
+        is_multi_knee = is_multi_knee_slope or is_multi_knee_dynamic
+
+        chain: tuple[dict, ...] | None = None
+        if is_multi_knee:
+            chain = _measurement_chain(features)
+
+        reasoning = (
+            f"peak={features.shoulder_peak_db:+.1f}dB@{knee_hz:.0f}Hz, "
+            f"L10={features.level_at_10hz_db:+.1f}dB, "
+            f"L20={features.level_at_20hz_db:+.1f}dB, "
+            f"slope={slope:+.1f}dB/oct, deficit@10Hz={deficit_at_10hz:.1f}dB -> "
+            f"max_gain={max_gain_db:.1f}dB knee={knee_hz:.0f}Hz"
+            + (f" [multi-knee chain, {len(chain)} shelves]" if chain else "")
+        )
+
+        return _clamp_advice(
+            Advice(
+                max_gain_db=max_gain_db,
+                knee_hz=knee_hz,
+                filters=chain,
+                reasoning=reasoning,
+                confidence=0.7,
+            ),
+            source="measurement",
         )
 
 
@@ -961,16 +1147,18 @@ def get_advisor(name: str | None = None) -> Advisor:
     """Return an Advisor by name. Falls back to AUTO_BEQ_ADVISOR env var,
     then to HeuristicAdvisor.
 
-    Supported names: ``heuristic``, ``mock``, ``ollama``.
+    Supported names: ``heuristic``, ``measurement``, ``mock``, ``ollama``.
     """
     resolved = (name or os.environ.get("AUTO_BEQ_ADVISOR") or "heuristic").lower()
     if resolved == "heuristic":
         return HeuristicAdvisor()
+    if resolved == "measurement":
+        return MeasurementAdvisor()
     if resolved == "mock":
         return MockAdvisor()
     if resolved == "ollama":
         return OllamaAdvisor()
     raise ValueError(
         f"unknown advisor name: {resolved!r} "
-        "(supported: heuristic, mock, ollama)"
+        "(supported: heuristic, measurement, mock, ollama)"
     )

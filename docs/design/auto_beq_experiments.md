@@ -318,6 +318,82 @@ The true ceiling of llama3.1:8b without film-specific hints is
 roughly "action tier films pass, reference tier films fail by ~5-10 dB,
 blockbuster tier with multi-knee needs notches we can't auto-detect".
 
+### E14 - Pure-measurement advisor (slope-extension formula)
+
+Replaced LLM-tier classification with a single formula derived
+purely from `CurveFeatures` (no film metadata, no LLM):
+
+```
+deficit_at_10hz = shoulder_peak_db - level_at_10hz_db
+slope_db_per_oct = level_at_20hz_db - level_at_10hz_db
+max_gain_db = deficit_at_10hz + max(0, slope_db_per_oct)
+knee_hz = shoulder_peak_hz
+```
+
+Plus a multi-knee path (2 LowShelves, split by measured deficits)
+when `slope > 15 dB/oct` OR `looks_multi_knee()` fires.
+
+Also made `extract_curve_features` more robust: L5/L10/L20 are now
+**local 1/6-octave-window averages** instead of single-bin lookups,
+because the smoothed-to-1/6-octave curve still contains enough
+spikes/notches that single samples are unreliable.
+
+**Result with real Ollama wav extracts (hand-predictions vs actual)**:
+
+| Film | hand pred (clean) | actual (real measurement) | catalogue | grade |
+|---|---|---|---|---|
+| EoT | 28.6 dB | **0 dB** (advisor abstained) | 28 dB | FAIL 15.7/28.7 |
+| MM  | multi-knee | 35 dB multi-knee (clamped) | 15 dB | FAIL 2.5/10.2 |
+| JW  | 13.8 dB | 12.7 dB @ 40 Hz | 13 dB | FAIL (knee too high) |
+
+**What went wrong per film**:
+
+- **EoT**: the measured curve, when smoothed and normalised, has
+  NO meaningful low-frequency deficit. Its L10 reads as roughly
+  equal to its shoulder peak after 1/6-octave smoothing + octave
+  window averaging. The formula correctly sees "no rolloff" and
+  returns 0 gain. The catalogue wants +28 dB because the mastering
+  engineer applied aggressive infra cut that the normalised
+  measurement can't reveal. **The measurement alone genuinely
+  does not predict EoT's catalogue gain.**
+- **MM**: the cliff is obvious (L10=-29 vs L20=+1). Advisor
+  correctly triggers multi-knee. But the deficit is 30+ dB which
+  gets clamped to an 18 dB total. The real catalogue is only
+  15 dB — our clamp is still too loose. AND the knee is at 32 Hz
+  because that's where the shoulder peak lives in the noisy curve
+  (not at 18 Hz where the catalogue places it).
+- **JW**: advisor finds peak at 40 Hz because the curve is
+  naturally highest up there. Catalogue places shelves at 11 Hz
+  and 21 Hz. Our knee is 40 Hz — way off target.
+
+**The honest finding**: a pure slope-extension formula looking at
+normalised curve features **does not consistently predict
+catalogue gains**. Three distinct failure modes uncovered:
+
+1. Some films have no visible rolloff in the normalised curve but
+   still need aggressive BEQ (EoT). The mastering-cut information
+   lives in absolute levels that normalisation destroys.
+2. Cliff-class films have huge measured deficits that massively
+   over-predict gain when extrapolated linearly.
+3. Shoulder-peak search finds the "peak in the 15-40 Hz band",
+   but catalogue knees are almost always LOWER than that peak
+   (at the bottom of the rolloff, not the top).
+
+**What this tells us**: the user's original conjecture — that BEQ
+gain is derivable from signal features alone — IS plausible, but
+likely needs:
+- Access to **absolute mid-bass energy** (un-normalised dBFS), to
+  detect mastering aggressiveness that normalisation strips out.
+- A much **larger sample size** than 3 fixtures to fit a formula.
+  With 3 points and many free parameters, any formula overfits.
+
+**Recommended direction**: stop hand-tuning formulas on 3 films.
+Wait for the library-sweep test (parallel session, E15) to give
+statistics across dozens of films. Then fit a formula from the
+actual distribution, with held-out films for validation. Until
+then, MeasurementAdvisor is an **honest baseline** that will fail
+on most films but fails in documented, predictable ways.
+
 ## Next to try
 
 - [ ] **E12: Self-feedback loop**. Generate initial chain, compute

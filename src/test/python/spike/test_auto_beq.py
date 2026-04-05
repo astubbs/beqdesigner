@@ -386,7 +386,7 @@ def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
     # the tolerance thresholds". A FAIL is the central spike finding
     # that tells us we don't yet know how to map measured LFE curves
     # to expert-shaped correction targets.
-    advisor_name = os.environ.get("AUTO_BEQ_ADVISOR", "ollama")
+    advisor_name = os.environ.get("AUTO_BEQ_ADVISOR", "measurement")
     try:
         advisor = get_advisor(advisor_name)
     except Exception as exc:

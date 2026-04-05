@@ -14,6 +14,7 @@ from model.auto_beq_advisor import (
     Advice,
     CurveFeatures,
     HeuristicAdvisor,
+    MeasurementAdvisor,
     MediaMetadata,
     MockAdvisor,
     _clamp_advice,
@@ -45,10 +46,13 @@ def test_extract_curve_features_on_synthetic_curve():
             curve[i] = 0
 
     features = extract_curve_features(curve, freqs)
-    assert features.shoulder_peak_db == pytest.approx(8.0, abs=0.5)
-    assert features.shoulder_peak_hz == pytest.approx(20.0, abs=2.0)
-    assert features.level_at_5hz_db == pytest.approx(-20.0, abs=1.0)
-    assert features.level_at_20hz_db == pytest.approx(8.0, abs=1.0)
+    # extract_curve_features uses 1/6-octave local averaging for
+    # robustness on real-world noisy curves, which slightly smears
+    # peak locations and edge values. Tolerances reflect that.
+    assert features.shoulder_peak_db == pytest.approx(8.0, abs=1.0)
+    assert features.shoulder_peak_hz == pytest.approx(20.0, abs=3.0)
+    assert features.level_at_5hz_db == pytest.approx(-20.0, abs=2.0)
+    assert features.level_at_20hz_db == pytest.approx(8.0, abs=2.0)
     assert features.rolloff_depth_db > 20.0
     assert len(features.curve_sample_points) == 12
 
@@ -183,6 +187,103 @@ def test_render_ollama_prompt_handles_missing_metadata():
     features = _dummy_features()
     prompt = _render_ollama_user_prompt(MediaMetadata(title="Bare"), features)
     assert "unknown" in prompt  # year / codec / layout default to unknown
+
+
+# ---------------------------------------------------------------------------
+# MeasurementAdvisor (pure signal-processing, no film knowledge)
+# ---------------------------------------------------------------------------
+
+
+def test_measurement_advisor_single_knee_formula():
+    """Clean synthetic: peak +6@25Hz, L10=-2, L20=+4. Formula says
+    max_gain = (6 - -2) + (4 - -2) = 8 + 6 = 14 dB, knee = 25 Hz."""
+    features = CurveFeatures(
+        shoulder_peak_db=6.0, shoulder_peak_hz=25.0,
+        level_at_5hz_db=-8.0, level_at_10hz_db=-2.0, level_at_20hz_db=4.0,
+        rolloff_depth_db=14.0, rolloff_slope_db_per_oct=6.0,
+        dynamic_range_db=14.0, curve_sample_points=(),
+    )
+    advice = MeasurementAdvisor().advise(MediaMetadata(title="x"), features)
+    assert advice.source == "measurement"
+    assert advice.max_gain_db == pytest.approx(14.0, abs=0.01)
+    assert advice.knee_hz == pytest.approx(25.0, abs=0.01)
+    assert advice.filters is None  # single-knee, no explicit chain
+
+
+def test_measurement_advisor_negative_slope_yields_deficit_only():
+    """Slope contribution clamped at 0 when slope is negative.
+    Formula degrades to just deficit_at_10hz."""
+    features = CurveFeatures(
+        shoulder_peak_db=5.0, shoulder_peak_hz=25.0,
+        level_at_5hz_db=-5.0, level_at_10hz_db=-2.0, level_at_20hz_db=-4.0,
+        rolloff_depth_db=9.0, rolloff_slope_db_per_oct=-2.0,
+        dynamic_range_db=9.0, curve_sample_points=(),
+    )
+    advice = MeasurementAdvisor().advise(MediaMetadata(title="x"), features)
+    assert advice.max_gain_db == pytest.approx(7.0, abs=0.01)  # 5 - -2 = 7
+
+
+def test_measurement_advisor_multi_knee_emits_chain():
+    """Steep slope (> 15 dB/oct threshold) triggers multi-knee path."""
+    features = CurveFeatures(
+        shoulder_peak_db=2.0, shoulder_peak_hz=20.0,
+        level_at_5hz_db=-45.0, level_at_10hz_db=-28.0, level_at_20hz_db=1.0,
+        rolloff_depth_db=47.0, rolloff_slope_db_per_oct=29.0,
+        dynamic_range_db=47.0, curve_sample_points=(),
+    )
+    advice = MeasurementAdvisor().advise(MediaMetadata(title="x"), features)
+    assert advice.filters is not None
+    assert len(advice.filters) >= 1
+    # Inner knee should be at ~10 Hz (shoulder/2, clipped to [8, 14])
+    inner = min(advice.filters, key=lambda f: f["freq"])
+    assert 8.0 <= inner["freq"] <= 14.0
+    assert inner["type"] == "LowShelf"
+
+
+def test_measurement_advisor_flat_curve_returns_zero_gain():
+    """Dialogue-dominant film: low peak AND low dynamic range."""
+    features = CurveFeatures(
+        shoulder_peak_db=1.0, shoulder_peak_hz=25.0,
+        level_at_5hz_db=0.5, level_at_10hz_db=0.7, level_at_20hz_db=1.0,
+        rolloff_depth_db=1.0, rolloff_slope_db_per_oct=0.3,
+        dynamic_range_db=1.0, curve_sample_points=(),
+    )
+    advice = MeasurementAdvisor().advise(MediaMetadata(title="x"), features)
+    assert advice.max_gain_db == 0.0
+    assert advice.knee_hz is None
+
+
+def test_measurement_advisor_low_peak_but_high_dynamic_range_still_advises():
+    """Cliff-class film: low shoulder peak (because bottom fell off
+    the cliff) BUT large dynamic range. Should NOT be treated as
+    dialogue. Formula still fires."""
+    features = CurveFeatures(
+        shoulder_peak_db=1.5, shoulder_peak_hz=20.0,
+        level_at_5hz_db=-45.0, level_at_10hz_db=-28.0, level_at_20hz_db=1.0,
+        rolloff_depth_db=46.5, rolloff_slope_db_per_oct=29.0,
+        dynamic_range_db=46.5, curve_sample_points=(),
+    )
+    advice = MeasurementAdvisor().advise(MediaMetadata(title="x"), features)
+    assert advice.max_gain_db > 0  # not clamped to zero
+
+
+def test_measurement_advisor_ignores_metadata():
+    """Two different titles with identical features -> identical advice.
+    Proves the advisor uses NO film-specific knowledge."""
+    features = _dummy_features()
+    a1 = MeasurementAdvisor().advise(
+        MediaMetadata(title="Edge of Tomorrow", year=2014), features,
+    )
+    a2 = MeasurementAdvisor().advise(
+        MediaMetadata(title="Totally Different Film", year=1997), features,
+    )
+    assert a1.max_gain_db == a2.max_gain_db
+    assert a1.knee_hz == a2.knee_hz
+    assert a1.filters == a2.filters
+
+
+def test_get_advisor_returns_measurement_advisor():
+    assert isinstance(get_advisor("measurement"), MeasurementAdvisor)
 
 
 # ---------------------------------------------------------------------------

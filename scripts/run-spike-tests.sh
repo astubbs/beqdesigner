@@ -5,7 +5,7 @@
 # harness only needs to approve it once.
 #
 # Supported env vars (defaults shown):
-#   AUTO_BEQ_ADVISOR=mock              # heuristic | mock | ollama
+#   AUTO_BEQ_ADVISOR=measurement       # heuristic | measurement | mock | ollama
 #   SPIKE_TEST=src/test/python/spike/  # pytest selector
 #   SPIKE_VERBOSE=0                    # 1 = include -s
 #   OLLAMA_MODEL=llama3.1:8b
@@ -15,7 +15,7 @@ cd "$(dirname "$0")/.."
 export PATH="/opt/homebrew/bin:$PATH"
 export PYTHONPATH="./src/main/python"
 export QT_QPA_PLATFORM="offscreen"
-export AUTO_BEQ_ADVISOR="${AUTO_BEQ_ADVISOR:-mock}"
+export AUTO_BEQ_ADVISOR="${AUTO_BEQ_ADVISOR:-measurement}"
 
 target="${SPIKE_TEST:-src/test/python/spike/}"
 verbose_flag=""
