@@ -37,6 +37,9 @@ distro = "*"
 atomicwrites = "*"
 scipy-stubs = "*"
 
+[tool.poetry.scripts]
+ui-gen = "scripts.regen_ui:main"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
