@@ -98,15 +98,59 @@ def test_report_formatter_shape(catalogue_snapshot):
 
 
 # ---------------------------------------------------------------------------
-# Real-media pass: optional, gated on an env var pointing to a media file.
-# Set AUTO_BEQ_MEDIA_PATH and AUTO_BEQ_MEDIA_TITLE (matching a snapshot entry)
-# to run. Extracts LFE via ffmpeg -> WAV -> Signal -> avg_spectrum and feeds
-# the measured curve into propose_filters.
+# Real-media pass: parametrised over a user-maintained media manifest.
+#
+# The manifest is a JSON list of entries, each with:
+#   {
+#     "path": "/absolute/path/to/file.mkv",
+#     "title": "Catalogue title",
+#     "filter_count": 5,
+#     "expected_grade": "PASS" | "MARGINAL" | "FAIL",
+#     "notes": "free-form"
+#   }
+# Defaults: expected_grade=PASS, filter_count=None (first match).
+#
+# Location (in order):
+#   $AUTO_BEQ_MEDIA_MANIFEST (file path)
+#   ~/.config/beqdesigner/auto_beq_media.json
+#
+# Entries whose path does not exist on disk are skipped silently so the
+# manifest can be shared across machines with different media libraries.
+# Each entry runs as its own parametrised test case; adding a new film is
+# "add one more JSON object" in the manifest.
 # ---------------------------------------------------------------------------
 
 
 def _have_tool(name: str) -> bool:
     return shutil.which(name) is not None
+
+
+def _load_media_manifest() -> list[dict]:
+    manifest_env = os.environ.get("AUTO_BEQ_MEDIA_MANIFEST")
+    if manifest_env:
+        manifest_path = Path(manifest_env)
+    else:
+        manifest_path = Path.home() / ".config" / "beqdesigner" / "auto_beq_media.json"
+    if not manifest_path.exists():
+        return []
+    with manifest_path.open() as f:
+        entries = json.load(f)
+    runnable = []
+    for entry in entries:
+        path = Path(entry["path"]).expanduser()
+        if not path.exists():
+            continue
+        runnable.append({
+            "path": str(path),
+            "title": entry["title"],
+            "filter_count": entry.get("filter_count"),
+            "expected_grade": entry.get("expected_grade", "PASS"),
+            "notes": entry.get("notes", ""),
+        })
+    return runnable
+
+
+MEDIA_MANIFEST = _load_media_manifest()
 
 
 def _probe_audio_stream(media_path: Path) -> dict:
@@ -178,23 +222,29 @@ def _extract_lfe_wav(media_path: Path, target_fs: int) -> Path:
     return cache_path
 
 
-@pytest.mark.skipif(
-    not os.environ.get("AUTO_BEQ_MEDIA_PATH"),
-    reason="AUTO_BEQ_MEDIA_PATH not set",
-)
+@pytest.mark.skipif(not MEDIA_MANIFEST, reason="no media manifest / no files on disk")
 @pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
 @pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
-def test_real_media_roundtrip(catalogue_snapshot, caplog):
+@pytest.mark.parametrize(
+    "manifest_entry",
+    MEDIA_MANIFEST,
+    ids=[e["title"] for e in MEDIA_MANIFEST],
+)
+def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
     caplog.set_level(logging.INFO, logger="auto_beq_spike")
 
-    media_path = Path(os.environ["AUTO_BEQ_MEDIA_PATH"])
-    title = os.environ.get("AUTO_BEQ_MEDIA_TITLE", media_path.stem)
-    filter_count_env = os.environ.get("AUTO_BEQ_MEDIA_FILTER_COUNT")
-    filter_count = int(filter_count_env) if filter_count_env else None
+    media_path = Path(manifest_entry["path"])
+    title = manifest_entry["title"]
+    filter_count = manifest_entry["filter_count"]
+    expected_grade = manifest_entry["expected_grade"]
+    notes = manifest_entry["notes"]
 
     log.info("=== real-media roundtrip ===")
     log.info("media: %s", media_path)
-    log.info("title: %r  filter_count: %s", title, filter_count)
+    log.info("title: %r  filter_count: %s  expected_grade: %s",
+             title, filter_count, expected_grade)
+    if notes:
+        log.info("notes: %s", notes)
     assert media_path.exists(), f"media file not found: {media_path}"
     log.info("media file size: %.1f MB", media_path.stat().st_size / 1e6)
 
@@ -263,14 +313,13 @@ def test_real_media_roundtrip(catalogue_snapshot, caplog):
         "wrong release/rip?"
     )
 
-    # Gate the test on the algorithm grade. By default we require PASS -
-    # a FAIL grade means the optimizer genuinely couldn't match the
-    # target and the algorithm needs improvement, not a softer test.
-    # For known-hard cases (e.g. deep cascaded-shelf catalogue entries
-    # the spike's shelf+PEQ scope can't match yet), set
-    # AUTO_BEQ_MEDIA_EXPECTED_GRADE=FAIL or MARGINAL to record the
-    # expectation explicitly.
-    expected_grade = os.environ.get("AUTO_BEQ_MEDIA_EXPECTED_GRADE", "PASS")
+    # Gate the test on the algorithm grade. Manifest entries default to
+    # expecting PASS; known-hard cases (deep cascaded-shelf catalogue
+    # entries the spike's shelf+PEQ scope can't match yet) can set
+    # "expected_grade": "FAIL" or "MARGINAL" in the manifest to record
+    # the expectation explicitly. A FAIL grade means the optimizer
+    # genuinely couldn't match the target and the algorithm needs
+    # improvement, not a softer test.
     grade_rank = {"PASS": 0, "MARGINAL": 1, "FAIL": 2}
     assert grade_rank[metrics.verdict] <= grade_rank[expected_grade], (
         f"algorithm grade {metrics.verdict} worse than expected "

@@ -2125,5 +2125,150 @@
     "audioChannelCounts": [
       ""
     ]
+  },
+  {
+    "title": "Mad Max: Fury Road",
+    "year": "2015",
+    "audioTypes": [
+      "Atmos"
+    ],
+    "content_type": "film",
+    "author": "mobe1969",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/mobe1969/mad-max-fury-road/#atmos",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 10.0,
+        "gain": 7.0,
+        "q": 0.8,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001659829035023",
+              "-1.9993309256840015",
+              "0.9991655835060734"
+            ],
+            "a": [
+              "1.999331102945988",
+              "-0.9993313891475891"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 11.0,
+        "gain": -6.0,
+        "q": 8.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "0.9999682976645043",
+              "-1.9998723705441093",
+              "0.9999045911722183"
+            ],
+            "a": [
+              "1.9998723705441093",
+              "-0.9998728888367227"
+            ]
+          }
+        }
+      },
+      {
+        "type": "LowShelf",
+        "freq": 18.0,
+        "gain": 4.0,
+        "q": 0.8,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000169966249115",
+              "-1.9986869616626173",
+              "0.9985187415466412"
+            ],
+            "a": [
+              "1.9986872838614225",
+              "-0.998688385596951"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 18.0,
+        "gain": 4.0,
+        "q": 0.8,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000169966249115",
+              "-1.9986869616626173",
+              "0.9985187415466412"
+            ],
+            "a": [
+              "1.9986872838614225",
+              "-0.998688385596951"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 18.0,
+        "gain": 6.0,
+        "q": 3.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001383270084894",
+              "-1.9997206413241266",
+              "0.9995837020356961"
+            ],
+            "a": [
+              "1.9997206413241266",
+              "-0.9997220290441852"
+            ]
+          }
+        }
+      }
+    ],
+    "images": [
+      "https://gitlab.com/Mobe1969/beq-reports/-/raw/master/Movies/M/Mad%20Max%20Fury%20Road%20%282015%29%20Atmos.jpg"
+    ],
+    "warning": "",
+    "mv": "0",
+    "avs": "",
+    "sortTitle": "mad max fury road",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "An apocalyptic story set in the furthest reaches of our planet, in a stark desert landscape where humanity is broken, and most everyone is crazed fighting for the necessities of life. Within this world exist two rebels on the run who just might be able to restore order.",
+    "theMovieDB": "76341",
+    "rating": "R",
+    "runtime": "121",
+    "genres": [
+      "Action",
+      "Adventure",
+      "Science Fiction"
+    ],
+    "altTitle": "Mad Max Fury Road",
+    "collection": {
+      "id": "8945",
+      "name": "Mad Max Collection"
+    },
+    "underlying": "Mad Max Fury Road (2015) Atmos",
+    "digest": "256e2dae91c5822711ebd05d202023600a375881441937fb6057a59b40def2e1",
+    "created_at": 1653129231,
+    "updated_at": 1653129231,
+    "audioChannelCounts": [
+      ""
+    ],
+    "audioCodecs": [
+      "Atmos"
+    ]
   }
 ]

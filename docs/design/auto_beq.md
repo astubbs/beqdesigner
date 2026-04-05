@@ -152,23 +152,6 @@ This is the **synthetic roundtrip** test. It isolates the optimizer from
 real-world confounds (room noise, rip quality, multi-channel bass
 management) and answers: does the optimization math work?
 
-### Algorithm-quality grade vs test outcome (terminology)
-
-Two different "PASS/FAIL" concepts are in play and the word overlap is
-confusing:
-
-- **Algorithm quality grade** — `MatchMetrics.verdict`, with values
-  `PASS` / `MARGINAL` / `FAIL`. This grades *how well the optimizer's
-  output matches the ground truth* against the band-error thresholds
-  below. It is printed in the text report.
-- **Test outcome** — pytest's `PASSED`/`FAILED` for the test function.
-  This depends on the test's hard `assert` statements, which are
-  deliberately loose for real-media runs (we want diagnostics, not a
-  red test, while we're exploring). You can see `Verdict: FAIL` and
-  `PASSED` in the same run without contradiction.
-
-A future rename may disambiguate (e.g. rename `verdict` to `grade`).
-
 ### Algorithm-quality thresholds (per vision doc)
 
 For each title, compute `err = target + proposed_response` across the
