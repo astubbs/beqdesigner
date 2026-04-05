@@ -1,6 +1,10 @@
 # Auto-BEQ — Automated Filter Suggestion
 
-**Status:** spike (single-title proof-of-concept). Not shipped to users. See
+**Status:** spike (single-title proof-of-concept). Not shipped to users.
+The first real-media run exposed that the current objective function
+("make the measured curve flat") is not what BEQ actually does - see
+section 4 "Real-media findings". The next iteration needs a different
+algorithm (knee-extension rather than curve-inversion). See
 "Expansion path" for the route to a production feature.
 
 **Audience:** developers working on the magic-wand initiative. This document
@@ -69,7 +73,12 @@ either existing BEQDesigner code (`model.signal`, `model.iir`,
 
 Takes a magnitude curve representing a rolloff (low-frequency attenuation,
 expressed in dB relative to an 80 Hz anchor) and returns a small filter
-chain whose response cancels that rolloff across `band` (default 20-80 Hz).
+chain whose response cancels that rolloff across `band` (default 5-80 Hz).
+
+> **Heads up:** the "cancel the rolloff" framing is what the current
+> code does, and section 4 now explains why that framing doesn't match
+> real BEQ work. This section describes the algorithm *as
+> implemented*. The next iteration replaces it.
 
 **Staged approach:**
 
@@ -89,9 +98,9 @@ upper edge. This becomes the shelf-frequency seed.
 
 | Param | Seed | Bounds |
 |---|---|---|
-| freq (Hz) | knee from stage 1 | [15, 120] |
+| freq (Hz) | knee from stage 1 | [10, 120] |
 | Q | 0.7 (Butterworth-ish) | [0.3, 2.0] |
-| gain (dB) | measured rolloff depth, clamped to [1, 18] | [0, 18] |
+| gain (dB) | measured rolloff depth, clamped to [1, 30] | [0, 30] |
 
 **Objective:** RMS of `(target + shelf_response)` across the band. We're
 looking for the shelf whose response cancels the target, so minimising
@@ -143,9 +152,27 @@ This is the **synthetic roundtrip** test. It isolates the optimizer from
 real-world confounds (room noise, rip quality, multi-channel bass
 management) and answers: does the optimization math work?
 
-### Pass thresholds (per vision doc)
+### Algorithm-quality grade vs test outcome (terminology)
 
-For each title, compute `err = target + proposed_response` across 20-80 Hz:
+Two different "PASS/FAIL" concepts are in play and the word overlap is
+confusing:
+
+- **Algorithm quality grade** — `MatchMetrics.verdict`, with values
+  `PASS` / `MARGINAL` / `FAIL`. This grades *how well the optimizer's
+  output matches the ground truth* against the band-error thresholds
+  below. It is printed in the text report.
+- **Test outcome** — pytest's `PASSED`/`FAILED` for the test function.
+  This depends on the test's hard `assert` statements, which are
+  deliberately loose for real-media runs (we want diagnostics, not a
+  red test, while we're exploring). You can see `Verdict: FAIL` and
+  `PASSED` in the same run without contradiction.
+
+A future rename may disambiguate (e.g. rename `verdict` to `grade`).
+
+### Algorithm-quality thresholds (per vision doc)
+
+For each title, compute `err = target + proposed_response` across the
+scoring band:
 
 | Metric | PASS threshold | MARGINAL threshold |
 |---|---|---|
@@ -155,93 +182,163 @@ For each title, compute `err = target + proposed_response` across 20-80 Hz:
 Topology match (same filter types as catalogue) is a **secondary** metric.
 A proposed chain with different topology but equivalent in-band response is
 acceptable — bass-frequency IIR filters have well-known equivalencies
-(different `freq`/`Q`/`gain` triplets can produce near-identical 20-80 Hz
+(different `freq`/`Q`/`gain` triplets can produce near-identical in-band
 curves).
 
-### Spike results (April 2026)
+### Synthetic results (April 2026, band 5-80 Hz)
 
 Three single-LowShelf titles, synthetic roundtrip:
 
-| Title | Mean err | Max err | Verdict |
+| Title | Mean err | Max err | Grade |
 |---|---|---|---|
-| Battle: Los Angeles (+4 dB @ 28 Hz Q=0.9) | 0.02 dB | 0.09 dB | PASS |
-| Captain America: TWS (+3.8 dB @ 22 Hz Q=1.1) | 0.02 dB | 0.16 dB | PASS |
-| Run Hide Fight (+6 dB @ 17 Hz Q=0.7) | 0.08 dB | 0.38 dB | PASS |
+| Battle: Los Angeles (+4 dB @ 28 Hz Q=0.9) | 0.09 dB | 0.18 dB | PASS |
+| Captain America: TWS (+3.8 dB @ 22 Hz Q=1.1) | 0.13 dB | 0.27 dB | PASS |
+| Run Hide Fight (+6 dB @ 17 Hz Q=0.7) | 0.02 dB | 0.06 dB | PASS |
 
-All three comfortably pass. "Run Hide Fight" converges to a different
-parameter triplet (26.78 Hz Q=0.82 +2.01 dB) than the catalogue's, but the
-resulting in-band response is within 0.4 dB — the equivalence noted above.
+All three comfortably pass. The **fixture set was too easy** though -
+see "Real-media findings" below. All three entries are single
+LowShelves with freq inside 17-28 Hz and gain ≤ 6 dB, so most of the
+correction falls cleanly inside the scoring band. The optimizer's
+single-shelf-plus-one-PEQ scope was never stressed by these fixtures.
 
-### Real-media caveats (not yet validated)
+### Real-media findings (April 2026) — the spike actually moved
 
-The synthetic test does NOT prove:
+Ran `test_real_media_roundtrip` against Edge of Tomorrow UHD 2160p
+(DTS-HD MA 7.1, LFE channel extracted via `pan=c0=LFE` at 1 kHz).
+Compared against the 5-filter catalogue entry (4x LowShelf @23 Hz +
+PEQ @54 Hz, ~+28 dB correction at 10 Hz).
 
-- That a real LFE track from a Blu-ray matches its catalogue entry's
-  implied curve. Release variants, stem-mastering differences, and
-  bass-management pre-processing can all introduce divergence.
-- That measurement noise (room rumble in the original mix, mastering
-  dither) doesn't push the knee detector off.
-- That multi-channel bass-managed content (5.1 where the LFE carries only a
-  band-passed subset) produces a clean curve to feed the optimizer.
+**Measured LFE curve (relative to 80 Hz anchor):**
 
-The test file includes an optional `test_real_media_roundtrip` gated on
-`AUTO_BEQ_MEDIA_PATH`. Running it on a known title exercises the ffmpeg →
-signal → optimizer pipeline end-to-end. A media-vs-catalogue divergence
-assertion (<10 dB, soft) catches the "wrong rip" failure mode.
+| Freq | Measured dB | Catalogue correction dB |
+|---|---|---|
+| 10 Hz | -6.8 | +28.1 |
+| 20 Hz | +7.5 | +19.4 |
+| 80 Hz | 0 | 0 |
+
+The measured LFE has a **hump around 20 Hz** then drops sharply both
+ways. It is NOT a simple rolloff. The optimizer (minimising
+`target + response`) proposed a -12 dB notch at 20 Hz to flatten the
+hump, and an 8 dB boost at 10 Hz. Algorithm grade: FAIL.
+
+**The real insight: the objective function is wrong.**
+
+- Minimising `target + candidate_response` says "make the media flat".
+- BEQ is *not* about making media flat. Real LFE content has
+  mastering-specific shape (20 Hz humps, 80 Hz rolloff) that should be
+  preserved.
+- Human BEQ experts do something different: they identify the
+  **natural rolloff slope below the LFE passband** (e.g. the
+  14 dB/octave drop from 20 Hz to 10 Hz visible above) and extend it
+  deeper with a shelf. The goal is infra-bass extension, not flattening.
+
+**What this means:**
+
+- The spike proved the optimization math works (synthetic passes).
+- The spike proved the framing is wrong for BEQ (real-media FAIL).
+- The next iteration needs a fundamentally different algorithm:
+  knee-extension rather than curve-inversion.
+
+### Real-media caveats that ALSO apply
+
+- Release variants matter: a UHD master may have different LFE than the
+  Blu-ray a catalogue entry was built against. The 7.37 dB 20-80 Hz
+  divergence we observed is partly this.
+- Welch averaging collapses a 113-minute movie into one curve; loud
+  scenes dominate. This may or may not match what the catalogue expert
+  measured (they often work on specific reference scenes).
+- Multi-channel bass management was not exercised - mono LFE only.
 
 ---
 
 ## 5. Known limitations
 
+### The big one: objective function is wrong for real BEQ work
+The current `propose_filters` minimises `|target + candidate_response|` - i.e.
+it tries to produce a chain whose response cancels the input curve and
+leaves zero. That treats "flat" as the goal. **Real BEQ work isn't
+flattening** - it's detecting the natural rolloff slope at the very low
+end of the content and extending that slope with a shelf so deeper bass
+is audible. The real-media Edge of Tomorrow run exposed this directly
+(see section 4). Fixing this is the headline item for the next spike
+iteration.
+
+### Other limitations (all still apply)
 - **Shelf + one PEQ only.** Multi-PEQ catalogue entries (the majority of
-  the real catalogue) will fit imperfectly. Expected MARGINAL/FAIL on
-  entries with 4+ filters.
-- **No topology preference.** The objective minimises response error only,
-  so a narrow PEQ might be chosen where a shelf belongs. Acceptable for the
-  spike; future work adds a penalty term.
+  the real catalogue) will fit imperfectly even after the objective is
+  fixed.
+- **No topology preference.** The objective minimises response error
+  only, so a narrow PEQ might be chosen where a shelf belongs.
 - **Mono only.** No bass-management awareness. The optimizer sees one
   channel's curve at a time.
-- **Single-title scope.** We've validated on three clean single-shelf
-  cases. The 30-50 title benchmark from the vision doc is future work.
+- **Scoring band 5-80 Hz.** Extended down from 20-80 Hz after the
+  real-media run showed infra-bass is where BEQ lives. Lower edge
+  depends on the signal pipeline's ability to produce reliable
+  magnitude data at 5-10 Hz - not yet validated end-to-end.
+- **Synthetic fixtures are too easy.** Three hand-picked single-shelf
+  entries with most action inside the band. Need to add a deep
+  cascaded-shelf entry (e.g. Edge of Tomorrow 5-filter) as a known
+  FAIL fixture so we can track algorithm improvements against it.
 - **No streaming-only content.** Requires a local file to analyse.
 
 ---
 
 ## 6. Expansion path
 
-### To add more test titles
+### Next spike iteration: fix the objective
+
+The real-media run proved the current algorithm answers the wrong
+question. The next iteration needs:
+
+1. **Knee-extension algorithm, not curve-inversion.** Detect the
+   natural rolloff slope in the content at the bottom of the LFE
+   passband (where the curve starts sloping down sharply - e.g. below
+   15 Hz in the EoT measurement) and propose a shelf that extends that
+   slope deeper. Don't try to modify what happens above the knee.
+2. **Possibly: fit against the catalogue curve's shape, not the
+   measured curve.** Treat the catalogue as labelled training data -
+   given a measured rolloff shape, what shelf+PEQ combination did a
+   human expert prescribe? This is essentially a supervised-learning
+   framing of the same problem. May be overkill for an IIR fit but is
+   the cleanest formulation of "do what the expert would do".
+3. **Add a deep entry to synthetic fixtures as a FAIL canary.** E.g.
+   Edge of Tomorrow 5-filter. Stops us from regressing on hard cases
+   when we tune the optimizer for easy ones.
+4. **Revisit knee detection on real LFE shapes.** The measured curve
+   had a hump at 20 Hz and the current `detect_rolloff_knee` tries to
+   scan from the band low edge upward. Real LFE needs a detector that
+   finds the downward slope at the *very bottom* of the passband.
+
+### Then: add test coverage
 
 1. Identify titles in the catalogue: inspect
-   `src/test/resources/auto_beq/database.json`, or filter the full catalogue
+   `src/test/resources/auto_beq/database.json`, or filter the full
+   catalogue
    (`https://raw.githubusercontent.com/3ll3d00d/beqcatalogue/master/docs/database.json`).
-2. Add the title + filter-count tuple to the snapshot (the shell one-liner
-   used to build the snapshot is documented in the spike's plan file).
+2. Add the title + filter-count tuple to the snapshot.
 3. Add an entry to `FIXTURES` in `test_auto_beq.py` with an expected
-   verdict.
-4. Run `pytest src/test/python/spike/test_auto_beq.py -v` — MARGINAL/FAIL
-   cases surface immediately.
+   grade.
+4. Run `pytest src/test/python/spike/test_auto_beq.py -v`.
 
-### To graduate the spike to a production feature
+### Then: graduate the spike to a production feature
 
 The three-tier roadmap from the vision brief:
 
-1. **Magic wand button** — wire `propose_filters` to a QPushButton in the
-   signal-analysis view. Take the currently-loaded `Signal`'s
-   `avg_spectrum`, normalise to 80 Hz anchor, call `propose_filters`,
-   populate the filter-table UI.
-2. **Batch CLI** — thin wrapper that walks a folder of media files, calls
-   `propose_filters` per file, writes sidecar `.beq` files.
-3. **ezBEQ send** — HTTP POST of the filter chain to ezBEQ's `/api/`
-   endpoint. ~100 LOC module; no optimizer changes.
+1. **Magic wand button** - wire `propose_filters` to a QPushButton in
+   the signal-analysis view.
+2. **Batch CLI** - thin wrapper that walks a folder of media files,
+   calls `propose_filters` per file, writes sidecar `.beq` files.
+3. **ezBEQ send** - HTTP POST of the filter chain to ezBEQ's `/api/`
+   endpoint.
 
 ### Metrics we'll track as the spike grows
 
-- **PASS rate across the catalogue** — target ≥80% per the vision doc.
-- **Distribution of `mean_abs_err_db`** — where does the long tail live?
-- **Failure-mode taxonomy** — which content types fail, and why. This
-  drives objective-function iteration.
-- **Wall-clock per title** — currently ~10 ms per synthetic roundtrip.
-  Comfortable for an interactive button.
+- **PASS-grade rate across the catalogue** - target ≥80% per the
+  vision doc.
+- **Distribution of `mean_abs_err_db`** - where does the long tail live?
+- **Failure-mode taxonomy** - which content types fail, and why.
+- **Wall-clock per title** - currently ~10 ms per synthetic roundtrip,
+  ~70 s for a full feature-length LFE extraction (cached on first run).
 
 ---
 
