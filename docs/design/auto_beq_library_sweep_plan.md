@@ -1,6 +1,113 @@
-# Plan: Dynamic catalogue-sweep testing harness
+# Dynamic catalogue-sweep testing harness
 
-## Context
+## Quick start
+
+The sweep has two phases: **discover** (one-time, fast) then **run**
+(per-session, slow on first run per film).
+
+### 1. Discover your library
+
+```bash
+bash scripts/run-sweep-discover.sh --library /path/to/movies
+```
+
+This walks the library, fetches the full BEQ catalogue (14,788
+entries, cached for 24 hours), matches every film by title+year, and
+saves ALL matches to `~/.config/beqdesigner/auto_beq_sweep.json`.
+
+Supports multiple library roots and two filename conventions:
+- Plex/Jellyfin: `Title (YEAR) [tmdb-NNN]`
+- Scene-style: `Title.Name.YEAR.codec.source.mkv`
+
+Options:
+```
+--library PATH    repeatable; falls back to $AUTO_BEQ_LIBRARY_ROOTS (colon-separated) or .env
+--refresh         re-fetch catalogue even if the cached copy is <24h old
+--yes             skip confirmation prompt
+--test-limit N    default number of films the sweep test runs (default: 10)
+--output PATH     override config file location
+```
+
+Re-run discovery any time your library changes or you want to refresh
+the catalogue.
+
+### 2. Run the sweep
+
+```bash
+AUTO_BEQ_ADVISOR=measurement \
+SPIKE_TEST=src/test/python/spike/test_auto_beq_library_sweep.py \
+  bash scripts/run-spike-tests.sh
+```
+
+This runs the full pipeline (extract LFE → smooth → advisor →
+propose filters → grade vs catalogue ground truth) on the top N
+films from your config (N = `test_limit` in config, default 10).
+
+First run per film is slow (~30-60s for LFE extraction via ffmpeg).
+Subsequent runs are fast (WAV is cached next to the source file as
+`<stem>.lfe-1000hz.wav`).
+
+Override the limit for faster iteration:
+
+```bash
+AUTO_BEQ_SWEEP_LIMIT=3 AUTO_BEQ_ADVISOR=measurement \
+SPIKE_TEST=src/test/python/spike/test_auto_beq_library_sweep.py \
+  bash scripts/run-spike-tests.sh
+```
+
+### 3. View results
+
+Each run appends to a CSV report:
+
+```bash
+column -t -s, .pytest_cache/auto_beq_sweep.csv
+```
+
+Columns: `rating_bucket`, `rating`, `release_year`, `title`,
+`catalogue_filter_count`, `advisor`, `verdict`, `mean_err_db`,
+`max_err_db`, `summed_catalogue_gain_db`.
+
+Delete the CSV file before running to start fresh.
+
+### Environment variables
+
+| Var | Purpose | Default |
+|---|---|---|
+| `AUTO_BEQ_ADVISOR` | advisor: heuristic / mock / ollama / measurement | `mock` (via run-spike-tests.sh) |
+| `AUTO_BEQ_SWEEP_LIMIT` | override test_limit from config | config value (default 10) |
+| `AUTO_BEQ_SWEEP_CONFIG` | override config file path | `~/.config/beqdesigner/auto_beq_sweep.json` |
+| `AUTO_BEQ_SWEEP_REPORT` | override CSV output path | `.pytest_cache/auto_beq_sweep.csv` |
+| `AUTO_BEQ_LIBRARY_ROOTS` | colon-separated library paths (discovery) | unset |
+| `SPIKE_VERBOSE` | `1` = show stdout during tests | `0` |
+
+---
+
+## Design context
+
+### Architecture
+
+Two-phase workflow:
+- **Phase A — Discovery** (`scripts/run-sweep-discover.sh`): maps
+  the entire library, persists all matches to user config. Fast,
+  one-time, interactive.
+- **Phase B — Sweep test** (`test_auto_beq_library_sweep.py`): reads
+  persisted config, applies a limit, runs the pipeline. Slow (LFE
+  extraction), informational (no assertions).
+
+### File layout
+
+| File | Role |
+|---|---|
+| `scripts/run-sweep-discover.sh` | Discovery wrapper (sets PYTHONPATH) |
+| `src/test/python/spike/sweep_discover.py` | Discovery CLI implementation |
+| `src/test/python/spike/test_auto_beq_library_sweep.py` | Parametrised sweep test |
+| `src/test/python/spike/test_sweep_discover.py` | 42 unit tests for discovery |
+| `src/test/python/spike/_auto_beq_helpers.py` | Shared helpers (extracted from test_auto_beq.py) |
+| `src/test/resources/auto_beq/fake_library/` | Committed fixture for discovery tests |
+| `~/.config/beqdesigner/auto_beq_sweep.json` | Persisted discovery config (user-local) |
+| `~/.config/beqdesigner/beq_catalogue_cache.json` | Cached full catalogue (24h TTL) |
+
+### Original motivation
 
 The auto-BEQ spike currently tests 3 hand-picked films from a JSON
 manifest at `~/.config/beqdesigner/auto_beq_media.json`. That's too
@@ -22,7 +129,7 @@ This gives statistics across dozens of films instead of just 3, so
 we can honestly answer "how often does the measurement-only advisor
 produce a passable chain" across varied real content.
 
-## Parallel-session note
+### Parallel-session note (historical)
 
 This plan is designed to run in a **separate session** alongside
 ongoing work in `auto_beq_advisor.py` / `MeasurementAdvisor`. The
@@ -37,7 +144,7 @@ Avoid touching:
 - `src/test/python/spike/test_auto_beq.py` (except the small helper
   extraction below)
 
-## Goal
+### Original design goal
 
 A new parametrised test in
 `src/test/python/spike/test_auto_beq_library_sweep.py` that:
@@ -57,7 +164,7 @@ A new parametrised test in
    report.
 7. Skipped when `AUTO_BEQ_LIBRARY_ROOT` is unset.
 
-## Implementation plan
+## Implementation plan (historical)
 
 ### File: `src/test/python/spike/test_auto_beq_library_sweep.py` (new)
 
