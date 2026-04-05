@@ -256,9 +256,23 @@ def test_real_media_roundtrip(catalogue_snapshot, caplog):
     )
     print("\n" + report)
 
-    # Assertions are loose for real media - we report, don't fail hard,
-    # unless the curve is completely off (indicates wrong file).
+    # Hard-fail if the measured curve is nowhere near the catalogue entry:
+    # that usually means the rip doesn't match the entry's release/master.
     assert divergence < 15.0, (
         f"measured curve diverges from catalogue by {divergence:.1f} dB - "
         "wrong release/rip?"
+    )
+
+    # Gate the test on the algorithm grade. By default we require PASS -
+    # a FAIL grade means the optimizer genuinely couldn't match the
+    # target and the algorithm needs improvement, not a softer test.
+    # For known-hard cases (e.g. deep cascaded-shelf catalogue entries
+    # the spike's shelf+PEQ scope can't match yet), set
+    # AUTO_BEQ_MEDIA_EXPECTED_GRADE=FAIL or MARGINAL to record the
+    # expectation explicitly.
+    expected_grade = os.environ.get("AUTO_BEQ_MEDIA_EXPECTED_GRADE", "PASS")
+    grade_rank = {"PASS": 0, "MARGINAL": 1, "FAIL": 2}
+    assert grade_rank[metrics.verdict] <= grade_rank[expected_grade], (
+        f"algorithm grade {metrics.verdict} worse than expected "
+        f"{expected_grade} for {title}\n\n{report}"
     )
