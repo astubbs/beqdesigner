@@ -449,6 +449,48 @@ Test status: no change from E14. 27 pass, 3 real-media FAIL.
 E15 delivered diagnostic visibility only; no algorithm changes
 were attempted.
 
+### E15c - EoT trim comparison + wrong catalogue entry discovery
+
+**Trim comparison results (EoT DTS-HD 7.1 UHD rip)**:
+
+| Segment | 5Hz | 10Hz | 20Hz | 40Hz | 80Hz | delta 10Hz vs full |
+|---|---|---|---|---|---|---|
+| Full length | -47.3 | **-31.9** | -33.0 | -35.4 | -40.5 | baseline |
+| Skip first 30m | -47.5 | **-48.1** | -39.4 | -35.8 | -39.8 | **-16.2 dB** |
+| First 30m only | -49.2 | **-26.2** | -27.9 | -34.5 | -41.6 | +5.7 dB |
+| Middle 30-60m | -51.8 | **-50.6** | -37.9 | -36.5 | -41.2 | **-18.7 dB** |
+
+**Showcase scenes inflate the 10 Hz level by ~16-19 dB** in the
+Welch average. Typical EoT content has 10 Hz at -48 to -51 dBFS
+(well below its 80 Hz anchor at -40). The full-length -32 dBFS is
+entirely showcase-driven.
+
+**Critical finding: WRONG CATALOGUE ENTRY.** Our test fixture
+(`filter_count=5`, aron7awol) carries an explicit warning:
+> "This is ONLY for the Atmos track!!! If you use this BEQ with
+> the DTS-HD track, you are risking breaking your system!!!"
+
+Our test file is **DTS-HD MA 7.1**, NOT Atmos. The +27.6 dB BEQ
+was never designed for this audio track. The catalogue also has a
+**0-filter entry** (mobe1969, source=Disc) which likely means the
+DTS-HD version doesn't need BEQ at all, or the entry is a
+placeholder.
+
+Correct catalogue match for our UHD DTS-HD rip is the **7-filter
+UHD edition** by mobe1969 (+29.0 dB, source=Disc, edition=UHD),
+which was presumably calibrated against the UHD Atmos track, not
+the DTS-HD fallback.
+
+**Implication for the spike**: every experiment from E1 through E14
+that used EoT as a ground-truth comparison was comparing against
+a catalogue entry for a DIFFERENT audio codec. The "EoT is an
+intractable outlier" conclusion may be wrong — it was an
+incorrectly-matched fixture, not an algorithm failure.
+
+**Lesson**: the library-sweep's catalogue-matching logic MUST also
+match on `source` and `edition` fields, not just title+year+
+filter_count. Films with multiple audio tracks get different BEQs.
+
 ## Next to try
 
 - [ ] **E12: Self-feedback loop**. Generate initial chain, compute

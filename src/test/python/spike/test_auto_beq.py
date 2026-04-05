@@ -305,7 +305,10 @@ def _extract_lfe_wav(
 @pytest.mark.parametrize(
     "manifest_entry",
     MEDIA_MANIFEST,
-    ids=[e["title"] for e in MEDIA_MANIFEST],
+    ids=[
+        f"{e['title']}" + (f" ({e['notes'][:40]})" if e.get("notes") else "")
+        for e in MEDIA_MANIFEST
+    ],
 )
 def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
     """THE CORE SPIKE QUESTION: end-to-end magic-wand simulation.
