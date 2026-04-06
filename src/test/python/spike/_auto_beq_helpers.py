@@ -17,7 +17,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 log = logging.getLogger("auto_beq_spike")
 
@@ -122,12 +121,21 @@ def extract_lfe_wav(
 
     stream = probe_audio_stream(media_path)
     layout = stream.get("channel_layout", "")
-    if "LFE" not in layout.upper() and not any(
+    has_lfe = "LFE" in layout.upper() or any(
         layout.lower().startswith(p) for p in ("5.1", "6.1", "7.1")
-    ):
-        pytest.skip(
-            f"audio layout {layout!r} has no LFE channel; set "
-            "AUTO_BEQ_MEDIA_CHANNEL to bypass auto-detection"
+    )
+    if has_lfe:
+        af_filter = "pan=mono|c0=LFE"
+        log.info("LFE channel detected in layout %r", layout)
+    else:
+        # Post-BM fallback: no discrete LFE (stereo, mono, etc).
+        # Mix all channels to mono — per docs/workflow/beq.md this is
+        # the "Post BM BEQ" approach (Mix to Mono checked).
+        af_filter = "aresample"  # -ac 1 handles the downmix
+        log.info(
+            "no LFE channel in layout %r — falling back to Post-BM "
+            "mono downmix (all channels mixed)",
+            layout,
         )
 
     if trim_start_s is not None or trim_end_s is not None:
@@ -135,7 +143,8 @@ def extract_lfe_wav(
             "APPLYING TRIM: start=%ss end=%ss - this is NOT the full film",
             trim_start_s, trim_end_s,
         )
-    log.info("extracting LFE channel -> %s (fs=%d)", cache_path, target_fs)
+    log.info("extracting %s -> %s (fs=%d)",
+             "LFE" if has_lfe else "mono-mix", cache_path, target_fs)
     log.info("this may take 1-3 minutes for a feature-length movie...")
     start = time.time()
     ff_args: list[str] = [
@@ -147,7 +156,7 @@ def extract_lfe_wav(
         ff_args += ["-to", str(trim_end_s)]
     ff_args += [
         "-i", str(media_path),
-        "-af", "pan=mono|c0=LFE",
+        "-af", af_filter,
         "-ar", str(target_fs),
         "-ac", "1",
         str(cache_path),
