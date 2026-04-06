@@ -121,7 +121,18 @@ def _load_films() -> tuple[list[SweepFilm], str | None]:
             rating=entry.get("rating"),
             catalogue_entry=cat_entry,
         ))
-    return films, None
+    # Limit to ceil(n/2) episodes per title so we test every title but
+    # don't burn time on all 18 Spawn or 16 Pantheon episodes.
+    import math
+    from collections import defaultdict
+    by_title: dict[str, list[SweepFilm]] = defaultdict(list)
+    for f in films:
+        by_title[f.title].append(f)
+    capped: list[SweepFilm] = []
+    for title, eps in by_title.items():
+        keep = math.ceil(len(eps) / 2)
+        capped.extend(eps[:keep])
+    return capped, None
 
 
 _SWEEP_FILMS, _SKIP_REASON = _load_films()
