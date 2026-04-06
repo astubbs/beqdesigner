@@ -328,12 +328,21 @@ class SweepFilm:
         return bucket_rating(self.rating)
 
 
+@dataclass
+class DiscoveryResult:
+    """Result of scanning one library root."""
+    matches: list[SweepFilm]
+    total_scanned: int
+    # Counts of all parsed files per (title, year), matched or not.
+    # Used for "X of Y episodes matched" in the summary.
+    parsed_counts: dict[tuple[str, int], int] = field(default_factory=dict)
+
+
 def discover_matches(
     library_root: Path,
     catalogue: list[dict],
-) -> tuple[list[SweepFilm], int]:
-    """Walk a library root and return (matches, total_scanned)."""
-    # Collect all media files first so we can show progress.
+) -> DiscoveryResult:
+    """Walk a library root and return matches + scan stats."""
     media_files: list[Path] = []
     for ext in _MEDIA_EXTENSIONS:
         media_files.extend(library_root.rglob(f"*{ext}"))
@@ -341,8 +350,8 @@ def discover_matches(
     log.info("root %s: found %d media files to scan", library_root, total)
 
     matches: list[SweepFilm] = []
+    parsed_counts: dict[tuple[str, int], int] = Counter()
     for i, media_path in enumerate(media_files):
-        # Progress — print to stderr so it's visible even without -v.
         pct = ((i + 1) * 100) // total if total else 100
         print(f"\r  scanning [{pct:3d}%] {i + 1}/{total}", end="", flush=True)
         log.debug("  %s", media_path.relative_to(library_root))
@@ -353,6 +362,7 @@ def discover_matches(
             continue
         ep_label = f" S{parsed.season:02d}E{parsed.episode:02d}" if parsed.episode else ""
         log.debug("    → parsed: %r (%d)%s", parsed.title, parsed.year, ep_label)
+        parsed_counts[(parsed.title, parsed.year)] += 1
         entry = match_catalogue(
             catalogue, parsed.title, parsed.year,
             season=parsed.season, episode=parsed.episode,
@@ -360,7 +370,11 @@ def discover_matches(
         if entry is None:
             log.debug("    → no catalogue match")
             continue
-        log.debug("    → MATCHED catalogue entry: %r", entry.get("title"))
+        # Show which catalogue profile matched (season/episode coverage).
+        cat_season = entry.get("season", "")
+        cat_episode = entry.get("episode", "")
+        cat_label = f" (catalogue: season={cat_season} episode={cat_episode})" if cat_season else ""
+        log.debug("    → MATCHED: %r (%d)%s", entry.get("title"), parsed.year, cat_label)
         matches.append(SweepFilm(
             path=str(media_path),
             library_root=str(library_root),
@@ -373,7 +387,9 @@ def discover_matches(
         ))
     print()  # newline after progress bar
     log.info("root %s: scanned=%d matched=%d", library_root, total, len(matches))
-    return matches, total
+    return DiscoveryResult(
+        matches=matches, total_scanned=total, parsed_counts=dict(parsed_counts),
+    )
 
 
 def sort_matches(matches: list[SweepFilm]) -> list[SweepFilm]:
@@ -459,6 +475,18 @@ def load_config(path: Path | None = None) -> dict | None:
         return json.load(f)
 
 
+def _save_library_roots(library_roots: list[Path], output: Path | None = None) -> None:
+    """Persist library roots to config immediately (survives Ctrl-C during scan).
+
+    Merges into existing config if present, otherwise creates a minimal stub.
+    """
+    path = output or _default_config_path()
+    existing = load_config(path) or {}
+    existing["library_roots"] = [str(r) for r in library_roots]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(existing, indent=2))
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -498,7 +526,11 @@ def _print_summary(
     matches: list[SweepFilm],
     library_roots: list[Path],
     total_scanned: int,
+    parsed_counts: dict[tuple[str, int], int] | None = None,
 ) -> None:
+    if parsed_counts is None:
+        parsed_counts = {}
+
     print()
     print(f"Library roots scanned: {len(library_roots)}")
     for root in library_roots:
@@ -520,21 +552,23 @@ def _print_summary(
     buckets = Counter(bucket_rating(films[0].rating) for films in grouped.values())
     print("Rating buckets:")
     for bucket in sorted(buckets, reverse=True):
-        label = f"{bucket:.1f}" if bucket >= 0 else "(none)"
+        label = f"{bucket:.1f}" if bucket >= 0 else "n/a"
         print(f"  {label}: {buckets[bucket]}")
 
     print()
     print(f"All {unique_titles} matched titles (rating desc, year desc):")
     for i, ((title, year), films) in enumerate(grouped.items(), 1):
-        r_label = f"{films[0].rating:.1f}" if films[0].rating is not None else "—"
-        ep_count = len(films)
-        if ep_count == 1:
+        r_label = f"{films[0].rating:.1f}" if films[0].rating is not None else "n/a"
+        matched_count = len(films)
+        total_for_title = parsed_counts.get((title, year), matched_count)
+
+        if matched_count == 1 and total_for_title <= 1:
+            # Single film, no episode breakdown needed.
             suffix = ""
         else:
-            # Group episodes by season for a compact display.
+            # Group matched episodes by season.
             seasons: dict[str, int] = Counter()
             for f in films:
-                # Try to extract "Season N" from the path.
                 parts = Path(f.path).parts
                 for part in parts:
                     if part.lower().startswith("season"):
@@ -545,8 +579,15 @@ def _print_summary(
             season_str = ", ".join(
                 f"{s}: {c} ep" for s, c in sorted(seasons.items())
             )
-            suffix = f"  ({ep_count} episodes — {season_str})"
-        print(f"  {i:3d}. [r={r_label} y={year}] {title}{suffix}")
+            if total_for_title > matched_count:
+                pct = matched_count * 100 // total_for_title
+                suffix = (
+                    f"  ({matched_count}/{total_for_title} episodes matched "
+                    f"— {pct}% — {season_str})"
+                )
+            else:
+                suffix = f"  ({matched_count} episodes — {season_str})"
+        print(f"  {i:3d}. [{year}] [r={r_label}] {title}{suffix}")
     print()
 
 
@@ -602,18 +643,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: library root does not exist: {root}", file=sys.stderr)
             return 2
 
+    # Persist library roots immediately so they survive Ctrl-C during scan.
+    _save_library_roots(library_roots, output=args.output)
+
     catalogue = load_or_fetch_catalogue(force_refresh=args.refresh)
     log.info("catalogue entries: %d", len(catalogue))
 
     matches: list[SweepFilm] = []
     total_scanned = 0
+    parsed_counts: dict[tuple[str, int], int] = {}
     for root in library_roots:
-        root_matches, root_scanned = discover_matches(root, catalogue)
-        matches.extend(root_matches)
-        total_scanned += root_scanned
+        result = discover_matches(root, catalogue)
+        matches.extend(result.matches)
+        total_scanned += result.total_scanned
+        for key, count in result.parsed_counts.items():
+            parsed_counts[key] = parsed_counts.get(key, 0) + count
     matches = sort_matches(matches)
 
-    _print_summary(matches, library_roots, total_scanned)
+    _print_summary(matches, library_roots, total_scanned, parsed_counts)
 
     if not matches:
         print("No catalogue-matched films found.", file=sys.stderr)

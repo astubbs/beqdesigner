@@ -291,10 +291,10 @@ def test_discover_against_fake_library():
     """
     assert _FIXTURE_ROOT.is_dir(), f"fake library fixture missing: {_FIXTURE_ROOT}"
     catalogue = _mock_catalogue()
-    matches, total_scanned = sd.discover_matches(_FIXTURE_ROOT, catalogue)
-    assert total_scanned > 0
+    result = sd.discover_matches(_FIXTURE_ROOT, catalogue)
+    assert result.total_scanned > 0
 
-    titles = {m.title for m in matches}
+    titles = {m.title for m in result.matches}
     assert "Dune" in titles, "[tmdb-] tagged movie should match"
     assert "The Matrix" in titles, "imdb-tagged movie should match"
     assert "Inception" in titles, "bare Title (YEAR) movie should match"
@@ -307,15 +307,18 @@ def test_discover_against_fake_library():
     assert "Some TV Show S01E01" not in titles
 
     # TV show with 2 episodes should produce 2 matches (one per .mkv).
-    bes_matches = [m for m in matches if m.title == "Blue Eye Samurai"]
+    bes_matches = [m for m in result.matches if m.title == "Blue Eye Samurai"]
     assert len(bes_matches) == 2, (
         f"expected 2 episode matches for Blue Eye Samurai, got {len(bes_matches)}"
     )
 
     # Library root recorded on each match.
-    for m in matches:
+    for m in result.matches:
         assert m.library_root == str(_FIXTURE_ROOT)
         assert Path(m.path).exists()
+
+    # parsed_counts tracks all parseable files, not just matched ones.
+    assert ("Unmatched Movie", 2030) in result.parsed_counts
 
 
 def test_sort_matches_by_rating_then_year():
@@ -369,6 +372,31 @@ def test_write_and_load_config(tmp_path):
 
 def test_load_config_missing_returns_none(tmp_path):
     assert sd.load_config(tmp_path / "does_not_exist.json") is None
+
+
+def test_save_library_roots_persists_immediately(tmp_path):
+    """Library roots are saved before scanning, so Ctrl-C doesn't lose them."""
+    config_path = tmp_path / "sweep.json"
+    sd._save_library_roots([Path("/vol/movies"), Path("/vol/tv")], output=config_path)
+    loaded = sd.load_config(config_path)
+    assert loaded is not None
+    assert loaded["library_roots"] == ["/vol/movies", "/vol/tv"]
+
+
+def test_save_library_roots_merges_into_existing(tmp_path):
+    """Saving roots preserves other config fields (films, test_limit, etc.)."""
+    config_path = tmp_path / "sweep.json"
+    config_path.write_text(json.dumps({
+        "schema_version": 1,
+        "test_limit": 5,
+        "library_roots": ["/old"],
+        "films": [{"title": "existing"}],
+    }))
+    sd._save_library_roots([Path("/new/root")], output=config_path)
+    loaded = sd.load_config(config_path)
+    assert loaded["library_roots"] == ["/new/root"]
+    assert loaded["test_limit"] == 5
+    assert loaded["films"] == [{"title": "existing"}]
 
 
 # ---------------------------------------------------------------------------
