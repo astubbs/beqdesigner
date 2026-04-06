@@ -38,7 +38,6 @@ from model.auto_beq_advisor import MediaMetadata, get_advisor
 from spike._auto_beq_helpers import (
     _extract_lfe_wav,
     _have_tool,
-    _probe_audio_stream,
     load_and_smooth,
 )
 from spike.sweep_discover import bucket_rating, load_catalogue_by_digest, load_config
@@ -209,14 +208,11 @@ def test_library_sweep(film: SweepFilm, caplog):
     wav_path = _extract_lfe_wav(film.path, target_fs=fs)
     measured = load_and_smooth(wav_path, fs=fs, freqs=DEFAULT_GRID)
 
-    stream_info = _probe_audio_stream(film.path)
+    # Build metadata. The probe is only needed for codec/layout info
+    # for the advisor — skip it if the advisor doesn't use metadata
+    # (MeasurementAdvisor ignores it entirely).
     advisor = get_advisor()
-    metadata = MediaMetadata(
-        title=film.title,
-        year=film.year,
-        audio_codec=stream_info.get("codec_name") if stream_info else None,
-        channel_layout=stream_info.get("channel_layout") if stream_info else None,
-    )
+    metadata = MediaMetadata(title=film.title, year=film.year)
 
     # ALWAYS auto-generate from the measured curve. The catalogue entry
     # is the ANSWER KEY we grade against, not a shortcut to serve.
