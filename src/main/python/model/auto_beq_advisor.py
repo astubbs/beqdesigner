@@ -273,7 +273,7 @@ class HeuristicAdvisor:
 # ---------------------------------------------------------------------------
 
 
-_MAX_TOTAL_CHAIN_GAIN_DB = 18.0
+_MAX_TOTAL_CHAIN_GAIN_DB = 30.0
 
 
 def _measurement_chain(features: CurveFeatures) -> tuple[dict, ...] | None:
@@ -438,44 +438,38 @@ class MeasurementAdvisor:
 
         slope = features.rolloff_slope_db_per_oct
         knee_hz = _find_rolloff_start(features)
-        deficit_at_10hz = features.shoulder_peak_db - features.level_at_10hz_db
 
-        # ---- Topology classification (Nikolozi insight) ----
-        # Classify rolloff shape FIRST, pick a template, THEN
-        # optimise gain within that template. This separates the
-        # discrete topology decision from continuous parameter tuning.
+        # ---- The expert's formula (from docs/workflow/beq.md) ----
+        #
+        # "We can see the response peaks at about 30Hz and falls by
+        #  about 27dB down to 10Hz. Our initial goal is to correct
+        #  this rolloff so we need to apply a filter with a total
+        #  gain of approx 27dB."
+        #
+        # That's it. Gain = peak - L10. The full measured rolloff
+        # depth IS the target correction gain. No slope extension,
+        # no topology class, no modifier. The expert reads the drop
+        # and targets that as the filter gain.
+        max_gain_db = features.shoulder_peak_db - features.level_at_10hz_db
+
+        # Multi-knee: steep slopes still need a 2-shelf chain because
+        # one shelf can't match the shape. But the GAIN is still just
+        # the deficit — we don't add slope extension on top.
         is_multi_knee_slope = slope > self._MULTI_KNEE_SLOPE_THRESHOLD
         is_multi_knee_dynamic, _ = looks_multi_knee(features)
         is_cliff = is_multi_knee_slope or is_multi_knee_dynamic
 
         chain: tuple[dict, ...] | None = None
         if is_cliff:
-            # CLIFF template: multi-knee chain (inner + outer shelves).
             chain = _measurement_chain(features)
-            max_gain_db = deficit_at_10hz + max(0.0, slope)
-            topo = "cliff"
-        elif slope > 5.0:
-            # MODERATE template: single shelf, gain = deficit only.
-            # No slope extension — it overshoots for most moderate
-            # content (Pantheon, MINDHUNTER, Blue Eye Samurai all
-            # improve). South Park undershoots but the overall corpus
-            # wins are larger (10 PASS vs 1 PASS with full extension).
-            max_gain_db = deficit_at_10hz
-            topo = "moderate"
-        else:
-            # GENTLE template: single shelf, gain = deficit + slope
-            # extension. Gentle slopes benefit from the extra octave
-            # of extension because the rolloff is gradual.
-            max_gain_db = deficit_at_10hz + max(0.0, slope)
-            topo = "gentle"
 
         reasoning = (
-            f"topo={topo}, peak={features.shoulder_peak_db:+.1f}dB, "
+            f"peak={features.shoulder_peak_db:+.1f}dB, "
             f"L10={features.level_at_10hz_db:+.1f}dB, "
-            f"L20={features.level_at_20hz_db:+.1f}dB, "
-            f"slope={slope:+.1f}dB/oct, deficit@10Hz={deficit_at_10hz:.1f}dB -> "
-            f"max_gain={max_gain_db:.1f}dB knee={knee_hz:.0f}Hz"
-            + (f" [multi-knee chain, {len(chain)} shelves]" if chain else "")
+            f"deficit={max_gain_db:.1f}dB, "
+            f"slope={slope:+.1f}dB/oct, "
+            f"knee={knee_hz:.0f}Hz"
+            + (f" [cliff: multi-knee chain, {len(chain)} shelves]" if chain else "")
         )
 
         return _clamp_advice(
