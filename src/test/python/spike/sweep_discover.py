@@ -343,6 +343,7 @@ def discover_matches(
     catalogue: list[dict],
 ) -> DiscoveryResult:
     """Walk a library root and return matches + scan stats."""
+    log.info("root %s: listing media files...", library_root)
     media_files: list[Path] = []
     for ext in _MEDIA_EXTENSIONS:
         media_files.extend(library_root.rglob(f"*{ext}"))
