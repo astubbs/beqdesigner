@@ -203,7 +203,7 @@ def test_library_sweep(film: SweepFilm, caplog):
     if not film.path.exists():
         pytest.skip(f"media file not accessible: {film.path}")
 
-    from model.auto_beq import propose_or_lookup
+    from model.auto_beq import propose_filters_from_measured
 
     fs = 1000
     wav_path = _extract_lfe_wav(film.path, target_fs=fs)
@@ -218,17 +218,14 @@ def test_library_sweep(film: SweepFilm, caplog):
         channel_layout=stream_info.get("channel_layout") if stream_info else None,
     )
 
-    # Catalogue-first: look up the catalogue entry by title+year+codec.
-    # If found, use the expert's chain directly. If not, auto-generate.
-    proposed, source = propose_or_lookup(
-        title=film.title,
-        measured_curve_db=measured,
-        freqs_hz=DEFAULT_GRID,
-        year=film.year,
-        audio_codec=stream_info.get("codec_name") if stream_info else None,
-        advisor=advisor,
-        metadata=metadata,
-        fs=fs,
+    # ALWAYS auto-generate from the measured curve. The catalogue entry
+    # is the ANSWER KEY we grade against, not a shortcut to serve.
+    # This exercises the MeasurementAdvisor and tells us how good our
+    # algorithm is. In production, propose_or_lookup() would serve the
+    # catalogue directly — but tests must test the auto-generation path.
+    proposed = propose_filters_from_measured(
+        measured, DEFAULT_GRID, fs=fs,
+        advisor=advisor, metadata=metadata,
     )
 
     ground_resp = evaluate_filter_chain(
@@ -238,12 +235,12 @@ def test_library_sweep(film: SweepFilm, caplog):
 
     _append_sweep_report(
         film=film,
-        advisor_name=f"{source}",
+        advisor_name=advisor.name,
         metrics=metrics,
         catalogue_filter_count=len(film.catalogue_entry["filters"]),
     )
     log.info(
-        "%s (%s): source=%s verdict=%s mean=%.2f max=%.2f",
-        film.title, film.year, source, metrics.verdict,
+        "%s (%s): advisor=%s verdict=%s mean=%.2f max=%.2f",
+        film.title, film.year, advisor.name, metrics.verdict,
         metrics.mean_abs_err_db, metrics.max_abs_err_db,
     )
