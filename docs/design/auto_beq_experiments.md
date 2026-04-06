@@ -602,6 +602,36 @@ extension despite having a moderate slope. This is one of the
 chose more aggressive correction than the measurement alone
 suggests.
 
+### E17d - Expert formula (deficit = peak - L10) + raised chain cap
+
+Simplified MeasurementAdvisor to the expert's own formula from
+docs/workflow/beq.md: "falls by 27 dB → filter with gain of 27 dB".
+Gain = peak - L10. No slope extension, no topology modifier. Also
+raised multi-knee chain gain cap from 18 dB to 30 dB.
+
+**Results: 10 PASS + 4 MARGINAL + 20 FAIL (41% non-FAIL)**
+
+Per-title:
+  Pantheon: 8/8 PASS (0.58 best)
+  X-Men '97: 1 PASS + 1 MARGINAL (1.05 best)
+  MINDHUNTER: 1/1 PASS (1.89)
+  Blue Eye Samurai: 2 MARGINAL (1.62 best)
+  Splinter Cell: 1 MARGINAL + 3 FAIL (2.74 best, cap helped)
+  Scavengers Reign: FAIL (3.65)
+  South Park: 4/4 FAIL (4.64 best, catalogue = 2x measured deficit)
+  Spawn: 9/9 FAIL (6.11 best, stereo downmix different signal)
+
+Also tried L5 instead of L10 for deficit — worse (9 PASS + 2 MARG),
+L5 is too noisy at our measurement resolution.
+
+**The 41% ceiling is the pure-measurement limit.** Remaining
+failures are either:
+- Catalogue author applied aesthetic gain beyond measured deficit
+  (South Park: +19 dB catalogue for ~10 dB deficit)
+- Stereo content with no discrete LFE (Spawn: different signal)
+- Extreme cliff deficits (Splinter Cell: 43+ dB, even 30 dB cap
+  isn't enough for some episodes)
+
 ## Next to try
 
 - [ ] **E12: Self-feedback loop**. Generate initial chain, compute
