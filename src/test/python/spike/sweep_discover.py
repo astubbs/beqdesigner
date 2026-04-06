@@ -469,24 +469,29 @@ def _resolve_library_roots(args: argparse.Namespace) -> list[Path]:
         return [Path(p).expanduser() for p in args.library]
     env = os.environ.get("AUTO_BEQ_LIBRARY_ROOTS")
     if env:
-        return [Path(p.strip()).expanduser() for p in env.split(":") if p.strip()]
+        return _split_paths(env)
 
     # Check if a previous run saved library roots in the config.
     existing = load_config()
     cached_roots = existing.get("library_roots", []) if existing else []
     if cached_roots:
-        cached_display = ":".join(cached_roots)
+        cached_display = ", ".join(cached_roots)
         print(f"Previous library roots: {cached_display}")
-        raw = input("Library path(s) [Enter to reuse, or new colon-separated paths]: ").strip()
+        raw = input("Library path(s) [Enter to reuse, or new comma-separated paths]: ").strip()
         if not raw:
             return [Path(p).expanduser() for p in cached_roots]
-        return [Path(p.strip()).expanduser() for p in raw.split(":") if p.strip()]
+        return _split_paths(raw)
 
     # No previous config, no env var — prompt.
-    raw = input("Library path(s), colon-separated: ").strip()
+    raw = input("Library path(s), comma-separated: ").strip()
     if not raw:
         raise SystemExit("no library root provided")
-    return [Path(p.strip()).expanduser() for p in raw.split(":") if p.strip()]
+    return _split_paths(raw)
+
+
+def _split_paths(raw: str) -> list[Path]:
+    """Split a string of paths by comma, strip whitespace."""
+    return [Path(p.strip()).expanduser() for p in raw.split(",") if p.strip()]
 
 
 def _print_summary(

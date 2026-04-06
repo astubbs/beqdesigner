@@ -383,7 +383,7 @@ def test_resolve_library_roots_from_cli_flags(monkeypatch):
 
 
 def test_resolve_library_roots_from_env_var(monkeypatch):
-    monkeypatch.setenv("AUTO_BEQ_LIBRARY_ROOTS", "/foo:/bar:/baz")
+    monkeypatch.setenv("AUTO_BEQ_LIBRARY_ROOTS", "/foo,/bar,/baz")
     args = sd._parse_args([])
     roots = sd._resolve_library_roots(args)
     assert roots == [Path("/foo"), Path("/bar"), Path("/baz")]
