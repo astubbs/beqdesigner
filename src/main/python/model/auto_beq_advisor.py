@@ -325,6 +325,37 @@ def _measurement_chain(features: CurveFeatures) -> tuple[dict, ...] | None:
     return tuple(chain)
 
 
+def _find_rolloff_start(features: CurveFeatures) -> float:
+    """Find where the LFE curve starts rolling off (3 dB below peak).
+
+    Walk down the curve sample points from the shoulder peak. The first
+    frequency where the level drops 3 dB below the peak is the rolloff
+    start — this is where catalogue entries typically place their shelf
+    knee.
+
+    Falls back to shoulder_peak_hz / 1.5 if no 3 dB crossing found
+    (clamped to 10-30 Hz range for safety).
+    """
+    peak_db = features.shoulder_peak_db
+    peak_hz = features.shoulder_peak_hz
+    threshold = peak_db - 3.0
+
+    # Use the 12-point curve samples. Walk from peak frequency downward.
+    below_peak = [
+        (hz, db) for hz, db in features.curve_sample_points
+        if hz < peak_hz
+    ]
+    # Sort by frequency descending (start just below peak, walk down).
+    below_peak.sort(key=lambda p: p[0], reverse=True)
+
+    for hz, db in below_peak:
+        if db < threshold:
+            return float(np.clip(hz, 10.0, 30.0))
+
+    # No 3 dB crossing found — estimate from peak position.
+    return float(np.clip(peak_hz / 1.5, 10.0, 30.0))
+
+
 class MeasurementAdvisor:
     """Derive BEQ gain + knee purely from the measured CurveFeatures.
 
@@ -409,7 +440,13 @@ class MeasurementAdvisor:
         slope = features.rolloff_slope_db_per_oct
         extension = max(0.0, slope)
         max_gain_db = deficit_at_10hz + extension
-        knee_hz = float(features.shoulder_peak_hz)
+
+        # Knee = where the rolloff STARTS, not where the peak sits.
+        # The peak is the top of the LFE passband (30-40 Hz typically).
+        # Catalogue entries place their shelves at the rolloff-start
+        # frequency (10-25 Hz typically). We find the rolloff-start by
+        # walking down from the peak until the curve drops 3 dB.
+        knee_hz = _find_rolloff_start(features)
 
         # Decide on multi-knee path.
         is_multi_knee_slope = slope > self._MULTI_KNEE_SLOPE_THRESHOLD

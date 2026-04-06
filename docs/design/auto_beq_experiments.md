@@ -516,6 +516,34 @@ a matching-strategy issue, not an algorithm failure.
 **Runtime**: 17s for 34 episodes (vs 250s before) because catalogue
 lookup skips ffmpeg extraction entirely.
 
+### E17a - Knee fix: use rolloff-start instead of shoulder peak
+
+Changed `MeasurementAdvisor` knee from `shoulder_peak_hz` (where the
+LFE peaks, 28-40 Hz) to `_find_rolloff_start()` (where the curve
+drops 3 dB below peak, typically 10-25 Hz). This matches how
+catalogue authors place their shelf knees — at the rolloff start,
+not the peak.
+
+**Results vs E17 baseline (honest sweep, 34 episodes)**:
+
+| Title | Before mean | After mean | Before verdict | After verdict |
+|---|---|---|---|---|
+| South Park | 3.12 | **1.48** | FAIL | **PASS** ✅ |
+| X-Men '97 | 1.60 | **1.05** | MARGINAL | MARGINAL |
+| Pantheon | 4.41 | **2.29** | FAIL | **MARGINAL** |
+| Scavengers Reign | 6.35 | 4.72 | FAIL | FAIL |
+| MINDHUNTER | 6.60 | 4.31 | FAIL | FAIL |
+| Blue Eye Samurai | 8.16 | 5.39 | FAIL | FAIL |
+| Spawn | 3.48 | 6.09 | FAIL | FAIL (worse) |
+| Splinter Cell | 8.21 | 8.21 | FAIL | FAIL |
+
+**Summary**: 1 PASS + 3 MARGINAL (up from 0 PASS + 1 MARGINAL).
+Spawn regressed — lower knee conflicts with its specific catalogue
+shape. Splinter Cell unchanged (cliff-class, multi-knee path).
+
+**Lesson**: knee placement is the single biggest lever in the
+formula. Getting it right improves most titles by 1-3 dB mean.
+
 ## Next to try
 
 - [ ] **E12: Self-feedback loop**. Generate initial chain, compute
