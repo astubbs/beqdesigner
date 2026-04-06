@@ -567,6 +567,41 @@ topology space. Better approach: classify the rolloff shape FIRST
 class, THEN optimise within that topology. This separates the
 discrete decision from the continuous one.
 
+### E17c - Topology classification (gentle/moderate/cliff)
+
+Classify rolloff shape FIRST, pick a gain formula per class:
+- gentle (slope ≤ 5 dB/oct): deficit + full slope extension
+- moderate (5 < slope ≤ 15): deficit only (no extension)
+- cliff (slope > 15): multi-knee chain
+
+Inspired by Nikolozi's insight: separate the discrete topology
+decision from continuous parameter optimisation. Tested half-
+extension for moderate (0.5×slope) but it degraded Pantheon/
+MINDHUNTER more than it helped South Park. Deficit-only wins
+the corpus overall.
+
+**Results (vs E17a/E17b baselines)**:
+
+| Title | E17a | E17b (best) | E17c | Change |
+|---|---|---|---|---|
+| Pantheon | 2.29M | 2.01M | **0.58 PASS (8/8!)** | **+1.71** |
+| X-Men '97 | 1.05M | 0.81P | **1.05/2.31 PASS** | PASS |
+| MINDHUNTER | 4.31F | 4.31F | **1.89 PASS** | **+2.42** |
+| Blue Eye Samurai | 5.39F | 3.91F | **1.62 MARGINAL** | **+3.77** |
+| South Park | **1.48P** | 4.95F | 4.64F | **-3.16 regression** |
+| Spawn | 6.09F | 9.23F | varies | worse |
+| Splinter Cell | 8.21F | 8.21F | 8.21F | unchanged |
+
+**Net**: 10 PASS + 2 MARGINAL out of 34 episodes (29% non-FAIL).
+Up from 1 PASS + 3 MARGINAL (12%) at E17a.
+
+**South Park regression**: catalogue wants +19.3 dB, but moderate
+class uses deficit-only giving ~10 dB. South Park needs the slope
+extension despite having a moderate slope. This is one of the
+"aesthetic catalogue choices" failure modes — the catalogue author
+chose more aggressive correction than the measurement alone
+suggests.
+
 ## Next to try
 
 - [ ] **E12: Self-feedback loop**. Generate initial chain, compute
