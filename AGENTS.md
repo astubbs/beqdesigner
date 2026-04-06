@@ -1,5 +1,20 @@
 # Agent instructions
 
+## Branch plans
+
+**Rule**: when working on a feature branch, save the branch's current
+plan/intent to `branch-plans/plan-<branch-name>.md` (project root).
+
+- Captures the goal, current state, and next steps for the branch.
+- Lets other agent sessions pick up the branch mid-flight.
+- Is committed alongside code changes and experiment logs.
+- Is **removed before merging PRs upstream** (working context only).
+
+Also keep experiment logs and living design docs updated and committed
+alongside code — these are gold for resuming work across sessions.
+
+Current branch plan: [`branch-plans/plan-sharp-goldberg.md`](branch-plans/plan-sharp-goldberg.md)
+
 ## Running spike tests
 
 **Always use `bash scripts/run-spike-tests.sh` to run spike tests.** Never
