@@ -174,23 +174,17 @@ def _load_media_manifest() -> list[dict]:
         entries = json.load(f)
     runnable = []
     for entry in entries:
+        if entry.get("blacklisted"):
+            continue
         path = Path(entry["path"]).expanduser()
         if not path.exists():
             continue
-        # trim_start_s / trim_end_s: optional, used as ffmpeg -ss/-to
-        # when extracting. Debugging aid for spot-checking how a
-        # film's non-showcase content differs from its full-length
-        # Welch average. Not a production feature.
-        trim_start_s = entry.get("trim_start_s")
-        trim_end_s = entry.get("trim_end_s")
         runnable.append({
             "path": str(path),
             "title": entry["title"],
             "filter_count": entry.get("filter_count"),
             "expected_grade": entry.get("expected_grade", "PASS"),
             "notes": entry.get("notes", ""),
-            "trim_start_s": float(trim_start_s) if trim_start_s is not None else None,
-            "trim_end_s": float(trim_end_s) if trim_end_s is not None else None,
         })
     return runnable
 
@@ -241,8 +235,6 @@ def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
     filter_count = manifest_entry["filter_count"]
     expected_grade = manifest_entry["expected_grade"]
     notes = manifest_entry["notes"]
-    trim_start_s = manifest_entry.get("trim_start_s")
-    trim_end_s = manifest_entry.get("trim_end_s")
 
     log.info("=== real-media roundtrip ===")
     log.info("media: %s", media_path)
@@ -263,10 +255,7 @@ def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
     # doesn't re-probe by itself.
     stream_info = _probe_audio_stream(media_path)
 
-    wav_path = _extract_lfe_wav(
-        media_path, fs,
-        trim_start_s=trim_start_s, trim_end_s=trim_end_s,
-    )
+    wav_path = _extract_lfe_wav(media_path, fs)
 
     # Load via the app's signal pipeline.
     log.info("loading WAV into Signal pipeline")
