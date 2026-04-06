@@ -544,6 +544,29 @@ shape. Splinter Cell unchanged (cliff-class, multi-knee path).
 **Lesson**: knee placement is the single biggest lever in the
 formula. Getting it right improves most titles by 1-3 dB mean.
 
+### E17b - Rolloff threshold sweep (3/4/6 dB)
+
+Tested the rolloff-start detection threshold at 3, 4, and 6 dB:
+
+| Threshold | South Park best | X-Men best | Pantheon best |
+|---|---|---|---|
+| 3 dB | **1.48 PASS** | 1.05 MARGINAL | 2.29 MARGINAL |
+| 4 dB | 2.15 MARGINAL | 1.05 MARGINAL | 2.01 MARGINAL |
+| 6 dB | 4.95 FAIL | **0.81 PASS** | 2.01 MARGINAL |
+
+No single threshold works for all titles. 3 dB is best for South
+Park, 6 dB for X-Men. Adaptive threshold (based on slope) tried
+but failed to improve over fixed 3 dB.
+
+Kept 3 dB as the default — it gives us the only PASS.
+
+**Nikolozi insight (from user)**: the threshold tuning is a symptom
+of trying to optimise continuous parameters across a discrete
+topology space. Better approach: classify the rolloff shape FIRST
+(gentle, moderate, cliff), pick a template filter topology per
+class, THEN optimise within that topology. This separates the
+discrete decision from the continuous one.
+
 ## Next to try
 
 - [ ] **E12: Self-feedback loop**. Generate initial chain, compute
