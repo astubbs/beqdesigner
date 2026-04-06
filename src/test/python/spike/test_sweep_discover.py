@@ -396,6 +396,22 @@ def test_resolve_library_roots_expands_user(monkeypatch):
     assert roots == [Path.home() / "media"]
 
 
+def test_split_paths_strips_around_commas_preserves_internal_spaces():
+    """Whitespace around commas is stripped; spaces within paths are kept."""
+    result = sd._split_paths(
+        "/Volumes/Batou/media storage/TV , /Users/me/Downloads/movies"
+    )
+    assert result == [
+        Path("/Volumes/Batou/media storage/TV"),
+        Path("/Users/me/Downloads/movies"),
+    ]
+
+
+def test_split_paths_handles_trailing_comma():
+    result = sd._split_paths("/a, /b,")
+    assert result == [Path("/a"), Path("/b")]
+
+
 # ---------------------------------------------------------------------------
 # .env loader
 # ---------------------------------------------------------------------------

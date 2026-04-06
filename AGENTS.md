@@ -44,3 +44,10 @@ SPIKE_TEST=src/test/python/spike/test_auto_beq_library_sweep.py \
 **Do not** invoke the venv python, `poetry run python`, or `poetry run
 pytest` directly for spike tests. If a new script/runner is needed, add
 it under `scripts/` with a fixed command line.
+
+## Verifying behaviour
+
+**Always verify behaviour with a test, not ad-hoc code.** When checking
+that something works (edge cases, parsing, formatting, etc.), write a
+test that captures the expectation. Don't run throwaway Python snippets
+or inline assertions — if it's worth verifying, it's worth a test.
