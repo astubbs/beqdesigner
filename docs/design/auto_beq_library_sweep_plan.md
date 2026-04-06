@@ -16,7 +16,7 @@ entries, cached for 24 hours), matches every film by title+year, and
 saves ALL matches to `~/.config/beqdesigner/auto_beq_sweep.json`.
 
 Supports multiple library roots and two filename conventions:
-- Plex/Jellyfin: `Title (YEAR) [tmdb-NNN]`
+- Standard: `Title (YEAR) [tmdb-NNN]` / `[tvdb-NNN]`
 - Scene-style: `Title.Name.YEAR.codec.source.mkv`
 
 Options:
@@ -115,7 +115,7 @@ narrow a sample to evaluate how well the pipeline generalises across
 the user's real library.
 
 The user has a media library at `/Volumes/DMZ Storage .../Movies/`
-where films are tagged with standard Plex/Jellyfin filename
+where films are tagged with standard media filename
 conventions like `Title (YEAR) [tmdb-NNNNN]`. The BEQ catalogue has
 ~14,700 entries; many of those titles exist in the user's library.
 
@@ -151,7 +151,7 @@ A new parametrised test in
 
 1. On collection time (NOT at test-runtime), walks
    `AUTO_BEQ_LIBRARY_ROOT` (env var), parses filenames for title
-   and year using Plex/Jellyfin conventions.
+   and year using standard media naming conventions.
 2. Cross-references each parsed (title, year) against the BEQ
    catalogue (reuse `load_catalogue` from `model.catalogue` or the
    committed snapshot for offline deterministic runs).
@@ -173,7 +173,7 @@ A new parametrised test in
 user's library that has a matching catalogue entry.
 
 Activates when AUTO_BEQ_LIBRARY_ROOT env var points to a directory
-of media files tagged with Plex-style filenames
+of media files tagged with standard media filenames
 ('Title (YEAR) [tmdb-NNNNN]'). Finds all films that also have a BEQ
 catalogue entry, runs the full pipeline, and writes a CSV report
 summarising per-film results.

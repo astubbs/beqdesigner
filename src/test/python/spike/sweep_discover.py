@@ -1,6 +1,6 @@
 """Discovery CLI for the auto-BEQ library sweep.
 
-Walks one or more media library roots, parses Plex-style filenames
+Walks one or more media library roots, parses standard media filenames
 (``Title (YEAR) [tmdb-NNNNN]``), cross-references every (title, year)
 against the full BEQ catalogue, and persists all matches to
 ``~/.config/beqdesigner/auto_beq_sweep.json``.
@@ -29,7 +29,7 @@ import re
 import sys
 import urllib.request
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from spike._auto_beq_helpers import beq_config_dir
@@ -43,18 +43,28 @@ _DEFAULT_TEST_LIMIT = 10
 _CATALOGUE_CACHE_MAX_AGE_HOURS = 24
 _SCHEMA_VERSION = 1
 
-# Pattern 1 — Plex/Jellyfin: "Title (YEAR)" optionally followed by " [tmdb-NNN]".
-_PLEX_RE = re.compile(
+# Pattern 1 — Standard directory: "Title (YEAR)" optionally followed by " [tmdb-NNN]",
+# " [imdb-ttNNN]", or " [tvdb-NNN]". End-of-string anchored.
+_TITLE_YEAR_DIR_RE = re.compile(
     r"^(?P<title>.+?)\s*\((?P<year>\d{4})\)"
-    r"(?:\s*\[(?:tmdb|imdb)-[^\]]+\])?\s*$"
+    r"(?:\s*\[(?:tmdb|imdb|tvdb)-[^\]]+\])?\s*$"
+)
+
+# Pattern 1b — File stem: "Title (YEAR) - S01E01 - Episode Name [tags]".
+# More lenient than the dir pattern: allows arbitrary content after year+optional-tag.
+_TITLE_YEAR_STEM_RE = re.compile(
+    r"^(?P<title>.+?)\s*\((?P<year>\d{4})\)"
+    r"(?:\s*\[(?:tmdb|imdb|tvdb)-[^\]]+\])?"
+    r"(?:\s*-\s*S(?P<season>\d+)E(?P<episode>\d+))?"
 )
 
 # Pattern 2 — Scene-style: "Title.Name.YEAR.codec.source..." with dots as separators.
-# Matches the year as the first 4-digit group that looks like a plausible release year
-# (1920-2039). Everything before the year (with dots replaced by spaces) is the title.
 _SCENE_RE = re.compile(
     r"^(?P<title>.+?)\.(?P<year>(?:19|20)\d{2})\."
 )
+
+# Extract S01E01 from an episode filename.
+_EPISODE_RE = re.compile(r"S(?P<season>\d+)E(?P<episode>\d+)", re.IGNORECASE)
 
 _MEDIA_EXTENSIONS = (".mkv",)
 
@@ -101,27 +111,67 @@ def load_dotenv(path: Path | None = None) -> dict[str, str]:
 # Filename parsing + catalogue matching
 # ---------------------------------------------------------------------------
 
-def parse_plex_filename(path: Path) -> tuple[str, int] | None:
-    """Extract (title, year) from a media file's directory or stem name.
+@dataclass(frozen=True)
+class ParsedMedia:
+    """Result of parsing a media filename."""
+    title: str
+    year: int
+    season: int | None = None
+    episode: int | None = None
 
-    Supports two naming conventions:
-      - Plex/Jellyfin: ``Title (YEAR) [tmdb-NNN]``
+
+def parse_media_filename(path: Path) -> ParsedMedia | None:
+    """Extract (title, year, season, episode) from a media file path.
+
+    Supports:
+      - Standard dirs: ``Title (YEAR) [tmdb-NNN]`` / ``[tvdb-NNN]``
+      - File stems: ``Title (YEAR) - S01E01 - Episode Name [tags]``
       - Scene-style: ``Title.Name.YEAR.codec.source.mkv``
 
-    Tries the enclosing directory name first (Plex convention), then
-    the file stem, for each pattern.
+    Checks (in order): parent directory, grandparent directory (for TV
+    shows with ``Season N/`` subdirs), then the file stem. Episode info
+    (S01E01) is extracted from the file stem when present.
     """
-    for candidate in (path.parent.name, path.stem):
-        # Plex/Jellyfin pattern first (more specific).
-        m = _PLEX_RE.match(candidate)
+    title: str | None = None
+    year: int | None = None
+
+    # Try directory names first (strict end-of-string anchored).
+    for dirname in (path.parent.name, path.parent.parent.name):
+        m = _TITLE_YEAR_DIR_RE.match(dirname)
         if m:
-            return (m.group("title").strip(), int(m.group("year")))
-        # Scene-style with dots.
-        m = _SCENE_RE.match(candidate)
+            title = m.group("title").strip()
+            year = int(m.group("year"))
+            break
+
+    # If no dir matched, try the file stem (lenient — allows episode
+    # info and codec tags after the year).
+    if title is None:
+        m = _TITLE_YEAR_STEM_RE.match(path.stem)
         if m:
-            title = m.group("title").replace(".", " ").strip()
-            return (title, int(m.group("year")))
-    return None
+            title = m.group("title").strip()
+            year = int(m.group("year"))
+        else:
+            # Scene-style with dots.
+            for candidate in (path.parent.name, path.parent.parent.name, path.stem):
+                m = _SCENE_RE.match(candidate)
+                if m:
+                    title = m.group("title").replace(".", " ").strip()
+                    year = int(m.group("year"))
+                    break
+
+    if title is None or year is None:
+        return None
+
+    # Extract episode info from the file stem (always, even if title
+    # came from a directory — the stem has the episode number).
+    season: int | None = None
+    episode: int | None = None
+    ep_match = _EPISODE_RE.search(path.stem)
+    if ep_match:
+        season = int(ep_match.group("season"))
+        episode = int(ep_match.group("episode"))
+
+    return ParsedMedia(title=title, year=year, season=season, episode=episode)
 
 
 def normalise_title(s: str) -> str:
@@ -129,12 +179,73 @@ def normalise_title(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
-def match_catalogue(catalogue: list[dict], title: str, year: int) -> dict | None:
-    """Find the catalogue entry for (title, year).
+def _parse_catalogue_episodes(entry: dict) -> set[tuple[int, int]]:
+    """Parse the season/episode fields from a catalogue entry.
+
+    Returns a set of (season, episode) tuples. The catalogue uses
+    inconsistent formats:
+      - season="1", episode="1,7,9,11"  → {(1,1),(1,7),(1,9),(1,11)}
+      - season="27E01"                  → {(27,1)}
+      - season="01E01, 04"              → {(1,1),(1,4)}
+      - season="S01E06"                 → {(1,6)}
+      - season="01"                     → all episodes in season 1
+    """
+    episodes: set[tuple[int, int]] = set()
+    season_raw = str(entry.get("season", "")).strip()
+    episode_raw = str(entry.get("episode", "")).strip()
+
+    if not season_raw:
+        return episodes
+
+    # Try "S01E06" or "01E01, 04" patterns in the season field.
+    se_matches = re.findall(r"S?(\d+)E(\d+)", season_raw, re.IGNORECASE)
+    if se_matches:
+        for s, e in se_matches:
+            episodes.add((int(s), int(e)))
+        # Also check for trailing bare episode numbers like "01E01, 04"
+        # where "04" is another episode in the same season.
+        trailing = re.findall(r",\s*(\d+)(?!\d*E)", season_raw, re.IGNORECASE)
+        if se_matches and trailing:
+            base_season = int(se_matches[0][0])
+            for ep in trailing:
+                episodes.add((base_season, int(ep)))
+        return episodes
+
+    # Plain season number + episode list.
+    try:
+        season_num = int(season_raw)
+    except ValueError:
+        return episodes
+
+    if episode_raw:
+        for ep_str in episode_raw.split(","):
+            ep_str = ep_str.strip()
+            if ep_str.isdigit():
+                episodes.add((season_num, int(ep_str)))
+    else:
+        # Season-wide entry (no specific episodes).
+        episodes.add((season_num, 0))  # 0 = "all episodes"
+
+    return episodes
+
+
+def match_catalogue(
+    catalogue: list[dict],
+    title: str,
+    year: int,
+    season: int | None = None,
+    episode: int | None = None,
+) -> dict | None:
+    """Find the best catalogue entry for (title, year[, season, episode]).
 
     Requires exact normalised-title + year match. Requires non-empty
-    ``filters``. Ties broken by filter-count (richest wins — tends to
-    be the most comprehensive variant).
+    ``filters``.
+
+    For TV shows with per-episode profiles: if season+episode are
+    provided, prefer an entry whose episode field covers that specific
+    episode. Falls back to a season-wide or show-wide entry.
+
+    Ties broken by filter-count (richest wins).
     """
     norm = normalise_title(title)
     candidates = []
@@ -152,6 +263,31 @@ def match_catalogue(catalogue: list[dict], title: str, year: int) -> dict | None
         candidates.append(entry)
     if not candidates:
         return None
+
+    # If we have episode info, try to find an episode-specific match.
+    if season is not None and episode is not None:
+        exact_ep = []
+        season_wide = []
+        no_ep_info = []
+        for entry in candidates:
+            eps = _parse_catalogue_episodes(entry)
+            if not eps:
+                no_ep_info.append(entry)
+            elif (season, episode) in eps:
+                exact_ep.append(entry)
+            elif (season, 0) in eps:
+                season_wide.append(entry)
+        # Prefer: exact episode match > season-wide > entries without
+        # episode info (show-wide). If ALL entries have episode info
+        # but none cover this episode, return None — don't match a
+        # wrong profile.
+        pool = exact_ep or season_wide or no_ep_info
+        if not pool:
+            return None
+        pool.sort(key=lambda e: len(e["filters"]), reverse=True)
+        return pool[0]
+
+    # No episode info — pick the richest entry.
     candidates.sort(key=lambda e: len(e["filters"]), reverse=True)
     return candidates[0]
 
@@ -188,40 +324,145 @@ class SweepFilm:
     title: str
     year: int
     rating: float | None
-    catalogue_entry: dict = field(repr=False)
+    season: int | None = None
+    episode: int | None = None
+    catalogue_entry: dict = field(default_factory=dict, repr=False)
 
     @property
     def rating_bucket(self) -> float:
         return bucket_rating(self.rating)
 
 
+@dataclass
+class DiscoveryResult:
+    """Result of scanning one library root."""
+    matches: list[SweepFilm]
+    total_scanned: int
+    # Counts of all parsed files per (title, year), matched or not.
+    # Used for "X of Y episodes matched" in the summary.
+    parsed_counts: dict[tuple[str, int], int] = field(default_factory=dict)
+
+
+def _find_media_dirs(library_root: Path) -> list[Path]:
+    """Find directories at the depth where media files live.
+
+    Finds the first ``.mkv`` file, determines its parent's depth
+    relative to the root, then lists all directories at that depth.
+    This adapts to any layout (flat, one-level, genre-grouped, etc.).
+    Falls back to immediate children if no media files found.
+    """
+    # Find one media file to determine the depth. Check each top-level
+    # child individually so we don't traverse the entire tree on a slow
+    # network volume — we stop as soon as we find the first file.
+    sample: Path | None = None
+    for child in library_root.iterdir():
+        if child.is_dir():
+            for ext in _MEDIA_EXTENSIONS:
+                for p in child.rglob(f"*{ext}"):
+                    sample = p
+                    break
+                if sample:
+                    break
+        elif any(child.suffix == ext for ext in _MEDIA_EXTENSIONS):
+            sample = child
+        if sample:
+            break
+    if sample is None:
+        return sorted(p for p in library_root.iterdir() if p.is_dir())
+
+    # Walk up from the media file's parent to find the title directory —
+    # the highest ancestor (below root) whose name contains "(YEAR)".
+    # For "root/Show (2023)/Season 1/file.mkv" that's "Show (2023)" at depth 1.
+    # For "root/file.mkv" that's root itself.
+    _HAS_YEAR = re.compile(r"\(\d{4}\)")
+    title_dir: Path | None = None
+    cur = sample.parent
+    while cur != library_root and cur != cur.parent:
+        if _HAS_YEAR.search(cur.name):
+            title_dir = cur
+        cur = cur.parent
+
+    if title_dir is None:
+        # No dir with (YEAR) found — use immediate children of root.
+        return sorted(p for p in library_root.iterdir() if p.is_dir())
+
+    # The title dir's parent is the level we want to list.
+    level_parent = title_dir.parent
+    return sorted(p for p in level_parent.iterdir() if p.is_dir())
+
+
 def discover_matches(
     library_root: Path,
     catalogue: list[dict],
-) -> list[SweepFilm]:
-    """Walk a library root and return all catalogue-matched films."""
-    matches: list[SweepFilm] = []
-    scanned = 0
+) -> DiscoveryResult:
+    """Walk a library root and return matches + scan stats."""
+    # Find the directory depth where media directories live (dirs whose
+    # names parse as "Title (YEAR)"). Start from root's immediate children
+    # and go one level deeper if none match.
+    media_dirs = _find_media_dirs(library_root)
+    n_dirs = len(media_dirs) or 1
+    log.info("root %s: %d media directories found", library_root, n_dirs)
+
+    media_files: list[Path] = []
+    for idx, child in enumerate(media_dirs):
+        pct = (idx + 1) * 100 // n_dirs
+        # \033[2K clears the entire terminal line to avoid leftover chars.
+        print(
+            f"\r\033[2K  scanning [{pct:3d}%] {idx + 1}/{n_dirs} "
+            f"({len(media_files)} files) — {child.name}",
+            end="", flush=True,
+        )
+        for ext in _MEDIA_EXTENSIONS:
+            media_files.extend(child.rglob(f"*{ext}"))
+    # Also check for media files directly in the root (not in subdirs).
     for ext in _MEDIA_EXTENSIONS:
-        for media_path in library_root.rglob(f"*{ext}"):
-            scanned += 1
-            parsed = parse_plex_filename(media_path)
-            if parsed is None:
-                continue
-            title, year = parsed
-            entry = match_catalogue(catalogue, title, year)
-            if entry is None:
-                continue
-            matches.append(SweepFilm(
-                path=str(media_path),
-                library_root=str(library_root),
-                title=title,
-                year=year,
-                rating=extract_rating(entry),
-                catalogue_entry=entry,
-            ))
-    log.info("root %s: scanned=%d matched=%d", library_root, scanned, len(matches))
-    return matches
+        media_files.extend(library_root.glob(f"*{ext}"))
+    print(f"\r\033[2K  found {len(media_files)} media files across {n_dirs} directories.")
+    total = len(media_files)
+    log.info("root %s: found %d media files to scan", library_root, total)
+
+    matches: list[SweepFilm] = []
+    parsed_counts: dict[tuple[str, int], int] = Counter()
+    for i, media_path in enumerate(media_files):
+        pct = ((i + 1) * 100) // total if total else 100
+        print(f"\r  scanning [{pct:3d}%] {i + 1}/{total}", end="", flush=True)
+        log.debug("  %s", media_path.relative_to(library_root))
+
+        parsed = parse_media_filename(media_path)
+        if parsed is None:
+            log.debug("    → no title/year parsed, skipping")
+            continue
+        ep_label = f" S{parsed.season:02d}E{parsed.episode:02d}" if parsed.episode else ""
+        log.debug("    → parsed: %r (%d)%s", parsed.title, parsed.year, ep_label)
+        parsed_counts[(parsed.title, parsed.year)] += 1
+        entry = match_catalogue(
+            catalogue, parsed.title, parsed.year,
+            season=parsed.season, episode=parsed.episode,
+        )
+        if entry is None:
+            log.debug("    → no catalogue match")
+            continue
+        # Show which catalogue profile matched (season/episode coverage).
+        cat_season = entry.get("season", "")
+        cat_episode = entry.get("episode", "")
+        cat_label = f" (catalogue: season={cat_season} episode={cat_episode})" if cat_season else ""
+        log.debug("    → MATCHED: %r (%d)%s", entry.get("title"), parsed.year, cat_label)
+        matches.append(SweepFilm(
+            path=str(media_path),
+            library_root=str(library_root),
+            title=parsed.title,
+            year=parsed.year,
+            rating=extract_rating(entry),
+            season=parsed.season,
+            episode=parsed.episode,
+            catalogue_entry=entry,
+        ))
+    print()  # newline after progress bar
+    match_pct = (len(matches) * 100 // total) if total else 0
+    log.info("root %s: scanned=%d matched=%d (%d%%)", library_root, total, len(matches), match_pct)
+    return DiscoveryResult(
+        matches=matches, total_scanned=total, parsed_counts=dict(parsed_counts),
+    )
 
 
 def sort_matches(matches: list[SweepFilm]) -> list[SweepFilm]:
@@ -274,6 +515,11 @@ def _default_config_path() -> Path:
     return beq_config_dir() / "auto_beq_sweep.json"
 
 
+def _catalogue_digest(entry: dict) -> str:
+    """Return the catalogue entry's unique digest hash."""
+    return entry.get("digest", "")
+
+
 def write_config(
     films: list[SweepFilm],
     library_roots: list[Path],
@@ -281,18 +527,37 @@ def write_config(
     output: Path | None = None,
     catalogue_url: str = _DEFAULT_CATALOGUE_URL,
 ) -> Path:
-    """Write the discovered films to the sweep config JSON."""
+    """Write the discovered films to the sweep config JSON.
+
+    Each film stores only the catalogue entry's ``digest`` hash.
+    The full entry is looked up from the cached catalogue at test time.
+    This keeps the config small regardless of how many episodes match.
+    """
     path = output or _default_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     now = dt.datetime.now(dt.timezone.utc).astimezone().isoformat()
+
+    film_records = []
+    for f in films:
+        film_records.append({
+            "path": f.path,
+            "library_root": f.library_root,
+            "title": f.title,
+            "year": f.year,
+            "rating": f.rating,
+            "season": f.season,
+            "episode": f.episode,
+            "catalogue_digest": _catalogue_digest(f.catalogue_entry),
+        })
+
     payload = {
-        "schema_version": _SCHEMA_VERSION,
+        "schema_version": 3,
         "generated_at": now,
         "library_roots": [str(r) for r in library_roots],
         "catalogue_url": catalogue_url,
         "catalogue_fetched_at": now,
         "test_limit": test_limit,
-        "films": [asdict(f) for f in films],
+        "films": film_records,
     }
     path.write_text(json.dumps(payload, indent=2))
     return path
@@ -307,45 +572,133 @@ def load_config(path: Path | None = None) -> dict | None:
         return json.load(f)
 
 
+def load_catalogue_by_digest(
+    catalogue_path: Path | None = None,
+) -> dict[str, dict]:
+    """Load the cached catalogue and index by digest hash.
+
+    Returns ``{digest: entry_dict}``. Used at test time to resolve
+    the ``catalogue_digest`` stored in the sweep config.
+    """
+    path = catalogue_path or _catalogue_cache_path()
+    if not path.exists():
+        return {}
+    with path.open() as f:
+        entries = json.load(f)
+    return {e.get("digest", ""): e for e in entries if e.get("digest")}
+
+
+def _save_library_roots(library_roots: list[Path], output: Path | None = None) -> None:
+    """Persist library roots to config immediately (survives Ctrl-C during scan).
+
+    Merges into existing config if present, otherwise creates a minimal stub.
+    """
+    path = output or _default_config_path()
+    existing = load_config(path) or {}
+    existing["library_roots"] = [str(r) for r in library_roots]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(existing, indent=2))
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
 def _resolve_library_roots(args: argparse.Namespace) -> list[Path]:
-    """Resolve library roots from (in order) CLI flags, env var, prompt."""
+    """Resolve library roots from (in order) CLI flags, env var, previous config, prompt."""
     if args.library:
         return [Path(p).expanduser() for p in args.library]
     env = os.environ.get("AUTO_BEQ_LIBRARY_ROOTS")
     if env:
-        return [Path(p.strip()).expanduser() for p in env.split(":") if p.strip()]
-    # Interactive prompt.
-    raw = input("Library path(s), colon-separated: ").strip()
+        return _split_paths(env)
+
+    # Check if a previous run saved library roots in the config.
+    existing = load_config()
+    cached_roots = existing.get("library_roots", []) if existing else []
+    if cached_roots:
+        cached_display = ", ".join(cached_roots)
+        print(f"Previous library roots: {cached_display}")
+        raw = input("Library path(s) [Enter to reuse, or new comma-separated paths]: ").strip()
+        if not raw:
+            return [Path(p).expanduser() for p in cached_roots]
+        return _split_paths(raw)
+
+    # No previous config, no env var — prompt.
+    raw = input("Library path(s), comma-separated: ").strip()
     if not raw:
         raise SystemExit("no library root provided")
-    return [Path(p.strip()).expanduser() for p in raw.split(":") if p.strip()]
+    return _split_paths(raw)
+
+
+def _split_paths(raw: str) -> list[Path]:
+    """Split a string of paths by comma, strip whitespace."""
+    return [Path(p.strip()).expanduser() for p in raw.split(",") if p.strip()]
 
 
 def _print_summary(
     matches: list[SweepFilm],
     library_roots: list[Path],
-    top_n: int = 20,
+    total_scanned: int,
+    parsed_counts: dict[tuple[str, int], int] | None = None,
 ) -> None:
+    if parsed_counts is None:
+        parsed_counts = {}
+
     print()
     print(f"Library roots scanned: {len(library_roots)}")
     for root in library_roots:
         n = sum(1 for m in matches if m.library_root == str(root))
         print(f"  {root}  →  {n} catalogue matches")
-    print(f"Total matches: {len(matches)}")
-    buckets = Counter(m.rating_bucket for m in matches)
+
+    # Group by (title, year) to collapse episodes into one line.
+    from collections import OrderedDict
+    grouped: OrderedDict[tuple[str, int | None], list[SweepFilm]] = OrderedDict()
+    for m in matches:
+        key = (m.title, m.year)
+        grouped.setdefault(key, []).append(m)
+
+    unique_titles = len(grouped)
+    total_files = len(matches)
+    match_pct = (total_files * 100 // total_scanned) if total_scanned else 0
+    print(f"Total: {unique_titles} titles ({total_files} files matched out of {total_scanned} scanned — {match_pct}%)")
+
+    buckets = Counter(bucket_rating(films[0].rating) for films in grouped.values())
     print("Rating buckets:")
     for bucket in sorted(buckets, reverse=True):
-        label = f"{bucket:.1f}" if bucket >= 0 else "(none)"
+        label = f"{bucket:.1f}" if bucket >= 0 else "n/a"
         print(f"  {label}: {buckets[bucket]}")
+
     print()
-    print(f"Top {min(top_n, len(matches))} by (rating desc, year desc):")
-    for i, m in enumerate(matches[:top_n], 1):
-        r_label = f"{m.rating:.1f}" if m.rating is not None else "—"
-        print(f"  {i:3d}. [r={r_label} y={m.year}] {m.title}")
+    print(f"All {unique_titles} matched titles (rating desc, year desc):")
+    for i, ((title, year), films) in enumerate(grouped.items(), 1):
+        rating = films[0].rating
+        r_part = f" [r={rating:.1f}]" if rating is not None else ""
+        matched_count = len(films)
+        total_for_title = parsed_counts.get((title, year), matched_count)
+        has_episodes = any(f.season is not None for f in films)
+
+        if not has_episodes and total_for_title <= 1:
+            suffix = ""
+        else:
+            # Group matched episodes by season.
+            seasons: dict[str, int] = Counter()
+            for f in films:
+                parts = Path(f.path).parts
+                for part in parts:
+                    if part.lower().startswith("season"):
+                        seasons[part] += 1
+                        break
+                else:
+                    seasons["(no season)"] += 1
+            season_str = ", ".join(
+                f"{s}: {c} ep" for s, c in sorted(seasons.items())
+            )
+            pct = (matched_count * 100 // total_for_title) if total_for_title else 100
+            suffix = (
+                f"  ({matched_count}/{total_for_title} episodes matched "
+                f"— {pct}% — {season_str})"
+            )
+        print(f"  {i:3d}. [{year}]{r_part} {title}{suffix}")
     print()
 
 
@@ -371,6 +724,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Re-fetch catalogue even if the cached copy is fresh.",
     )
     p.add_argument(
+        "--clean", action="store_true",
+        help="Delete existing config and start fresh.",
+    )
+    p.add_argument(
         "--yes", action="store_true",
         help="Skip confirmation prompt (non-interactive mode).",
     )
@@ -386,9 +743,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.basicConfig(level=logging.DEBUG, format="%(message)s")
     load_dotenv()
     args = _parse_args(argv)
+
+    if args.clean:
+        config_path = args.output or _default_config_path()
+        if config_path.exists():
+            config_path.unlink()
+            print(f"Deleted {config_path}")
+        else:
+            print(f"No config to clean at {config_path}")
 
     try:
         library_roots = _resolve_library_roots(args)
@@ -401,15 +766,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: library root does not exist: {root}", file=sys.stderr)
             return 2
 
+    # Persist library roots immediately so they survive Ctrl-C during scan.
+    _save_library_roots(library_roots, output=args.output)
+
     catalogue = load_or_fetch_catalogue(force_refresh=args.refresh)
     log.info("catalogue entries: %d", len(catalogue))
 
     matches: list[SweepFilm] = []
+    total_scanned = 0
+    parsed_counts: dict[tuple[str, int], int] = {}
     for root in library_roots:
-        matches.extend(discover_matches(root, catalogue))
+        result = discover_matches(root, catalogue)
+        matches.extend(result.matches)
+        total_scanned += result.total_scanned
+        for key, count in result.parsed_counts.items():
+            parsed_counts[key] = parsed_counts.get(key, 0) + count
     matches = sort_matches(matches)
 
-    _print_summary(matches, library_roots)
+    _print_summary(matches, library_roots, total_scanned, parsed_counts)
 
     if not matches:
         print("No catalogue-matched films found.", file=sys.stderr)
