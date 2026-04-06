@@ -43,10 +43,20 @@ _DEFAULT_TEST_LIMIT = 10
 _CATALOGUE_CACHE_MAX_AGE_HOURS = 24
 _SCHEMA_VERSION = 1
 
-# Pattern 1 — Plex/Jellyfin: "Title (YEAR)" optionally followed by " [tmdb-NNN]".
-_PLEX_RE = re.compile(
+# Pattern 1 — Plex/Jellyfin directory: "Title (YEAR)" optionally followed by " [tmdb-NNN]",
+# " [imdb-ttNNN]", or " [tvdb-NNN]" (TV shows use tvdb). End-of-string anchored.
+_PLEX_DIR_RE = re.compile(
     r"^(?P<title>.+?)\s*\((?P<year>\d{4})\)"
-    r"(?:\s*\[(?:tmdb|imdb)-[^\]]+\])?\s*$"
+    r"(?:\s*\[(?:tmdb|imdb|tvdb)-[^\]]+\])?\s*$"
+)
+
+# Pattern 1b — Plex/Jellyfin file stem: "Title (YEAR) - S01E01 - Episode Name [tags]".
+# More lenient than the dir pattern: allows arbitrary content after year+optional-tag.
+# Extracts the episode identifier (S01E01) when present.
+_PLEX_STEM_RE = re.compile(
+    r"^(?P<title>.+?)\s*\((?P<year>\d{4})\)"
+    r"(?:\s*\[(?:tmdb|imdb|tvdb)-[^\]]+\])?"
+    r"(?:\s*-\s*S(?P<season>\d+)E(?P<episode>\d+))?"
 )
 
 # Pattern 2 — Scene-style: "Title.Name.YEAR.codec.source..." with dots as separators.
@@ -55,6 +65,9 @@ _PLEX_RE = re.compile(
 _SCENE_RE = re.compile(
     r"^(?P<title>.+?)\.(?P<year>(?:19|20)\d{2})\."
 )
+
+# Extract S01E01 from a Plex episode filename.
+_EPISODE_RE = re.compile(r"S(?P<season>\d+)E(?P<episode>\d+)", re.IGNORECASE)
 
 _MEDIA_EXTENSIONS = (".mkv",)
 
@@ -101,27 +114,67 @@ def load_dotenv(path: Path | None = None) -> dict[str, str]:
 # Filename parsing + catalogue matching
 # ---------------------------------------------------------------------------
 
-def parse_plex_filename(path: Path) -> tuple[str, int] | None:
-    """Extract (title, year) from a media file's directory or stem name.
+@dataclass(frozen=True)
+class ParsedMedia:
+    """Result of parsing a media filename."""
+    title: str
+    year: int
+    season: int | None = None
+    episode: int | None = None
 
-    Supports two naming conventions:
-      - Plex/Jellyfin: ``Title (YEAR) [tmdb-NNN]``
+
+def parse_plex_filename(path: Path) -> ParsedMedia | None:
+    """Extract (title, year, season, episode) from a media file path.
+
+    Supports:
+      - Plex/Jellyfin dirs: ``Title (YEAR) [tmdb-NNN]`` / ``[tvdb-NNN]``
+      - Plex file stems: ``Title (YEAR) - S01E01 - Episode Name [tags]``
       - Scene-style: ``Title.Name.YEAR.codec.source.mkv``
 
-    Tries the enclosing directory name first (Plex convention), then
-    the file stem, for each pattern.
+    Checks (in order): parent directory, grandparent directory (for TV
+    shows with ``Season N/`` subdirs), then the file stem. Episode info
+    (S01E01) is extracted from the file stem when present.
     """
-    for candidate in (path.parent.name, path.stem):
-        # Plex/Jellyfin pattern first (more specific).
-        m = _PLEX_RE.match(candidate)
+    title: str | None = None
+    year: int | None = None
+
+    # Try directory names first (strict end-of-string anchored).
+    for dirname in (path.parent.name, path.parent.parent.name):
+        m = _PLEX_DIR_RE.match(dirname)
         if m:
-            return (m.group("title").strip(), int(m.group("year")))
-        # Scene-style with dots.
-        m = _SCENE_RE.match(candidate)
+            title = m.group("title").strip()
+            year = int(m.group("year"))
+            break
+
+    # If no dir matched, try the file stem (lenient — allows episode
+    # info and codec tags after the year).
+    if title is None:
+        m = _PLEX_STEM_RE.match(path.stem)
         if m:
-            title = m.group("title").replace(".", " ").strip()
-            return (title, int(m.group("year")))
-    return None
+            title = m.group("title").strip()
+            year = int(m.group("year"))
+        else:
+            # Scene-style with dots.
+            for candidate in (path.parent.name, path.parent.parent.name, path.stem):
+                m = _SCENE_RE.match(candidate)
+                if m:
+                    title = m.group("title").replace(".", " ").strip()
+                    year = int(m.group("year"))
+                    break
+
+    if title is None or year is None:
+        return None
+
+    # Extract episode info from the file stem (always, even if title
+    # came from a directory — the stem has the episode number).
+    season: int | None = None
+    episode: int | None = None
+    ep_match = _EPISODE_RE.search(path.stem)
+    if ep_match:
+        season = int(ep_match.group("season"))
+        episode = int(ep_match.group("episode"))
+
+    return ParsedMedia(title=title, year=year, season=season, episode=episode)
 
 
 def normalise_title(s: str) -> str:
@@ -129,12 +182,73 @@ def normalise_title(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
-def match_catalogue(catalogue: list[dict], title: str, year: int) -> dict | None:
-    """Find the catalogue entry for (title, year).
+def _parse_catalogue_episodes(entry: dict) -> set[tuple[int, int]]:
+    """Parse the season/episode fields from a catalogue entry.
+
+    Returns a set of (season, episode) tuples. The catalogue uses
+    inconsistent formats:
+      - season="1", episode="1,7,9,11"  → {(1,1),(1,7),(1,9),(1,11)}
+      - season="27E01"                  → {(27,1)}
+      - season="01E01, 04"              → {(1,1),(1,4)}
+      - season="S01E06"                 → {(1,6)}
+      - season="01"                     → all episodes in season 1
+    """
+    episodes: set[tuple[int, int]] = set()
+    season_raw = str(entry.get("season", "")).strip()
+    episode_raw = str(entry.get("episode", "")).strip()
+
+    if not season_raw:
+        return episodes
+
+    # Try "S01E06" or "01E01, 04" patterns in the season field.
+    se_matches = re.findall(r"S?(\d+)E(\d+)", season_raw, re.IGNORECASE)
+    if se_matches:
+        for s, e in se_matches:
+            episodes.add((int(s), int(e)))
+        # Also check for trailing bare episode numbers like "01E01, 04"
+        # where "04" is another episode in the same season.
+        trailing = re.findall(r",\s*(\d+)(?!\d*E)", season_raw, re.IGNORECASE)
+        if se_matches and trailing:
+            base_season = int(se_matches[0][0])
+            for ep in trailing:
+                episodes.add((base_season, int(ep)))
+        return episodes
+
+    # Plain season number + episode list.
+    try:
+        season_num = int(season_raw)
+    except ValueError:
+        return episodes
+
+    if episode_raw:
+        for ep_str in episode_raw.split(","):
+            ep_str = ep_str.strip()
+            if ep_str.isdigit():
+                episodes.add((season_num, int(ep_str)))
+    else:
+        # Season-wide entry (no specific episodes).
+        episodes.add((season_num, 0))  # 0 = "all episodes"
+
+    return episodes
+
+
+def match_catalogue(
+    catalogue: list[dict],
+    title: str,
+    year: int,
+    season: int | None = None,
+    episode: int | None = None,
+) -> dict | None:
+    """Find the best catalogue entry for (title, year[, season, episode]).
 
     Requires exact normalised-title + year match. Requires non-empty
-    ``filters``. Ties broken by filter-count (richest wins — tends to
-    be the most comprehensive variant).
+    ``filters``.
+
+    For TV shows with per-episode profiles: if season+episode are
+    provided, prefer an entry whose episode field covers that specific
+    episode. Falls back to a season-wide or show-wide entry.
+
+    Ties broken by filter-count (richest wins).
     """
     norm = normalise_title(title)
     candidates = []
@@ -152,6 +266,26 @@ def match_catalogue(catalogue: list[dict], title: str, year: int) -> dict | None
         candidates.append(entry)
     if not candidates:
         return None
+
+    # If we have episode info, try to find an episode-specific match.
+    if season is not None and episode is not None:
+        exact_ep = []
+        season_wide = []
+        no_ep_info = []
+        for entry in candidates:
+            eps = _parse_catalogue_episodes(entry)
+            if not eps:
+                no_ep_info.append(entry)
+            elif (season, episode) in eps:
+                exact_ep.append(entry)
+            elif (season, 0) in eps:
+                season_wide.append(entry)
+        # Prefer: exact episode match > season-wide > no episode info.
+        pool = exact_ep or season_wide or no_ep_info or candidates
+        pool.sort(key=lambda e: len(e["filters"]), reverse=True)
+        return pool[0]
+
+    # No episode info — pick the richest entry.
     candidates.sort(key=lambda e: len(e["filters"]), reverse=True)
     return candidates[0]
 
@@ -188,7 +322,9 @@ class SweepFilm:
     title: str
     year: int
     rating: float | None
-    catalogue_entry: dict = field(repr=False)
+    season: int | None = None
+    episode: int | None = None
+    catalogue_entry: dict = field(default_factory=dict, repr=False)
 
     @property
     def rating_bucket(self) -> float:
@@ -198,30 +334,49 @@ class SweepFilm:
 def discover_matches(
     library_root: Path,
     catalogue: list[dict],
-) -> list[SweepFilm]:
-    """Walk a library root and return all catalogue-matched films."""
-    matches: list[SweepFilm] = []
-    scanned = 0
+) -> tuple[list[SweepFilm], int]:
+    """Walk a library root and return (matches, total_scanned)."""
+    # Collect all media files first so we can show progress.
+    media_files: list[Path] = []
     for ext in _MEDIA_EXTENSIONS:
-        for media_path in library_root.rglob(f"*{ext}"):
-            scanned += 1
-            parsed = parse_plex_filename(media_path)
-            if parsed is None:
-                continue
-            title, year = parsed
-            entry = match_catalogue(catalogue, title, year)
-            if entry is None:
-                continue
-            matches.append(SweepFilm(
-                path=str(media_path),
-                library_root=str(library_root),
-                title=title,
-                year=year,
-                rating=extract_rating(entry),
-                catalogue_entry=entry,
-            ))
-    log.info("root %s: scanned=%d matched=%d", library_root, scanned, len(matches))
-    return matches
+        media_files.extend(library_root.rglob(f"*{ext}"))
+    total = len(media_files)
+    log.info("root %s: found %d media files to scan", library_root, total)
+
+    matches: list[SweepFilm] = []
+    for i, media_path in enumerate(media_files):
+        # Progress — print to stderr so it's visible even without -v.
+        pct = ((i + 1) * 100) // total if total else 100
+        print(f"\r  scanning [{pct:3d}%] {i + 1}/{total}", end="", flush=True)
+        log.debug("  %s", media_path.relative_to(library_root))
+
+        parsed = parse_plex_filename(media_path)
+        if parsed is None:
+            log.debug("    → no title/year parsed, skipping")
+            continue
+        ep_label = f" S{parsed.season:02d}E{parsed.episode:02d}" if parsed.episode else ""
+        log.debug("    → parsed: %r (%d)%s", parsed.title, parsed.year, ep_label)
+        entry = match_catalogue(
+            catalogue, parsed.title, parsed.year,
+            season=parsed.season, episode=parsed.episode,
+        )
+        if entry is None:
+            log.debug("    → no catalogue match")
+            continue
+        log.debug("    → MATCHED catalogue entry: %r", entry.get("title"))
+        matches.append(SweepFilm(
+            path=str(media_path),
+            library_root=str(library_root),
+            title=parsed.title,
+            year=parsed.year,
+            rating=extract_rating(entry),
+            season=parsed.season,
+            episode=parsed.episode,
+            catalogue_entry=entry,
+        ))
+    print()  # newline after progress bar
+    log.info("root %s: scanned=%d matched=%d", library_root, total, len(matches))
+    return matches, total
 
 
 def sort_matches(matches: list[SweepFilm]) -> list[SweepFilm]:
@@ -328,24 +483,56 @@ def _resolve_library_roots(args: argparse.Namespace) -> list[Path]:
 def _print_summary(
     matches: list[SweepFilm],
     library_roots: list[Path],
-    top_n: int = 20,
+    total_scanned: int,
 ) -> None:
     print()
     print(f"Library roots scanned: {len(library_roots)}")
     for root in library_roots:
         n = sum(1 for m in matches if m.library_root == str(root))
         print(f"  {root}  →  {n} catalogue matches")
-    print(f"Total matches: {len(matches)}")
-    buckets = Counter(m.rating_bucket for m in matches)
+
+    # Group by (title, year) to collapse episodes into one line.
+    from collections import OrderedDict
+    grouped: OrderedDict[tuple[str, int | None], list[SweepFilm]] = OrderedDict()
+    for m in matches:
+        key = (m.title, m.year)
+        grouped.setdefault(key, []).append(m)
+
+    unique_titles = len(grouped)
+    total_files = len(matches)
+    match_pct = (total_files * 100 // total_scanned) if total_scanned else 0
+    print(f"Total: {unique_titles} titles ({total_files} files matched out of {total_scanned} scanned — {match_pct}%)")
+
+    buckets = Counter(bucket_rating(films[0].rating) for films in grouped.values())
     print("Rating buckets:")
     for bucket in sorted(buckets, reverse=True):
         label = f"{bucket:.1f}" if bucket >= 0 else "(none)"
         print(f"  {label}: {buckets[bucket]}")
+
     print()
-    print(f"Top {min(top_n, len(matches))} by (rating desc, year desc):")
-    for i, m in enumerate(matches[:top_n], 1):
-        r_label = f"{m.rating:.1f}" if m.rating is not None else "—"
-        print(f"  {i:3d}. [r={r_label} y={m.year}] {m.title}")
+    print(f"All {unique_titles} matched titles (rating desc, year desc):")
+    for i, ((title, year), films) in enumerate(grouped.items(), 1):
+        r_label = f"{films[0].rating:.1f}" if films[0].rating is not None else "—"
+        ep_count = len(films)
+        if ep_count == 1:
+            suffix = ""
+        else:
+            # Group episodes by season for a compact display.
+            seasons: dict[str, int] = Counter()
+            for f in films:
+                # Try to extract "Season N" from the path.
+                parts = Path(f.path).parts
+                for part in parts:
+                    if part.lower().startswith("season"):
+                        seasons[part] += 1
+                        break
+                else:
+                    seasons["(no season)"] += 1
+            season_str = ", ".join(
+                f"{s}: {c} ep" for s, c in sorted(seasons.items())
+            )
+            suffix = f"  ({ep_count} episodes — {season_str})"
+        print(f"  {i:3d}. [r={r_label} y={year}] {title}{suffix}")
     print()
 
 
@@ -386,7 +573,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.basicConfig(level=logging.DEBUG, format="%(message)s")
     load_dotenv()
     args = _parse_args(argv)
 
@@ -405,11 +592,14 @@ def main(argv: list[str] | None = None) -> int:
     log.info("catalogue entries: %d", len(catalogue))
 
     matches: list[SweepFilm] = []
+    total_scanned = 0
     for root in library_roots:
-        matches.extend(discover_matches(root, catalogue))
+        root_matches, root_scanned = discover_matches(root, catalogue)
+        matches.extend(root_matches)
+        total_scanned += root_scanned
     matches = sort_matches(matches)
 
-    _print_summary(matches, library_roots)
+    _print_summary(matches, library_roots, total_scanned)
 
     if not matches:
         print("No catalogue-matched films found.", file=sys.stderr)
