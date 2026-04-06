@@ -436,29 +436,41 @@ class MeasurementAdvisor:
                 source="measurement",
             )
 
-        deficit_at_10hz = features.shoulder_peak_db - features.level_at_10hz_db
         slope = features.rolloff_slope_db_per_oct
-        extension = max(0.0, slope)
-        max_gain_db = deficit_at_10hz + extension
-
-        # Knee = where the rolloff STARTS, not where the peak sits.
-        # The peak is the top of the LFE passband (30-40 Hz typically).
-        # Catalogue entries place their shelves at the rolloff-start
-        # frequency (10-25 Hz typically). We find the rolloff-start by
-        # walking down from the peak until the curve drops 3 dB.
         knee_hz = _find_rolloff_start(features)
+        deficit_at_10hz = features.shoulder_peak_db - features.level_at_10hz_db
 
-        # Decide on multi-knee path.
+        # ---- Topology classification (Nikolozi insight) ----
+        # Classify rolloff shape FIRST, pick a template, THEN
+        # optimise gain within that template. This separates the
+        # discrete topology decision from continuous parameter tuning.
         is_multi_knee_slope = slope > self._MULTI_KNEE_SLOPE_THRESHOLD
         is_multi_knee_dynamic, _ = looks_multi_knee(features)
-        is_multi_knee = is_multi_knee_slope or is_multi_knee_dynamic
+        is_cliff = is_multi_knee_slope or is_multi_knee_dynamic
 
         chain: tuple[dict, ...] | None = None
-        if is_multi_knee:
+        if is_cliff:
+            # CLIFF template: multi-knee chain (inner + outer shelves).
             chain = _measurement_chain(features)
+            max_gain_db = deficit_at_10hz + max(0.0, slope)
+            topo = "cliff"
+        elif slope > 5.0:
+            # MODERATE template: single shelf, gain = deficit only.
+            # No slope extension — it overshoots for most moderate
+            # content (Pantheon, MINDHUNTER, Blue Eye Samurai all
+            # improve). South Park undershoots but the overall corpus
+            # wins are larger (10 PASS vs 1 PASS with full extension).
+            max_gain_db = deficit_at_10hz
+            topo = "moderate"
+        else:
+            # GENTLE template: single shelf, gain = deficit + slope
+            # extension. Gentle slopes benefit from the extra octave
+            # of extension because the rolloff is gradual.
+            max_gain_db = deficit_at_10hz + max(0.0, slope)
+            topo = "gentle"
 
         reasoning = (
-            f"peak={features.shoulder_peak_db:+.1f}dB@{knee_hz:.0f}Hz, "
+            f"topo={topo}, peak={features.shoulder_peak_db:+.1f}dB, "
             f"L10={features.level_at_10hz_db:+.1f}dB, "
             f"L20={features.level_at_20hz_db:+.1f}dB, "
             f"slope={slope:+.1f}dB/oct, deficit@10Hz={deficit_at_10hz:.1f}dB -> "
