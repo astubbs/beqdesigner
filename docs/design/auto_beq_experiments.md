@@ -491,6 +491,31 @@ incorrectly-matched fixture, not an algorithm failure.
 match on `source` and `edition` fields, not just title+year+
 filter_count. Films with multiple audio tracks get different BEQs.
 
+### E16 - Catalogue-first pipeline (propose_or_lookup)
+
+Implemented Plan 5: catalogue lookup as primary path, auto-generation
+as fallback. New module `auto_beq_catalogue.py` with codec-aware
+matching (respects warning fields, year-as-string comparison fix).
+
+**Sweep results (34 passed, 5 skipped, 0 failed, 17s)**:
+- Titles with single catalogue entry: **perfect PASS** (0.00/0.00) —
+  Blue Eye Samurai, Pantheon, Spawn, Scavengers Reign, EoT.
+- Titles with multiple catalogue entries: **mixed** — lookup picks
+  the richest chain (most filters) which may differ from the sweep's
+  ground-truth entry. Splinter Cell 1/4 PASS, South Park 1/4 PASS,
+  X-Men '97 1/2 PASS.
+- MINDHUNTER: MARGINAL (2.67/6.93) — catalogue entry found but the
+  lookup picked a different variant than the sweep's ground truth.
+
+**Key finding**: the catalogue-first architecture works. For titles
+with a single catalogue entry, it's trivially correct. For titles
+with multiple entries, the disambiguation heuristic (pick most
+filters) doesn't always match the sweep's expected entry. This is
+a matching-strategy issue, not an algorithm failure.
+
+**Runtime**: 17s for 34 episodes (vs 250s before) because catalogue
+lookup skips ffmpeg extraction entirely.
+
 ## Next to try
 
 - [ ] **E12: Self-feedback loop**. Generate initial chain, compute

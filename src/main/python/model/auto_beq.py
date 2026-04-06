@@ -489,6 +489,50 @@ def propose_filters_from_measured(
     )
 
 
+def propose_or_lookup(
+    title: str,
+    measured_curve_db: np.ndarray | None = None,
+    freqs_hz: np.ndarray | None = None,
+    year: int | None = None,
+    audio_codec: str | None = None,
+    catalogue: list[dict] | None = None,
+    advisor: Advisor | None = None,
+    metadata: MediaMetadata | None = None,
+    fs: int = DEFAULT_FS,
+    band: tuple[float, float] = DEFAULT_BAND,
+) -> tuple[list[dict], str]:
+    """Production API: catalogue first, auto-generate as fallback.
+
+    1. Look up the BEQ catalogue for (title, year, audio_codec).
+       If found, return the expert's filter chain directly.
+    2. If no match AND measured_curve_db is provided, auto-generate
+       via propose_filters_from_measured.
+    3. If neither: return empty.
+
+    Returns ``(filter_list, source)`` where source is
+    ``'catalogue'`` or ``'auto:<advisor_name>'`` or ``'none'``.
+    """
+    from model.auto_beq_catalogue import lookup_catalogue
+
+    entry = lookup_catalogue(
+        title, year=year, audio_codec=audio_codec, catalogue=catalogue,
+    )
+    if entry is not None and entry.get("filters"):
+        log.info("catalogue hit for %r: %d filters", title, len(entry["filters"]))
+        return entry["filters"], "catalogue"
+
+    if measured_curve_db is not None and freqs_hz is not None:
+        log.info("no catalogue match for %r — falling back to auto-generation", title)
+        filters = propose_filters_from_measured(
+            measured_curve_db, freqs_hz, fs=fs, band=band,
+            advisor=advisor, metadata=metadata,
+        )
+        source = f"auto:{advisor.name}" if advisor else "auto:heuristic"
+        return filters, source
+
+    return [], "none"
+
+
 def propose_filters(
     target_curve_db: np.ndarray,
     freqs_hz: np.ndarray,
