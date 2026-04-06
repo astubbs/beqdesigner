@@ -2,7 +2,7 @@
 
 Uses the committed fake library fixture at
 ``src/test/resources/auto_beq/fake_library/`` — zero-byte ``.mkv``
-files in Plex-style subdirectories. Discovery only reads filenames,
+files in standard media naming subdirectories. Discovery only reads filenames,
 not content, so empty placeholders are sufficient.
 """
 
@@ -27,20 +27,20 @@ _FIXTURE_ROOT = (
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("candidate,expected_title,expected_year", [
-    # Plex/Jellyfin style (directory names)
+    # Standard media directory names
     ("Dune (2021) [tmdb-438631]", "Dune", 2021),
     ("The Matrix (1999) [imdb-tt0133093]", "The Matrix", 1999),
     ("Inception (2010)", "Inception", 2010),
     ("Blade Runner 2049 (2017)", "Blade Runner 2049", 2017),
-    # Plex with tvdb tag (TV shows use tvdb, not tmdb)
+    # tvdb tag (TV shows)
     ("Blue Eye Samurai (2023) [tvdb-434151]", "Blue Eye Samurai", 2023),
     ("X-Men '97 (2024) [tvdb-412432]", "X-Men '97", 2024),
 ])
-def test_parse_plex_dir_variants(candidate, expected_title, expected_year, tmp_path):
+def test_parse_dir_variants(candidate, expected_title, expected_year, tmp_path):
     p = tmp_path / candidate / "whatever.mkv"
     p.parent.mkdir(parents=True)
     p.touch()
-    result = sd.parse_plex_filename(p)
+    result = sd.parse_media_filename(p)
     assert result is not None
     assert result.title == expected_title
     assert result.year == expected_year
@@ -56,7 +56,7 @@ def test_parse_scene_style_variants(candidate, expected_title, expected_year, tm
     p = tmp_path / candidate / "whatever.mkv"
     p.parent.mkdir(parents=True)
     p.touch()
-    result = sd.parse_plex_filename(p)
+    result = sd.parse_media_filename(p)
     assert result is not None
     assert result.title == expected_title
     assert result.year == expected_year
@@ -72,26 +72,26 @@ def test_parse_rejected_filenames(candidate, tmp_path):
     p = tmp_path / candidate / "whatever.mkv"
     p.parent.mkdir(parents=True)
     p.touch()
-    assert sd.parse_plex_filename(p) is None
+    assert sd.parse_media_filename(p) is None
 
 
-def test_parse_plex_filename_falls_back_to_stem(tmp_path):
+def test_parse_media_filename_falls_back_to_stem(tmp_path):
     p = tmp_path / "Random Folder" / "Inception (2010).mkv"
     p.parent.mkdir(parents=True)
     p.touch()
-    result = sd.parse_plex_filename(p)
+    result = sd.parse_media_filename(p)
     assert result is not None
     assert result.title == "Inception"
     assert result.year == 2010
 
 
-def test_parse_plex_filename_tv_show_season_structure(tmp_path):
+def test_parse_media_filename_tv_show_season_structure(tmp_path):
     # TV shows: Show (YEAR) [tvdb-NNN] / Season N / S01E01.mkv
     p = (tmp_path / "Blue Eye Samurai (2023) [tvdb-434151]"
          / "Season 1" / "S01E01 - The Great Fire of 1657.mkv")
     p.parent.mkdir(parents=True)
     p.touch()
-    result = sd.parse_plex_filename(p)
+    result = sd.parse_media_filename(p)
     assert result is not None
     assert result.title == "Blue Eye Samurai"
     assert result.year == 2023
@@ -99,12 +99,12 @@ def test_parse_plex_filename_tv_show_season_structure(tmp_path):
     assert result.episode == 1
 
 
-def test_parse_plex_filename_tv_show_no_season_subdir(tmp_path):
+def test_parse_media_filename_tv_show_no_season_subdir(tmp_path):
     p = (tmp_path / "MINDHUNTER (2017) [tvdb-328708]"
          / "S01E01 - Episode 1.mkv")
     p.parent.mkdir(parents=True)
     p.touch()
-    result = sd.parse_plex_filename(p)
+    result = sd.parse_media_filename(p)
     assert result is not None
     assert result.title == "MINDHUNTER"
     assert result.year == 2017
@@ -112,14 +112,14 @@ def test_parse_plex_filename_tv_show_no_season_subdir(tmp_path):
     assert result.episode == 1
 
 
-def test_parse_plex_filename_stem_with_episode_info(tmp_path):
+def test_parse_media_filename_stem_with_episode_info(tmp_path):
     """Splinter Cell case: no year in dir, year+episode in file stem."""
     p = (tmp_path / "Splinter Cell - Deathwatch [tvdb-386210]"
          / "Season 01"
          / "Splinter Cell - Deathwatch (2025) - S01E01 - Up From The Grave [WEBDL-2160p].mkv")
     p.parent.mkdir(parents=True)
     p.touch()
-    result = sd.parse_plex_filename(p)
+    result = sd.parse_media_filename(p)
     assert result is not None
     assert result.title == "Splinter Cell - Deathwatch"
     assert result.year == 2025
@@ -282,7 +282,7 @@ def _mock_catalogue() -> list[dict]:
 
 def test_discover_against_fake_library():
     """Integration test covering multiple directory structures:
-    - Plex movie: ``Dune (2021) [tmdb-438631]/Dune (2021) [tmdb-438631].mkv``
+    - tmdb-tagged movie: ``Dune (2021) [tmdb-438631]/Dune (2021) [tmdb-438631].mkv``
     - imdb-tagged movie: ``The Matrix (1999) [imdb-tt0133093]/The Matrix (1999).mkv``
     - Bare movie (no tag): ``Inception (2010)/Inception (2010).mkv``
     - TV show with Season subdir: ``Blue Eye Samurai (2023) [tvdb-434151]/Season 1/S01E01.mkv``
@@ -295,7 +295,7 @@ def test_discover_against_fake_library():
     assert total_scanned > 0
 
     titles = {m.title for m in matches}
-    assert "Dune" in titles, "Plex-style [tmdb-] movie should match"
+    assert "Dune" in titles, "[tmdb-] tagged movie should match"
     assert "The Matrix" in titles, "imdb-tagged movie should match"
     assert "Inception" in titles, "bare Title (YEAR) movie should match"
     assert "Blue Eye Samurai" in titles, (

@@ -1,6 +1,6 @@
 """Discovery CLI for the auto-BEQ library sweep.
 
-Walks one or more media library roots, parses Plex-style filenames
+Walks one or more media library roots, parses standard media filenames
 (``Title (YEAR) [tmdb-NNNNN]``), cross-references every (title, year)
 against the full BEQ catalogue, and persists all matches to
 ``~/.config/beqdesigner/auto_beq_sweep.json``.
@@ -43,30 +43,27 @@ _DEFAULT_TEST_LIMIT = 10
 _CATALOGUE_CACHE_MAX_AGE_HOURS = 24
 _SCHEMA_VERSION = 1
 
-# Pattern 1 — Plex/Jellyfin directory: "Title (YEAR)" optionally followed by " [tmdb-NNN]",
-# " [imdb-ttNNN]", or " [tvdb-NNN]" (TV shows use tvdb). End-of-string anchored.
-_PLEX_DIR_RE = re.compile(
+# Pattern 1 — Standard directory: "Title (YEAR)" optionally followed by " [tmdb-NNN]",
+# " [imdb-ttNNN]", or " [tvdb-NNN]". End-of-string anchored.
+_TITLE_YEAR_DIR_RE = re.compile(
     r"^(?P<title>.+?)\s*\((?P<year>\d{4})\)"
     r"(?:\s*\[(?:tmdb|imdb|tvdb)-[^\]]+\])?\s*$"
 )
 
-# Pattern 1b — Plex/Jellyfin file stem: "Title (YEAR) - S01E01 - Episode Name [tags]".
+# Pattern 1b — File stem: "Title (YEAR) - S01E01 - Episode Name [tags]".
 # More lenient than the dir pattern: allows arbitrary content after year+optional-tag.
-# Extracts the episode identifier (S01E01) when present.
-_PLEX_STEM_RE = re.compile(
+_TITLE_YEAR_STEM_RE = re.compile(
     r"^(?P<title>.+?)\s*\((?P<year>\d{4})\)"
     r"(?:\s*\[(?:tmdb|imdb|tvdb)-[^\]]+\])?"
     r"(?:\s*-\s*S(?P<season>\d+)E(?P<episode>\d+))?"
 )
 
 # Pattern 2 — Scene-style: "Title.Name.YEAR.codec.source..." with dots as separators.
-# Matches the year as the first 4-digit group that looks like a plausible release year
-# (1920-2039). Everything before the year (with dots replaced by spaces) is the title.
 _SCENE_RE = re.compile(
     r"^(?P<title>.+?)\.(?P<year>(?:19|20)\d{2})\."
 )
 
-# Extract S01E01 from a Plex episode filename.
+# Extract S01E01 from an episode filename.
 _EPISODE_RE = re.compile(r"S(?P<season>\d+)E(?P<episode>\d+)", re.IGNORECASE)
 
 _MEDIA_EXTENSIONS = (".mkv",)
@@ -123,12 +120,12 @@ class ParsedMedia:
     episode: int | None = None
 
 
-def parse_plex_filename(path: Path) -> ParsedMedia | None:
+def parse_media_filename(path: Path) -> ParsedMedia | None:
     """Extract (title, year, season, episode) from a media file path.
 
     Supports:
-      - Plex/Jellyfin dirs: ``Title (YEAR) [tmdb-NNN]`` / ``[tvdb-NNN]``
-      - Plex file stems: ``Title (YEAR) - S01E01 - Episode Name [tags]``
+      - Standard dirs: ``Title (YEAR) [tmdb-NNN]`` / ``[tvdb-NNN]``
+      - File stems: ``Title (YEAR) - S01E01 - Episode Name [tags]``
       - Scene-style: ``Title.Name.YEAR.codec.source.mkv``
 
     Checks (in order): parent directory, grandparent directory (for TV
@@ -140,7 +137,7 @@ def parse_plex_filename(path: Path) -> ParsedMedia | None:
 
     # Try directory names first (strict end-of-string anchored).
     for dirname in (path.parent.name, path.parent.parent.name):
-        m = _PLEX_DIR_RE.match(dirname)
+        m = _TITLE_YEAR_DIR_RE.match(dirname)
         if m:
             title = m.group("title").strip()
             year = int(m.group("year"))
@@ -149,7 +146,7 @@ def parse_plex_filename(path: Path) -> ParsedMedia | None:
     # If no dir matched, try the file stem (lenient — allows episode
     # info and codec tags after the year).
     if title is None:
-        m = _PLEX_STEM_RE.match(path.stem)
+        m = _TITLE_YEAR_STEM_RE.match(path.stem)
         if m:
             title = m.group("title").strip()
             year = int(m.group("year"))
@@ -350,7 +347,7 @@ def discover_matches(
         print(f"\r  scanning [{pct:3d}%] {i + 1}/{total}", end="", flush=True)
         log.debug("  %s", media_path.relative_to(library_root))
 
-        parsed = parse_plex_filename(media_path)
+        parsed = parse_media_filename(media_path)
         if parsed is None:
             log.debug("    → no title/year parsed, skipping")
             continue
@@ -467,13 +464,25 @@ def load_config(path: Path | None = None) -> dict | None:
 # ---------------------------------------------------------------------------
 
 def _resolve_library_roots(args: argparse.Namespace) -> list[Path]:
-    """Resolve library roots from (in order) CLI flags, env var, prompt."""
+    """Resolve library roots from (in order) CLI flags, env var, previous config, prompt."""
     if args.library:
         return [Path(p).expanduser() for p in args.library]
     env = os.environ.get("AUTO_BEQ_LIBRARY_ROOTS")
     if env:
         return [Path(p.strip()).expanduser() for p in env.split(":") if p.strip()]
-    # Interactive prompt.
+
+    # Check if a previous run saved library roots in the config.
+    existing = load_config()
+    cached_roots = existing.get("library_roots", []) if existing else []
+    if cached_roots:
+        cached_display = ":".join(cached_roots)
+        print(f"Previous library roots: {cached_display}")
+        raw = input("Library path(s) [Enter to reuse, or new colon-separated paths]: ").strip()
+        if not raw:
+            return [Path(p).expanduser() for p in cached_roots]
+        return [Path(p.strip()).expanduser() for p in raw.split(":") if p.strip()]
+
+    # No previous config, no env var — prompt.
     raw = input("Library path(s), colon-separated: ").strip()
     if not raw:
         raise SystemExit("no library root provided")
