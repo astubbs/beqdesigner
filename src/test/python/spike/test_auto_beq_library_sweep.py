@@ -42,7 +42,7 @@ from spike._auto_beq_helpers import (
     _probe_audio_stream,
     load_and_smooth,
 )
-from spike.sweep_discover import bucket_rating, load_config
+from spike.sweep_discover import bucket_rating, load_catalogue_by_digest, load_config
 
 log = logging.getLogger("auto_beq_sweep")
 
@@ -98,14 +98,28 @@ def _load_films() -> tuple[list[SweepFilm], str | None]:
         "AUTO_BEQ_SWEEP_LIMIT",
         str(config.get("test_limit", _DEFAULT_TEST_LIMIT)),
     ))
+    # v3: films store catalogue_digest, look up from cached catalogue.
+    # v1/v2 fallback for older configs.
+    catalogue_entries = config.get("catalogue_entries", [])
+    digest_index = load_catalogue_by_digest()
     films: list[SweepFilm] = []
     for entry in config.get("films", [])[:limit]:
+        if "catalogue_digest" in entry:
+            cat_entry = digest_index.get(entry["catalogue_digest"])
+            if cat_entry is None:
+                log.warning("catalogue entry not found for digest %s (%s) — skipping",
+                            entry.get("catalogue_digest", "")[:12], entry.get("title"))
+                continue
+        elif "catalogue_entry_idx" in entry:
+            cat_entry = catalogue_entries[entry["catalogue_entry_idx"]]
+        else:
+            cat_entry = entry["catalogue_entry"]
         films.append(SweepFilm(
             path=Path(entry["path"]),
             title=entry["title"],
             year=entry.get("year"),
             rating=entry.get("rating"),
-            catalogue_entry=entry["catalogue_entry"],
+            catalogue_entry=cat_entry,
         ))
     return films, None
 

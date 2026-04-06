@@ -228,6 +228,49 @@ def test_match_catalogue_south_park_season_episode_format():
     assert len(m["filters"]) == 3
 
 
+def test_match_catalogue_no_false_match_for_uncovered_episode():
+    """S23E01 should NOT match when only S27/S28 profiles exist.
+
+    Previously this fell through to a 'richest entry' fallback,
+    incorrectly matching S23E01 to the S27E03 profile.
+    """
+    catalogue = [
+        {"title": "South Park", "year": "1997",
+         "season": "27E01", "episode": "",
+         "filters": [{"g": 1}, {"g": 2}, {"g": 3}, {"g": 4}]},
+        {"title": "South Park", "year": "1997",
+         "season": "27E02", "episode": "",
+         "filters": [{"g": 1}, {"g": 2}, {"g": 3}]},
+        {"title": "South Park", "year": "1997",
+         "season": "28E01", "episode": "",
+         "filters": [{"g": 1}, {"g": 2}, {"g": 3}, {"g": 4}, {"g": 5}]},
+    ]
+    # Season 23 has no catalogue coverage at all — must return None.
+    assert sd.match_catalogue(catalogue, "South Park", 1997, season=23, episode=1) is None
+    # Season 24 — also no coverage.
+    assert sd.match_catalogue(catalogue, "South Park", 1997, season=24, episode=5) is None
+    # S27E01 — exact match should still work.
+    m = sd.match_catalogue(catalogue, "South Park", 1997, season=27, episode=1)
+    assert m is not None
+    assert m["season"] == "27E01"
+
+
+def test_match_catalogue_scavengers_reign_no_cross_contamination():
+    """Episodes not covered by any profile should return None."""
+    catalogue = [
+        {"title": "Scavengers Reign", "year": "2023",
+         "season": "1", "episode": "1,7,9,11",
+         "filters": [{"g": 1}] * 4},
+        {"title": "Scavengers Reign", "year": "2023",
+         "season": "1", "episode": "2,3,4,5,6,8,10,12",
+         "filters": [{"g": 1}] * 6},
+    ]
+    # Episode 13 is not in either profile — should not match.
+    assert sd.match_catalogue(catalogue, "Scavengers Reign", 2023, season=1, episode=13) is None
+    # Season 2 doesn't exist in catalogue.
+    assert sd.match_catalogue(catalogue, "Scavengers Reign", 2023, season=2, episode=1) is None
+
+
 def test_match_catalogue_no_match_returns_none():
     catalogue = [{"title": "Dune", "year": "2021", "filters": [{"g": 1}]}]
     assert sd.match_catalogue(catalogue, "Dune", 1984) is None
@@ -267,15 +310,15 @@ def _mock_catalogue() -> list[dict]:
     """Small catalogue matching the fake library fixture."""
     return [
         {"title": "Dune", "year": "2021", "rating": 7.8,
-         "filters": [{"type": "LowShelf", "gain": 4.0}]},
+         "digest": "dune2021", "filters": [{"type": "LowShelf", "gain": 4.0}]},
         {"title": "The Matrix", "year": "1999", "rating": 8.2,
-         "filters": [{"type": "LowShelf", "gain": 3.0}]},
+         "digest": "matrix1999", "filters": [{"type": "LowShelf", "gain": 3.0}]},
         {"title": "Inception", "year": "2010", "rating": 8.8,
-         "filters": [{"type": "LowShelf", "gain": 5.0}]},
+         "digest": "inception2010", "filters": [{"type": "LowShelf", "gain": 5.0}]},
         # TV show — catalogue has ALL-CAPS title, library has mixed case.
         {"title": "BLUE EYE SAMURAI", "year": "2023", "rating": "TV-MA",
-         "filters": [{"type": "LowShelf", "gain": 3.0}],
-         "content_type": "TV"},
+         "digest": "bes2023", "content_type": "TV",
+         "filters": [{"type": "LowShelf", "gain": 3.0}]},
         # Deliberately no entry for "Unmatched Movie (2030)" or "Some TV Show S01E01".
     ]
 
@@ -341,17 +384,32 @@ def test_sort_matches_by_rating_then_year():
 # ---------------------------------------------------------------------------
 
 def test_write_and_load_config(tmp_path):
+    shared_entry = {"title": "Show", "year": "2023", "season": "1",
+                    "digest": "abc123",
+                    "filters": [{"g": 1}, {"g": 2}]}
     films = [
         sd.SweepFilm(
             path="/films/dune.mkv", library_root="/films",
             title="Dune", year=2021, rating=7.8,
-            catalogue_entry={"title": "Dune", "filters": [{"g": 1}]},
+            catalogue_entry={"title": "Dune", "digest": "dune456",
+                             "filters": [{"g": 1}]},
+        ),
+        # Two episodes sharing the same catalogue entry.
+        sd.SweepFilm(
+            path="/tv/show/s01e01.mkv", library_root="/tv",
+            title="Show", year=2023, rating=None, season=1, episode=1,
+            catalogue_entry=shared_entry,
+        ),
+        sd.SweepFilm(
+            path="/tv/show/s01e02.mkv", library_root="/tv",
+            title="Show", year=2023, rating=None, season=1, episode=2,
+            catalogue_entry=shared_entry,
         ),
     ]
     out = tmp_path / "sweep.json"
     written = sd.write_config(
         films=films,
-        library_roots=[Path("/films")],
+        library_roots=[Path("/films"), Path("/tv")],
         test_limit=5,
         output=out,
     )
@@ -360,13 +418,16 @@ def test_write_and_load_config(tmp_path):
 
     loaded = sd.load_config(out)
     assert loaded is not None
-    assert loaded["schema_version"] == 1
+    assert loaded["schema_version"] == 3
     assert loaded["test_limit"] == 5
-    assert loaded["library_roots"] == ["/films"]
-    assert len(loaded["films"]) == 1
+    assert loaded["library_roots"] == ["/films", "/tv"]
+    assert len(loaded["films"]) == 3
     assert loaded["films"][0]["title"] == "Dune"
-    assert loaded["films"][0]["catalogue_entry"]["filters"] == [{"g": 1}]
-    # Timestamp is a valid ISO string.
+    # v3: films store catalogue_digest, no embedded catalogue data.
+    assert loaded["films"][0]["catalogue_digest"] == "dune456"
+    assert loaded["films"][1]["catalogue_digest"] == "abc123"
+    assert loaded["films"][2]["catalogue_digest"] == "abc123"
+    assert "catalogue_entries" not in loaded
     assert "T" in loaded["generated_at"]
 
 
@@ -505,14 +566,48 @@ def test_main_against_fake_library(tmp_path, monkeypatch, capsys):
     assert "Inception" in titles
     assert "Blue Eye Samurai" in titles
 
-    # Blue Eye Samurai has 2 episodes → 2 entries.
+    # Blue Eye Samurai has 2 episodes → 2 film entries.
     bes_count = sum(1 for f in loaded["films"] if f["title"] == "Blue Eye Samurai")
     assert bes_count == 2
 
+    # v3: films store catalogue_digest, no embedded catalogue data.
+    assert "catalogue_entries" not in loaded
+    # Both BES episodes reference the same catalogue digest.
+    bes_films = [f for f in loaded["films"] if f["title"] == "Blue Eye Samurai"]
+    assert bes_films[0]["catalogue_digest"] == bes_films[1]["catalogue_digest"]
+    assert bes_films[0]["catalogue_digest"] != ""
+
     captured = capsys.readouterr()
     assert "Total:" in captured.out
-    assert "5 titles" in captured.out or "titles" in captured.out
+    assert "titles" in captured.out
     assert str(config_path) in captured.out
+
+
+def test_main_clean_deletes_config(tmp_path, monkeypatch, capsys):
+    """--clean removes existing config file."""
+    config_path = tmp_path / "sweep.json"
+    config_path.write_text('{"schema_version": 1}')
+    assert config_path.exists()
+
+    # --clean alone (no library) still deletes config then prompts.
+    # Provide a library to avoid the interactive prompt.
+    cache_path = tmp_path / "catalogue_cache.json"
+    cache_path.write_text(json.dumps(_mock_catalogue()))
+    monkeypatch.setattr(sd, "_catalogue_cache_path", lambda: cache_path)
+
+    exit_code = sd.main([
+        "--clean",
+        "--library", str(_FIXTURE_ROOT),
+        "--yes",
+        "--output", str(config_path),
+    ])
+    assert exit_code == 0
+    # Config was recreated with fresh data.
+    loaded = sd.load_config(config_path)
+    assert loaded is not None
+    assert len(loaded["films"]) > 0
+    captured = capsys.readouterr()
+    assert "Deleted" in captured.out
 
 
 def test_main_nonexistent_library_errors(tmp_path, capsys):

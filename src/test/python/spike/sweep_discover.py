@@ -29,7 +29,7 @@ import re
 import sys
 import urllib.request
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from spike._auto_beq_helpers import beq_config_dir
@@ -277,8 +277,13 @@ def match_catalogue(
                 exact_ep.append(entry)
             elif (season, 0) in eps:
                 season_wide.append(entry)
-        # Prefer: exact episode match > season-wide > no episode info.
-        pool = exact_ep or season_wide or no_ep_info or candidates
+        # Prefer: exact episode match > season-wide > entries without
+        # episode info (show-wide). If ALL entries have episode info
+        # but none cover this episode, return None — don't match a
+        # wrong profile.
+        pool = exact_ep or season_wide or no_ep_info
+        if not pool:
+            return None
         pool.sort(key=lambda e: len(e["filters"]), reverse=True)
         return pool[0]
 
@@ -338,15 +343,81 @@ class DiscoveryResult:
     parsed_counts: dict[tuple[str, int], int] = field(default_factory=dict)
 
 
+def _find_media_dirs(library_root: Path) -> list[Path]:
+    """Find directories at the depth where media files live.
+
+    Finds the first ``.mkv`` file, determines its parent's depth
+    relative to the root, then lists all directories at that depth.
+    This adapts to any layout (flat, one-level, genre-grouped, etc.).
+    Falls back to immediate children if no media files found.
+    """
+    # Find one media file to determine the depth. Check each top-level
+    # child individually so we don't traverse the entire tree on a slow
+    # network volume — we stop as soon as we find the first file.
+    sample: Path | None = None
+    for child in library_root.iterdir():
+        if child.is_dir():
+            for ext in _MEDIA_EXTENSIONS:
+                for p in child.rglob(f"*{ext}"):
+                    sample = p
+                    break
+                if sample:
+                    break
+        elif any(child.suffix == ext for ext in _MEDIA_EXTENSIONS):
+            sample = child
+        if sample:
+            break
+    if sample is None:
+        return sorted(p for p in library_root.iterdir() if p.is_dir())
+
+    # Walk up from the media file's parent to find the title directory —
+    # the highest ancestor (below root) whose name contains "(YEAR)".
+    # For "root/Show (2023)/Season 1/file.mkv" that's "Show (2023)" at depth 1.
+    # For "root/file.mkv" that's root itself.
+    _HAS_YEAR = re.compile(r"\(\d{4}\)")
+    title_dir: Path | None = None
+    cur = sample.parent
+    while cur != library_root and cur != cur.parent:
+        if _HAS_YEAR.search(cur.name):
+            title_dir = cur
+        cur = cur.parent
+
+    if title_dir is None:
+        # No dir with (YEAR) found — use immediate children of root.
+        return sorted(p for p in library_root.iterdir() if p.is_dir())
+
+    # The title dir's parent is the level we want to list.
+    level_parent = title_dir.parent
+    return sorted(p for p in level_parent.iterdir() if p.is_dir())
+
+
 def discover_matches(
     library_root: Path,
     catalogue: list[dict],
 ) -> DiscoveryResult:
     """Walk a library root and return matches + scan stats."""
-    log.info("root %s: listing media files...", library_root)
+    # Find the directory depth where media directories live (dirs whose
+    # names parse as "Title (YEAR)"). Start from root's immediate children
+    # and go one level deeper if none match.
+    media_dirs = _find_media_dirs(library_root)
+    n_dirs = len(media_dirs) or 1
+    log.info("root %s: %d media directories found", library_root, n_dirs)
+
     media_files: list[Path] = []
+    for idx, child in enumerate(media_dirs):
+        pct = (idx + 1) * 100 // n_dirs
+        # \033[2K clears the entire terminal line to avoid leftover chars.
+        print(
+            f"\r\033[2K  scanning [{pct:3d}%] {idx + 1}/{n_dirs} "
+            f"({len(media_files)} files) — {child.name}",
+            end="", flush=True,
+        )
+        for ext in _MEDIA_EXTENSIONS:
+            media_files.extend(child.rglob(f"*{ext}"))
+    # Also check for media files directly in the root (not in subdirs).
     for ext in _MEDIA_EXTENSIONS:
-        media_files.extend(library_root.rglob(f"*{ext}"))
+        media_files.extend(library_root.glob(f"*{ext}"))
+    print(f"\r\033[2K  found {len(media_files)} media files across {n_dirs} directories.")
     total = len(media_files)
     log.info("root %s: found %d media files to scan", library_root, total)
 
@@ -387,7 +458,8 @@ def discover_matches(
             catalogue_entry=entry,
         ))
     print()  # newline after progress bar
-    log.info("root %s: scanned=%d matched=%d", library_root, total, len(matches))
+    match_pct = (len(matches) * 100 // total) if total else 0
+    log.info("root %s: scanned=%d matched=%d (%d%%)", library_root, total, len(matches), match_pct)
     return DiscoveryResult(
         matches=matches, total_scanned=total, parsed_counts=dict(parsed_counts),
     )
@@ -443,6 +515,11 @@ def _default_config_path() -> Path:
     return beq_config_dir() / "auto_beq_sweep.json"
 
 
+def _catalogue_digest(entry: dict) -> str:
+    """Return the catalogue entry's unique digest hash."""
+    return entry.get("digest", "")
+
+
 def write_config(
     films: list[SweepFilm],
     library_roots: list[Path],
@@ -450,18 +527,37 @@ def write_config(
     output: Path | None = None,
     catalogue_url: str = _DEFAULT_CATALOGUE_URL,
 ) -> Path:
-    """Write the discovered films to the sweep config JSON."""
+    """Write the discovered films to the sweep config JSON.
+
+    Each film stores only the catalogue entry's ``digest`` hash.
+    The full entry is looked up from the cached catalogue at test time.
+    This keeps the config small regardless of how many episodes match.
+    """
     path = output or _default_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     now = dt.datetime.now(dt.timezone.utc).astimezone().isoformat()
+
+    film_records = []
+    for f in films:
+        film_records.append({
+            "path": f.path,
+            "library_root": f.library_root,
+            "title": f.title,
+            "year": f.year,
+            "rating": f.rating,
+            "season": f.season,
+            "episode": f.episode,
+            "catalogue_digest": _catalogue_digest(f.catalogue_entry),
+        })
+
     payload = {
-        "schema_version": _SCHEMA_VERSION,
+        "schema_version": 3,
         "generated_at": now,
         "library_roots": [str(r) for r in library_roots],
         "catalogue_url": catalogue_url,
         "catalogue_fetched_at": now,
         "test_limit": test_limit,
-        "films": [asdict(f) for f in films],
+        "films": film_records,
     }
     path.write_text(json.dumps(payload, indent=2))
     return path
@@ -474,6 +570,22 @@ def load_config(path: Path | None = None) -> dict | None:
         return None
     with p.open() as f:
         return json.load(f)
+
+
+def load_catalogue_by_digest(
+    catalogue_path: Path | None = None,
+) -> dict[str, dict]:
+    """Load the cached catalogue and index by digest hash.
+
+    Returns ``{digest: entry_dict}``. Used at test time to resolve
+    the ``catalogue_digest`` stored in the sweep config.
+    """
+    path = catalogue_path or _catalogue_cache_path()
+    if not path.exists():
+        return {}
+    with path.open() as f:
+        entries = json.load(f)
+    return {e.get("digest", ""): e for e in entries if e.get("digest")}
 
 
 def _save_library_roots(library_roots: list[Path], output: Path | None = None) -> None:
@@ -559,12 +671,13 @@ def _print_summary(
     print()
     print(f"All {unique_titles} matched titles (rating desc, year desc):")
     for i, ((title, year), films) in enumerate(grouped.items(), 1):
-        r_label = f"{films[0].rating:.1f}" if films[0].rating is not None else "n/a"
+        rating = films[0].rating
+        r_part = f" [r={rating:.1f}]" if rating is not None else ""
         matched_count = len(films)
         total_for_title = parsed_counts.get((title, year), matched_count)
+        has_episodes = any(f.season is not None for f in films)
 
-        if matched_count == 1 and total_for_title <= 1:
-            # Single film, no episode breakdown needed.
+        if not has_episodes and total_for_title <= 1:
             suffix = ""
         else:
             # Group matched episodes by season.
@@ -580,15 +693,12 @@ def _print_summary(
             season_str = ", ".join(
                 f"{s}: {c} ep" for s, c in sorted(seasons.items())
             )
-            if total_for_title > matched_count:
-                pct = matched_count * 100 // total_for_title
-                suffix = (
-                    f"  ({matched_count}/{total_for_title} episodes matched "
-                    f"— {pct}% — {season_str})"
-                )
-            else:
-                suffix = f"  ({matched_count} episodes — {season_str})"
-        print(f"  {i:3d}. [{year}] [r={r_label}] {title}{suffix}")
+            pct = (matched_count * 100 // total_for_title) if total_for_title else 100
+            suffix = (
+                f"  ({matched_count}/{total_for_title} episodes matched "
+                f"— {pct}% — {season_str})"
+            )
+        print(f"  {i:3d}. [{year}]{r_part} {title}{suffix}")
     print()
 
 
@@ -614,6 +724,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Re-fetch catalogue even if the cached copy is fresh.",
     )
     p.add_argument(
+        "--clean", action="store_true",
+        help="Delete existing config and start fresh.",
+    )
+    p.add_argument(
         "--yes", action="store_true",
         help="Skip confirmation prompt (non-interactive mode).",
     )
@@ -632,6 +746,14 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.DEBUG, format="%(message)s")
     load_dotenv()
     args = _parse_args(argv)
+
+    if args.clean:
+        config_path = args.output or _default_config_path()
+        if config_path.exists():
+            config_path.unlink()
+            print(f"Deleted {config_path}")
+        else:
+            print(f"No config to clean at {config_path}")
 
     try:
         library_roots = _resolve_library_roots(args)
