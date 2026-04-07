@@ -30,6 +30,7 @@ from typing import Any
 import pytest
 from model.auto_beq import (
     DEFAULT_GRID,
+    MatchMetrics,
     compute_match_metrics,
     evaluate_filter_chain,
 )
@@ -183,42 +184,24 @@ def _append_sweep_report(
         ])
 
 
-@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
-@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
-@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
-@pytest.mark.parametrize(
-    "film",
-    _SWEEP_FILMS,
-    ids=[_sweep_film_id(f) for f in _SWEEP_FILMS] or None,
-)
-def test_library_sweep(film: SweepFilm, caplog):
-    """Run the full auto-BEQ pipeline for one discovered film.
+def _run_one_film(film: SweepFilm) -> tuple[SweepFilm, MatchMetrics, str] | None:
+    """Run the auto-BEQ pipeline for one media file. Thread-safe.
 
-    No assertions — the verdict is written to the CSV report and
-    logged. Failures here are informational (they show which films
-    the current advisor struggles with).
+    Returns (film, metrics, advisor_name) or None if skipped.
     """
-    caplog.set_level(logging.INFO, logger="auto_beq_sweep")
-    if not film.path.exists():
-        pytest.skip(f"media file not accessible: {film.path}")
-
     from model.auto_beq import propose_filters_from_measured
+
+    if not film.path.exists():
+        log.warning("media file not accessible: %s", film.path)
+        return None
 
     fs = 1000
     wav_path = _extract_lfe_wav(film.path, target_fs=fs)
     measured = load_and_smooth(wav_path, fs=fs, freqs=DEFAULT_GRID)
 
-    # Build metadata. The probe is only needed for codec/layout info
-    # for the advisor — skip it if the advisor doesn't use metadata
-    # (MeasurementAdvisor ignores it entirely).
     advisor = get_advisor()
     metadata = MediaMetadata(title=film.title, year=film.year)
 
-    # ALWAYS auto-generate from the measured curve. The catalogue entry
-    # is the ANSWER KEY we grade against, not a shortcut to serve.
-    # This exercises the MeasurementAdvisor and tells us how good our
-    # algorithm is. In production, propose_or_lookup() would serve the
-    # catalogue directly — but tests must test the auto-generation path.
     proposed = propose_filters_from_measured(
         measured, DEFAULT_GRID, fs=fs,
         advisor=advisor, metadata=metadata,
@@ -229,14 +212,98 @@ def test_library_sweep(film: SweepFilm, caplog):
     )
     metrics = compute_match_metrics(-ground_resp, proposed, DEFAULT_GRID, fs=fs)
 
-    _append_sweep_report(
-        film=film,
-        advisor_name=advisor.name,
-        metrics=metrics,
-        catalogue_filter_count=len(film.catalogue_entry["filters"]),
-    )
     log.info(
         "%s (%s): advisor=%s verdict=%s mean=%.2f max=%.2f",
         film.title, film.year, advisor.name, metrics.verdict,
         metrics.mean_abs_err_db, metrics.max_abs_err_db,
+    )
+    return film, metrics, advisor.name
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
+@pytest.mark.parametrize(
+    "film",
+    _SWEEP_FILMS,
+    ids=[_sweep_film_id(f) for f in _SWEEP_FILMS] or None,
+)
+def test_library_sweep(film: SweepFilm, caplog):
+    """Run the full auto-BEQ pipeline for one discovered media file.
+
+    No assertions — the verdict is written to the CSV report and
+    logged. Failures here are informational (they show which media
+    the current advisor struggles with).
+    """
+    caplog.set_level(logging.INFO, logger="auto_beq_sweep")
+    result = _run_one_film(film)
+    if result is None:
+        pytest.skip(f"media file not accessible: {film.path}")
+    film, metrics, advisor_name = result
+    _append_sweep_report(
+        film=film,
+        advisor_name=advisor_name,
+        metrics=metrics,
+        catalogue_filter_count=len(film.catalogue_entry["filters"]),
+    )
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
+def test_library_sweep_parallel():
+    """Run the full auto-BEQ pipeline across all media in parallel.
+
+    Concurrency = number of configured Ollama hosts (so each host
+    gets one request at a time). Falls back to 1 if no Ollama hosts
+    configured (e.g. MeasurementAdvisor doesn't need Ollama).
+
+    This test is an ALTERNATIVE to the parametrised test_library_sweep
+    above — run one OR the other, not both. Use this when you want
+    speed; use the parametrised one when you want per-media pytest
+    output.
+
+    Select with: SPIKE_TEST=...::test_library_sweep_parallel
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from model.auto_beq_advisor import _load_ollama_hosts
+
+    if not _SWEEP_FILMS:
+        pytest.skip("no films to test")
+
+    n_hosts = len(_load_ollama_hosts())
+    n_workers = max(1, n_hosts)
+    log.info("parallel sweep: %d media files, %d workers (%d Ollama hosts)",
+             len(_SWEEP_FILMS), n_workers, n_hosts)
+
+    verdicts: dict[str, int] = {"PASS": 0, "MARGINAL": 0, "FAIL": 0}
+    skipped = 0
+
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = {pool.submit(_run_one_film, film): film for film in _SWEEP_FILMS}
+        for future in as_completed(futures):
+            result = future.result()
+            if result is None:
+                skipped += 1
+                continue
+            film, metrics, advisor_name = result
+            verdicts[metrics.verdict] = verdicts.get(metrics.verdict, 0) + 1
+            _append_sweep_report(
+                film=film,
+                advisor_name=advisor_name,
+                metrics=metrics,
+                catalogue_filter_count=len(film.catalogue_entry["filters"]),
+            )
+
+    total = sum(verdicts.values())
+    log.info(
+        "parallel sweep done: %d PASS, %d MARGINAL, %d FAIL, %d skipped",
+        verdicts["PASS"], verdicts["MARGINAL"], verdicts["FAIL"], skipped,
+    )
+    print(
+        f"\nSweep results: {verdicts['PASS']} PASS, "
+        f"{verdicts['MARGINAL']} MARGINAL, {verdicts['FAIL']} FAIL, "
+        f"{skipped} skipped (out of {total + skipped} media files, "
+        f"{n_workers} workers)"
     )
