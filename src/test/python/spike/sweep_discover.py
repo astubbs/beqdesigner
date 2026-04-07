@@ -682,15 +682,21 @@ def _print_summary(
     library_roots: list[Path],
     total_scanned: int,
     parsed_counts: dict[tuple[str, int], int] | None = None,
+    per_root_scanned: dict[str, int] | None = None,
 ) -> None:
     if parsed_counts is None:
         parsed_counts = {}
+    if per_root_scanned is None:
+        per_root_scanned = {}
 
     print()
+    print("\n── Summary ──")
     print(f"Library roots scanned: {len(library_roots)}")
     for root in library_roots:
-        n = sum(1 for m in matches if m.library_root == str(root))
-        print(f"  {root}  →  {n} catalogue matches")
+        n_matched = sum(1 for m in matches if m.library_root == str(root))
+        n_scanned = per_root_scanned.get(str(root), 0)
+        pct = (n_matched * 100 // n_scanned) if n_scanned else 0
+        print(f"  {root}  →  {n_matched} catalogue matches / {n_scanned} files ({pct}%)")
 
     # Group by (title, year) to collapse episodes into one line.
     from collections import OrderedDict
@@ -818,9 +824,11 @@ def main(argv: list[str] | None = None) -> int:
     # Scan all roots first to get a global file count for progress.
     print("\n── Phase 1: Inventory ──")
     all_files: list[tuple[Path, Path]] = []
+    per_root_scanned: dict[str, int] = {}
     for root in library_roots:
         files = inventory_root(root)
         all_files.extend((f, root) for f in files)
+        per_root_scanned[str(root)] = len(files)
     print(f"\nTotal media files across all roots: {len(all_files)}")
 
     # ---- Phase 2: Matching ----
@@ -830,7 +838,8 @@ def main(argv: list[str] | None = None) -> int:
     total_scanned = result.total_scanned
     parsed_counts = result.parsed_counts
 
-    _print_summary(matches, library_roots, total_scanned, parsed_counts)
+    _print_summary(matches, library_roots, total_scanned, parsed_counts,
+                    per_root_scanned=per_root_scanned)
 
     if not matches:
         print("No catalogue-matched films found.", file=sys.stderr)
@@ -848,9 +857,7 @@ def main(argv: list[str] | None = None) -> int:
         test_limit=args.test_limit,
         output=args.output,
     )
-    print(f"Wrote {len(matches)} films to {path}")
-    print(f"Test will run top {args.test_limit} by default "
-          "(override via AUTO_BEQ_SWEEP_LIMIT).")
+    print(f"\nWrote {len(matches)} films to {path}")
     return 0
 
 
