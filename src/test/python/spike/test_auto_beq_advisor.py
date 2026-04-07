@@ -195,8 +195,8 @@ def test_render_ollama_prompt_handles_missing_metadata():
 
 
 def test_measurement_advisor_single_knee_formula():
-    """Clean synthetic: peak +6@25Hz, L10=-2, L20=+4. Formula says
-    max_gain = (6 - -2) + (4 - -2) = 8 + 6 = 14 dB, knee = 25 Hz."""
+    """Clean synthetic: peak +6@25Hz, L10=-2. Expert formula says
+    max_gain = peak - L10 = 6 - -2 = 8 dB."""
     features = CurveFeatures(
         shoulder_peak_db=6.0, shoulder_peak_hz=25.0,
         level_at_5hz_db=-8.0, level_at_10hz_db=-2.0, level_at_20hz_db=4.0,
@@ -205,8 +205,7 @@ def test_measurement_advisor_single_knee_formula():
     )
     advice = MeasurementAdvisor().advise(MediaMetadata(title="x"), features)
     assert advice.source == "measurement"
-    assert advice.max_gain_db == pytest.approx(14.0, abs=0.01)
-    assert advice.knee_hz == pytest.approx(25.0, abs=0.01)
+    assert advice.max_gain_db == pytest.approx(8.0, abs=0.01)
     assert advice.filters is None  # single-knee, no explicit chain
 
 

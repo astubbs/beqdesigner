@@ -962,32 +962,90 @@ def _render_refine_user_prompt(
     )
 
 
+def _load_ollama_hosts() -> list[str]:
+    """Load Ollama hosts from (in priority): env var, settings.json, default.
+
+    Supports multiple hosts for load balancing:
+      - ``OLLAMA_HOSTS`` env var: comma-separated URLs
+      - ``OLLAMA_HOST`` env var: single URL (legacy)
+      - ``ollama_hosts`` in ``~/.config/beqdesigner/settings.json``: list
+      - Default: ``http://localhost:11434``
+    """
+    # 1. OLLAMA_HOSTS (plural, comma-separated)
+    hosts_env = os.environ.get("OLLAMA_HOSTS")
+    if hosts_env:
+        return [h.strip() for h in hosts_env.split(",") if h.strip()]
+    # 2. OLLAMA_HOST (singular, legacy)
+    host_env = os.environ.get("OLLAMA_HOST")
+    if host_env:
+        return [host_env]
+    # 3. settings.json
+    cfg_path = Path.home() / ".config" / "beqdesigner" / "settings.json"
+    if cfg_path.exists():
+        try:
+            with cfg_path.open() as f:
+                data = json.load(f)
+            hosts = data.get("ollama_hosts")
+            if isinstance(hosts, list) and hosts:
+                return [str(h) for h in hosts]
+        except Exception:
+            pass
+    # 4. Default
+    return [DEFAULT_OLLAMA_HOST]
+
+
 class OllamaAdvisor:
-    """Calls a local Ollama HTTP API for structured advice.
+    """Calls Ollama HTTP API(s) for structured advice.
 
-    Connects to ``http://localhost:11434`` by default (override with the
-    ``OLLAMA_HOST`` env var). Model defaults to ``llama3.1:8b``
-    (``OLLAMA_MODEL`` env var). Uses format="json" to force valid JSON
-    output. Temperature=0.1 for determinism.
+    Supports **multiple hosts** for load balancing. Hosts are resolved
+    from (in priority):
+      1. ``OLLAMA_HOSTS`` env var (comma-separated URLs)
+      2. ``OLLAMA_HOST`` env var (single URL, legacy)
+      3. ``ollama_hosts`` list in ``~/.config/beqdesigner/settings.json``
+      4. Default: ``http://localhost:11434``
 
-    Raises on any connection/parse error - callers decide whether to
-    skip or fall back.
+    Requests are distributed round-robin across available hosts. If a
+    host fails, the next host is tried before raising.
+
+    Model defaults to ``llama3.1:8b`` (``OLLAMA_MODEL`` env var).
+    Uses format="json" to force valid JSON output. Temperature=0.1
+    for determinism.
     """
 
     name = "ollama"
 
     def __init__(
         self,
+        hosts: list[str] | None = None,
         host: str | None = None,
         model: str | None = None,
         timeout_s: float = OLLAMA_TIMEOUT_SECONDS,
     ):
-        self.host = host or os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
+        if hosts:
+            self.hosts = hosts
+        elif host:
+            self.hosts = [host]
+        else:
+            self.hosts = _load_ollama_hosts()
         self.model = model or os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
         self.timeout_s = timeout_s
+        self._call_count = 0
+        if len(self.hosts) > 1:
+            log.info("Ollama load balancing across %d hosts: %s",
+                     len(self.hosts), ", ".join(self.hosts))
+
+    def _next_host(self) -> str:
+        """Round-robin host selection."""
+        host = self.hosts[self._call_count % len(self.hosts)]
+        self._call_count += 1
+        return host
 
     def _call_json(self, system_prompt: str, user_prompt: str) -> dict:
-        """Single Ollama call returning parsed JSON. Raises on failure."""
+        """Single Ollama call returning parsed JSON.
+
+        Tries hosts round-robin. If a host fails, tries the next one
+        before raising (up to len(hosts) attempts).
+        """
         payload = {
             "model": self.model,
             "system": system_prompt,
@@ -996,29 +1054,41 @@ class OllamaAdvisor:
             "format": "json",
             "options": {"temperature": 0.1},
         }
-        url = f"{self.host.rstrip('/')}/api/generate"
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
+        last_exc: Exception | None = None
+        for _attempt in range(len(self.hosts)):
+            host = self._next_host()
+            url = f"{host.rstrip('/')}/api/generate"
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
+                raw_text = body.get("response", "").strip()
+                if not raw_text:
+                    raise RuntimeError(f"Ollama returned empty response from {host}")
+                try:
+                    return json.loads(raw_text)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError(
+                        f"Ollama returned non-JSON from {host}: {raw_text[:200]!r}"
+                    ) from exc
+            except (urllib.error.URLError, TimeoutError, RuntimeError) as exc:
+                log.warning("Ollama host %s failed: %s", host, exc)
+                last_exc = exc
+                continue
+        raise RuntimeError(
+            f"All {len(self.hosts)} Ollama hosts failed. "
+            f"Last error: {last_exc}"
         )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError) as exc:
-            raise RuntimeError(
-                f"Ollama request failed: {exc} (is `ollama serve` running at {self.host}?)"
-            ) from exc
-        raw_text = body.get("response", "").strip()
-        if not raw_text:
-            raise RuntimeError(f"Ollama returned empty response: {body!r}")
-        try:
-            return json.loads(raw_text)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                f"Ollama returned non-JSON in response: {raw_text[:200]!r}"
-            ) from exc
+
+    # Legacy property for code that reads self.host
+    @property
+    def host(self) -> str:
+        return self.hosts[0] if self.hosts else DEFAULT_OLLAMA_HOST
 
     def advise(self, metadata: MediaMetadata, features: CurveFeatures) -> Advice:
         """Multi-step Ollama flow - each call is single-purpose.
