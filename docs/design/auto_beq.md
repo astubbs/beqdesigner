@@ -342,7 +342,28 @@ The three-tier roadmap from the vision brief:
 
 ---
 
-## 7. File layout
+## 7. Future features
+
+- **Pre-extract audio for uncatalogued media.** The library discovery
+  config records all media files (matched + unmatched). Currently
+  audio extraction only happens on-demand when a test or the magic
+  wand requests it. Optional background pre-extraction for unmatched
+  media would make later profile construction instant instead of
+  waiting 30-120s per title for ffmpeg. Low priority — extraction is
+  cached after first run anyway.
+- **AnthropicAdvisor** — API-key-based advisor using Claude for the
+  gain-multiplier question (narrower than E8-E13's full-tier
+  classification).
+- **TMDB metadata lookup** — auto-fetch genre/director/year from
+  TMDB to augment advisor context.
+- **Topology-hint-driven fitter** — advisor returns a preferred
+  filter topology (cascade vs shelf+PEQ) and the fitter respects it.
+- **On-disk advisor response caching** — avoid re-running LLM for
+  the same title+features.
+
+---
+
+## 8. File layout
 
 | Path | Role |
 |---|---|
