@@ -607,7 +607,7 @@ def _save_library_roots(library_roots: list[Path], output: Path | None = None) -
 def _resolve_library_roots(args: argparse.Namespace) -> list[Path]:
     """Resolve library roots from (in order) CLI flags, env var, previous config, prompt."""
     if args.library:
-        return [Path(p).expanduser() for p in args.library]
+        return _split_paths(",".join(args.library))
     env = os.environ.get("AUTO_BEQ_LIBRARY_ROOTS")
     if env:
         return _split_paths(env)
@@ -631,8 +631,23 @@ def _resolve_library_roots(args: argparse.Namespace) -> list[Path]:
 
 
 def _split_paths(raw: str) -> list[Path]:
-    """Split a string of paths by comma, strip whitespace."""
-    return [Path(p.strip()).expanduser() for p in raw.split(",") if p.strip()]
+    """Split a string of paths by comma, strip whitespace and shell escapes.
+
+    Users often paste paths with backslash-escaped spaces (e.g. from
+    shell tab-completion or drag-and-drop): ``/Volumes/DMZ\\ Storage``.
+    Interactive input isn't shell-parsed, so we strip those escapes.
+    """
+    parts = []
+    for p in raw.split(","):
+        p = p.strip()
+        if not p:
+            continue
+        # Remove backslash escapes: "DMZ\ Storage" -> "DMZ Storage"
+        p = p.replace("\\ ", " ")
+        # Also handle double-backslash from some terminals
+        p = p.replace("\\\\", "\\")
+        parts.append(Path(p).expanduser())
+    return parts
 
 
 def _print_summary(

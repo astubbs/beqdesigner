@@ -501,6 +501,27 @@ def test_split_paths_handles_trailing_comma():
     assert result == [Path("/a"), Path("/b")]
 
 
+def test_split_paths_strips_backslash_escapes():
+    """Users paste paths with shell-escaped spaces from tab-completion."""
+    result = sd._split_paths(
+        r"/Volumes/DMZ\ Storage\ 24TB/media, /Volumes/Batou/TV"
+    )
+    assert result == [
+        Path("/Volumes/DMZ Storage 24TB/media"),
+        Path("/Volumes/Batou/TV"),
+    ]
+
+
+def test_split_paths_mixed_escaped_and_unescaped():
+    result = sd._split_paths(
+        r"/Volumes/DMZ\ Storage/Movies,/Users/me/Downloads/movies"
+    )
+    assert result == [
+        Path("/Volumes/DMZ Storage/Movies"),
+        Path("/Users/me/Downloads/movies"),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # .env loader
 # ---------------------------------------------------------------------------
