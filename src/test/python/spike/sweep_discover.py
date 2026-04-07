@@ -391,24 +391,22 @@ def _find_media_dirs(library_root: Path) -> list[Path]:
     return sorted(p for p in level_parent.iterdir() if p.is_dir())
 
 
-def discover_matches(
-    library_root: Path,
-    catalogue: list[dict],
-) -> DiscoveryResult:
-    """Walk a library root and return matches + scan stats."""
-    # Find the directory depth where media directories live (dirs whose
-    # names parse as "Title (YEAR)"). Start from root's immediate children
-    # and go one level deeper if none match.
+def inventory_root(library_root: Path) -> list[Path]:
+    """Phase 1: find all media files under a library root.
+
+    Returns a list of media file paths. No catalogue matching — just
+    filesystem walk + file counting.
+    """
+    log.info("root %s: walking filesystem...", library_root)
     media_dirs = _find_media_dirs(library_root)
     n_dirs = len(media_dirs) or 1
-    log.info("root %s: %d media directories found", library_root, n_dirs)
+    print(f"  root {library_root}: {n_dirs} media directories found")
 
     media_files: list[Path] = []
     for idx, child in enumerate(media_dirs):
         pct = (idx + 1) * 100 // n_dirs
-        # \033[2K clears the entire terminal line to avoid leftover chars.
         print(
-            f"\r\033[2K  scanning [{pct:3d}%] {idx + 1}/{n_dirs} "
+            f"\r\033[2K    inventorying [{pct:3d}%] {idx + 1}/{n_dirs} "
             f"({len(media_files)} files) — {child.name}",
             end="", flush=True,
         )
@@ -417,36 +415,54 @@ def discover_matches(
     # Also check for media files directly in the root (not in subdirs).
     for ext in _MEDIA_EXTENSIONS:
         media_files.extend(library_root.glob(f"*{ext}"))
-    print(f"\r\033[2K  found {len(media_files)} media files across {n_dirs} directories.")
-    total = len(media_files)
-    log.info("root %s: found %d media files to scan", library_root, total)
+    print(f"\r\033[2K    {len(media_files)} media files across {n_dirs} directories.")
+    return media_files
 
+
+def match_media_files(
+    all_files: list[tuple[Path, Path]],
+    catalogue: list[dict],
+) -> DiscoveryResult:
+    """Phase 2: parse + catalogue-match all media files across all roots.
+
+    ``all_files`` is a list of ``(media_path, library_root)`` pairs.
+    Progress is reported as a single global counter across all roots.
+    """
+    total = len(all_files)
     matches: list[SweepFilm] = []
     parsed_counts: dict[tuple[str, int], int] = Counter()
-    for i, media_path in enumerate(media_files):
+    for i, (media_path, library_root) in enumerate(all_files):
         pct = ((i + 1) * 100) // total if total else 100
-        print(f"\r  scanning [{pct:3d}%] {i + 1}/{total}", end="", flush=True)
-        log.debug("  %s", media_path.relative_to(library_root))
+        try:
+            rel = media_path.relative_to(library_root)
+        except ValueError:
+            rel = media_path
+        print(
+            f"\r\033[2K  matching [{pct:3d}%] {i + 1}/{total}  {rel}",
+            end="", flush=True,
+        )
 
         parsed = parse_media_filename(media_path)
         if parsed is None:
             log.debug("    → no title/year parsed, skipping")
             continue
         ep_label = f" S{parsed.season:02d}E{parsed.episode:02d}" if parsed.episode else ""
-        log.debug("    → parsed: %r (%d)%s", parsed.title, parsed.year, ep_label)
+        print(
+            f"\r\033[2K  matching [{pct:3d}%] {i + 1}/{total}  {rel}",
+        )
+        print(f"    → parsed: {parsed.title!r} ({parsed.year}){ep_label}")
         parsed_counts[(parsed.title, parsed.year)] += 1
         entry = match_catalogue(
             catalogue, parsed.title, parsed.year,
             season=parsed.season, episode=parsed.episode,
         )
         if entry is None:
-            log.debug("    → no catalogue match")
+            print("    → no catalogue match")
             continue
-        # Show which catalogue profile matched (season/episode coverage).
         cat_season = entry.get("season", "")
         cat_episode = entry.get("episode", "")
         cat_label = f" (catalogue: season={cat_season} episode={cat_episode})" if cat_season else ""
-        log.debug("    → MATCHED: %r (%d)%s", entry.get("title"), parsed.year, cat_label)
+        print(f"    → MATCHED: {entry.get('title')!r} ({parsed.year}){cat_label}")
         matches.append(SweepFilm(
             path=str(media_path),
             library_root=str(library_root),
@@ -457,12 +473,23 @@ def discover_matches(
             episode=parsed.episode,
             catalogue_entry=entry,
         ))
-    print()  # newline after progress bar
+
+    print()  # newline after progress
     match_pct = (len(matches) * 100 // total) if total else 0
-    log.info("root %s: scanned=%d matched=%d (%d%%)", library_root, total, len(matches), match_pct)
+    log.info("matched=%d/%d (%d%%)", len(matches), total, match_pct)
     return DiscoveryResult(
         matches=matches, total_scanned=total, parsed_counts=dict(parsed_counts),
     )
+
+
+def discover_matches(
+    library_root: Path,
+    catalogue: list[dict],
+) -> DiscoveryResult:
+    """Legacy single-root entry point. Calls inventory + match."""
+    files = inventory_root(library_root)
+    all_files = [(f, library_root) for f in files]
+    return match_media_files(all_files, catalogue)
 
 
 def sort_matches(matches: list[SweepFilm]) -> list[SweepFilm]:
@@ -787,16 +814,21 @@ def main(argv: list[str] | None = None) -> int:
     catalogue = load_or_fetch_catalogue(force_refresh=args.refresh)
     log.info("catalogue entries: %d", len(catalogue))
 
-    matches: list[SweepFilm] = []
-    total_scanned = 0
-    parsed_counts: dict[tuple[str, int], int] = {}
+    # ---- Phase 1: Inventory ----
+    # Scan all roots first to get a global file count for progress.
+    print("\n── Phase 1: Inventory ──")
+    all_files: list[tuple[Path, Path]] = []
     for root in library_roots:
-        result = discover_matches(root, catalogue)
-        matches.extend(result.matches)
-        total_scanned += result.total_scanned
-        for key, count in result.parsed_counts.items():
-            parsed_counts[key] = parsed_counts.get(key, 0) + count
-    matches = sort_matches(matches)
+        files = inventory_root(root)
+        all_files.extend((f, root) for f in files)
+    print(f"\nTotal media files across all roots: {len(all_files)}")
+
+    # ---- Phase 2: Matching ----
+    print("\n── Phase 2: Catalogue matching ──")
+    result = match_media_files(all_files, catalogue)
+    matches = sort_matches(result.matches)
+    total_scanned = result.total_scanned
+    parsed_counts = result.parsed_counts
 
     _print_summary(matches, library_roots, total_scanned, parsed_counts)
 
