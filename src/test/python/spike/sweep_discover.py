@@ -358,6 +358,8 @@ class DiscoveryResult:
     # Counts of all parsed files per (title, year), matched or not.
     # Used for "X of Y episodes matched" in the summary.
     parsed_counts: dict[tuple[str, int], int] = field(default_factory=dict)
+    # Media files missing a [tmdb-NNN], [imdb-ttNNN], or [tvdb-NNN] tag.
+    missing_ids: list[str] = field(default_factory=list)
 
 
 def _find_media_dirs(library_root: Path) -> list[Path]:
@@ -458,8 +460,11 @@ def match_media_files(
     ``all_files`` is a list of ``(media_path, library_root)`` pairs.
     Progress is reported as a single global counter across all roots.
     """
+    _ID_TAG_RE = re.compile(r"\[(tmdb|imdb|tvdb)-[^\]]+\]")
+
     total = len(all_files)
     matches: list[SweepFilm] = []
+    missing_ids: list[str] = []
     parsed_counts: dict[tuple[str, int], int] = Counter()
     for i, (media_path, library_root) in enumerate(all_files):
         pct = ((i + 1) * 100) // total if total else 100
@@ -481,6 +486,10 @@ def match_media_files(
             f"\r\033[2K  matching [{pct:3d}%] {i + 1}/{total}  {rel}",
         )
         print(f"    → parsed: {parsed.title!r} ({parsed.year}){ep_label}")
+        # Flag media missing a [tmdb-NNN]/[imdb-ttNNN]/[tvdb-NNN] tag.
+        if not _ID_TAG_RE.search(str(media_path)):
+            missing_ids.append(str(media_path))
+
         parsed_counts[(parsed.title, parsed.year)] += 1
         entry = match_catalogue(
             catalogue, parsed.title, parsed.year,
@@ -512,8 +521,18 @@ def match_media_files(
     print()  # newline after progress
     match_pct = (len(matches) * 100 // total) if total else 0
     log.info("matched=%d/%d (%d%%)", len(matches), total, match_pct)
+
+    # Save missing-ID list to a file for the user to fix.
+    if missing_ids:
+        missing_file = Path.home() / ".config" / "beqdesigner" / "media_missing_ids.txt"
+        missing_file.parent.mkdir(parents=True, exist_ok=True)
+        missing_file.write_text("\n".join(sorted(set(missing_ids))) + "\n")
+        log.info("%d media files missing [tmdb/imdb/tvdb] ID tags → %s",
+                 len(set(missing_ids)), missing_file)
+
     return DiscoveryResult(
         matches=matches, total_scanned=total, parsed_counts=dict(parsed_counts),
+        missing_ids=missing_ids,
     )
 
 
