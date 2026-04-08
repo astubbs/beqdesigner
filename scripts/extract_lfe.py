@@ -13,12 +13,17 @@ the LFE channel (or mono downmix) to a portable WAV cache keyed by TMDb ID.
 Requires: Python 3.8+, ffmpeg, ffprobe on PATH. No other dependencies.
 
 Usage:
-    python3 extract_lfe.py --media-root /volume1/media/Movies --wav-root /volume1/beq-wav-cache
-    python3 extract_lfe.py --verify --wav-root /volume1/beq-wav-cache
+    python3 extract_lfe.py --beq-dir /volume1/beqdesigner --media-root /volume1/media/Movies
+    python3 extract_lfe.py --beq-dir /volume1/beqdesigner --verify
+    python3 extract_lfe.py   # uses saved config from previous run
 
-Portable cache structure:
-    wav-root/Movies/A/Alien (1979) [tmdb-348]/lfe-1000hz.wav
-    wav-root/TV/B/Blue Eye Samurai (2023) [tmdb-225180]/lfe-1000hz.wav
+Directory structure (managed by the script):
+    beq-dir/
+      .extract_config.json          # saved media roots
+      missing_ids.txt               # media files without DB IDs
+      wav-cache/
+        Movies/A/Alien (1979) [tmdb-348]/Alien (1979) [tmdb-348].lfe-1000hz.wav
+        TV/E/86 - Eighty Six (2021) [tvdb-378609]/Season 01/86 - Eighty Six S01E02 [tvdb-378609].lfe-1000hz.wav
 """
 
 from __future__ import annotations
@@ -345,34 +350,38 @@ _CONFIG_NAME = ".extract_config.json"
 
 
 def _load_or_prompt_config(
-    wav_root_arg: Path | None,
+    beq_dir_arg: Path | None,
     media_roots_arg: list[Path] | None,
 ) -> dict:
     """Load saved config, merge with CLI args, prompt if missing, save.
 
-    Config is stored at ``{wav_root}/.extract_config.json`` so it lives
-    alongside the cache. First run prompts interactively; subsequent runs
-    reuse saved paths. CLI args override saved config.
+    Config is stored at ``{beq_dir}/.extract_config.json``. WAVs go in
+    ``{beq_dir}/wav-cache/``. First run prompts interactively; subsequent
+    runs reuse saved paths. CLI args override saved config.
 
-    Returns dict with keys: wav_root (Path), media_roots (list[Path]).
+    Returns dict with keys: beq_dir (Path), wav_root (Path), media_roots (list[Path]).
     """
-    # Step 1: determine wav_root.
-    wav_root = wav_root_arg
-    if wav_root is None:
+    # Step 1: determine beq_dir.
+    beq_dir = beq_dir_arg
+    if beq_dir is None:
         # Try to find an existing config in common locations.
-        for candidate in [Path.cwd(), Path.home() / "beq-wav-cache"]:
+        for candidate in [Path.cwd(), Path.home() / "beqdesigner"]:
             cfg = candidate / _CONFIG_NAME
             if cfg.exists():
-                wav_root = candidate
+                beq_dir = candidate
                 break
-    if wav_root is None:
-        wav_root = Path(input("WAV cache directory (will be created if needed): ").strip())
+    if beq_dir is None:
+        beq_dir = Path(input("BEQ working directory (will be created if needed): ").strip())
 
-    wav_root = wav_root.expanduser().resolve()
+    beq_dir = beq_dir.expanduser().resolve()
+    beq_dir.mkdir(parents=True, exist_ok=True)
+
+    # WAV cache is always a subdirectory of beq_dir.
+    wav_root = beq_dir / "wav-cache"
     wav_root.mkdir(parents=True, exist_ok=True)
 
     # Step 2: load existing config.
-    config_path = wav_root / _CONFIG_NAME
+    config_path = beq_dir / _CONFIG_NAME
     saved: dict = {}
     if config_path.exists():
         try:
@@ -408,7 +417,7 @@ def _load_or_prompt_config(
     config_path.write_text(json.dumps(config_data, indent=2) + "\n")
     log.info("config saved to %s (%d media roots)", config_path, len(media_roots))
 
-    return {"wav_root": wav_root, "media_roots": media_roots}
+    return {"beq_dir": beq_dir, "wav_root": wav_root, "media_roots": media_roots}
 
 
 # ---------------------------------------------------------------------------
@@ -427,8 +436,8 @@ def main(argv: list[str] | None = None):
         help="Media library root(s) to scan. Can be specified multiple times.",
     )
     parser.add_argument(
-        "--wav-root", type=Path, default=None,
-        help="Root directory for the portable WAV cache. Saved to config on first use.",
+        "--beq-dir", type=Path, default=None,
+        help="BEQ working directory. WAVs go in {beq-dir}/wav-cache/. Saved to config on first use.",
     )
     parser.add_argument(
         "--limit", type=int, default=0,
@@ -455,11 +464,10 @@ def main(argv: list[str] | None = None):
     )
 
     # --- Config: load saved paths, prompt if missing, save for next run ---
-    config = _load_or_prompt_config(args.wav_root, args.media_roots)
+    config = _load_or_prompt_config(args.beq_dir, args.media_roots)
+    beq_dir = config["beq_dir"]
     wav_root = config["wav_root"]
     media_roots = config["media_roots"]
-
-    wav_root.mkdir(parents=True, exist_ok=True)
 
     # Clean up any .tmp files from interrupted runs.
     cleaned = cleanup_tmp(wav_root)
@@ -484,7 +492,7 @@ def main(argv: list[str] | None = None):
 
     # Save missing IDs list.
     if missing_ids:
-        missing_file = wav_root / "missing_ids.txt"
+        missing_file = beq_dir / "missing_ids.txt"
         missing_file.write_text("\n".join(sorted(set(missing_ids))) + "\n")
         log.info("missing TMDb IDs written to %s", missing_file)
 
