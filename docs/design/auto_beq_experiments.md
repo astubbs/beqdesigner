@@ -999,4 +999,52 @@ one-hot bucket.
 `auto_beq_nn.py`. Hybrid vocab: 11 parent groups + ~20 top ungrouped +
 "other" ≈ 32 dims total (down from 31 but 45% vs 20% coverage).
 
-**Status**: Implementing.
+**Result** (14 real-audio titles, trained on ~7k synthetic catalogue):
+
+| Run | Real audio | Synthetic | Gap | Studio in top 15? |
+|---|---|---|---|---|
+| E18b (hash 16-dim) | 7.43 dB | 4.44 dB | 2.99 dB | No |
+| E18c (vocab top-30) | 5.82 dB | 3.80 dB | 2.02 dB | No |
+| **E18d (parent groups)** | **6.34 dB** | **3.45 dB** | **2.90 dB** | **Yes** |
+
+**Studio Universal appeared at position 10** in feature importances (1.79%) —
+first time any studio feature has surfaced. Mark Paterson (mixer) also
+appeared at position 12 (1.67%).
+
+**Synthetic loss improved** to 3.45 dB (best yet), showing the parent
+grouping helps the model learn better patterns from catalogue data. However,
+real-audio loss (6.34 dB) was slightly worse than E18c (5.82 dB), and the
+synthetic-to-real gap widened back to 2.9 dB.
+
+**Interpretation**: The model is learning more nuanced studio-specific
+patterns from synthetic data (lower synthetic loss), but these studio-
+specific patterns may be overfitting to the "perfect inverse" curve shapes.
+Real measured audio has content-dependent variation that breaks the
+synthetic assumptions differently for different studios. The fundamental
+bottleneck is now the **synthetic training data**, not the metadata encoding.
+
+Per-title: Elio (2.35 dB), Mad Max (2.64 dB), Garfield (2.81 dB), Sonic 3
+(3.49 dB) are all close to or under threshold. The failures are dominated
+by animated kids' films (Kung Fu Panda 4, Super Mario Bros, Wild Robot,
+Moana 2) at 8-10 dB — these may have different rolloff characteristics
+that the model hasn't learned.
+
+**Feature importances (top 15)**:
+
+| Rank | Feature | Importance |
+|---|---|---|
+| 1 | Audio format (Atmos) | 4.9% |
+| 2 | Source (Streaming) | 4.6% |
+| 3 | Country (English) | 3.7% |
+| 4 | Audio 80 Hz | 3.2% |
+| 5 | Source (Unknown) | 2.7% |
+| 6 | Year | 2.4% |
+| 7 | Audio 30 Hz | 2.4% |
+| 8 | Audio 50 Hz | 2.3% |
+| 9 | Mixer (unknown) | 2.0% |
+| **10** | **Studio (Universal)** | **1.8%** |
+| 11 | Audio 25 Hz | 1.8% |
+| **12** | **Mixer (Mark Paterson)** | **1.7%** |
+| 13 | Audio 40 Hz | 1.7% |
+| 14 | Audio 60 Hz | 1.6% |
+| 15 | Audio format (DD+) | 1.6% |
