@@ -387,20 +387,22 @@ def infer_correction_from_measured(
             # (+4-7 dB each Q=0.8-1.0) to reach deep extension; a
             # single large shelf has a different knee shape.
             #
-            # Rule of thumb: one shelf per ~7 dB of requested gain.
+            # Rule of thumb: one shelf per ~N dB of requested gain.
             # For Mad Max (+15 dB) -> 2 shelves of +7.5 dB each.
             # For EoT (+28 dB) -> 4 shelves of +7 dB each.
             # For John Wick (+13 dB) -> 2 shelves of +6.5 dB each.
-            n_shelves = max(1, int(round(advice.max_gain_db / 7.0)))
+            gain_ratio = getattr(advice, "cascade_gain_ratio", 7.0)
+            shelf_q = getattr(advice, "cascade_q", 0.9)
+            n_shelves = max(1, int(round(advice.max_gain_db / gain_ratio)))
             per_shelf_gain = advice.max_gain_db / n_shelves
             shelf_chain = [
                 {"type": "LowShelf", "freq": float(advice.knee_hz),
-                 "q": 0.9, "gain": float(per_shelf_gain)}
+                 "q": shelf_q, "gain": float(per_shelf_gain)}
                 for _ in range(n_shelves)
             ]
             log.info(
-                "advisor correction target: %d cascaded LowShelf @ %.1f Hz Q=0.9 +%.2f dB each",
-                n_shelves, advice.knee_hz, per_shelf_gain,
+                "advisor correction target: %d cascaded LowShelf @ %.1f Hz Q=%.1f +%.2f dB each",
+                n_shelves, advice.knee_hz, shelf_q, per_shelf_gain,
             )
             correction = evaluate_filter_chain(
                 shelf_chain, freqs_hz, fs=DEFAULT_FS,
@@ -487,6 +489,85 @@ def propose_filters_from_measured(
     return propose_filters(
         -correction, freqs_hz, fs=fs, band=band, max_filters=max_filters,
     )
+
+
+def propose_filters_with_feedback(
+    measured_curve_db: np.ndarray,
+    freqs_hz: np.ndarray,
+    fs: int = DEFAULT_FS,
+    band: tuple[float, float] = DEFAULT_BAND,
+    max_filters: int = 6,
+    advisor: Advisor | None = None,
+    metadata: MediaMetadata | None = None,
+    max_iterations: int = 3,
+    flatness_threshold_db: float = 2.0,
+) -> list[dict]:
+    """Iterative correction: propose filters, evaluate, adjust, repeat.
+
+    Unlike ``propose_filters_from_measured`` (single-pass), this loops
+    at the ADVISOR level. After each pass it evaluates how flat the
+    corrected curve (measured + chain response) is in-band. If the
+    residual deficit or overshoot exceeds *flatness_threshold_db*, it
+    adjusts the advisor's gain and re-runs.
+
+    This is different from the PEQ iteration inside ``propose_filters``
+    which adjusts individual filter parameters to match a fixed target.
+    Here we adjust the TARGET itself.
+
+    Returns the best filter chain found across iterations.
+    """
+    from model.auto_beq_advisor import GainAdjustedAdvisor
+
+    band_mask = (freqs_hz >= band[0]) & (freqs_hz <= band[1])
+    current_advisor = advisor
+    best_proposed = []
+    best_flatness = float("inf")
+
+    for iteration in range(max_iterations):
+        proposed = propose_filters_from_measured(
+            measured_curve_db, freqs_hz, fs=fs, band=band,
+            max_filters=max_filters, advisor=current_advisor,
+            metadata=metadata,
+        )
+
+        if not proposed:
+            log.info("feedback iter %d: no filters proposed, stopping", iteration)
+            break
+
+        chain_response = evaluate_filter_chain(proposed, freqs_hz, fs=fs)
+        corrected = measured_curve_db + chain_response
+        band_corrected = corrected[band_mask]
+
+        max_deficit = float(max(0.0, -np.min(band_corrected)))
+        max_overshoot = float(max(0.0, np.max(band_corrected)))
+        flatness = max(max_deficit, max_overshoot)
+
+        log.info(
+            "feedback iter %d: deficit=%.1f overshoot=%.1f flatness=%.1f "
+            "(threshold=%.1f) advisor=%s",
+            iteration, max_deficit, max_overshoot, flatness,
+            flatness_threshold_db,
+            current_advisor.name if current_advisor else "none",
+        )
+
+        if flatness < best_flatness:
+            best_flatness = flatness
+            best_proposed = proposed
+
+        if flatness <= flatness_threshold_db:
+            log.info("feedback converged at iter %d (flatness=%.1f)", iteration, flatness)
+            break
+
+        # Adjust: apply half the residual error as a gain offset.
+        if max_deficit > max_overshoot:
+            gain_adj = max_deficit * 0.5
+        else:
+            gain_adj = -max_overshoot * 0.5
+
+        base_advisor = advisor if advisor is not None else current_advisor
+        current_advisor = GainAdjustedAdvisor(base_advisor, gain_adj)
+
+    return best_proposed
 
 
 def propose_or_lookup(

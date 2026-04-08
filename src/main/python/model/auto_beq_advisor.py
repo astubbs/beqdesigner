@@ -137,6 +137,10 @@ class Advice:
     reasoning: str = ""
     confidence: float = 0.5
     source: str = ""
+    # Cascade construction params (used by infer_correction_from_measured).
+    # Advisors can override these to tune the shelf cascade shape.
+    cascade_gain_ratio: float = 7.0   # dB per shelf in cascade
+    cascade_q: float = 0.9            # Q for each cascaded shelf
 
 
 class Advisor(Protocol):
@@ -293,51 +297,79 @@ class HeuristicAdvisor:
 # ---------------------------------------------------------------------------
 
 
-_MAX_TOTAL_CHAIN_GAIN_DB = 30.0
+_MAX_TOTAL_CHAIN_GAIN_DB = 35.0  # E20: raised from 30.0
 
 
-def _measurement_chain(features: CurveFeatures) -> tuple[dict, ...] | None:
-    """Build an explicit 2-knee LowShelf chain for multi-knee cases.
+def _measurement_chain(
+    features: CurveFeatures,
+    q: float = 0.8,
+    max_total_gain_db: float = _MAX_TOTAL_CHAIN_GAIN_DB,
+    max_shelves: int = 2,
+) -> tuple[dict, ...] | None:
+    """Build an explicit multi-knee LowShelf chain.
 
-    Split by measured deficits (no magic ratio):
+    **2-shelf mode** (default, ``max_shelves=2``):
       outer_gain = shoulder_peak - level_at_20hz  (lift 20 Hz to peak)
       inner_gain = level_at_20hz - level_at_10hz  (lift 10 Hz to L20)
 
-    Then scale the total chain gain down if it exceeds
-    ``_MAX_TOTAL_CHAIN_GAIN_DB``. Cliff-class measurements (e.g. Mad
-    Max with 30 dB deficit between 10 Hz and 20 Hz) produce deficits
-    much larger than any realistic BEQ needs, so we preserve the
-    deficit RATIO between inner and outer knees but cap the total
-    summed DC gain.
+    **3-shelf mode** (``max_shelves=3``): adds a third shelf below
+    10 Hz when the deficit between 10 Hz and 5 Hz is significant:
+      outer_gain = shoulder_peak - level_at_20hz
+      middle_gain = level_at_20hz - level_at_10hz
+      inner_gain = level_at_10hz - level_at_5hz
 
-    Returns None when no meaningful multi-knee chain is warranted
-    (both deficits < 1 dB).
+    Total chain gain is scaled proportionally to stay within
+    *max_total_gain_db*.
+
+    Returns None when no meaningful chain is warranted (total < 1 dB).
     """
     outer_knee_hz = float(np.clip(features.shoulder_peak_hz, 12.0, 40.0))
-    inner_knee_hz = float(np.clip(features.shoulder_peak_hz / 2.0, 8.0, 14.0))
+
+    # Gains from measured deficits at reference frequencies.
     outer_gain = max(0.0, features.shoulder_peak_db - features.level_at_20hz_db)
-    inner_gain = max(0.0, features.level_at_20hz_db - features.level_at_10hz_db)
-    total = outer_gain + inner_gain
+    mid_gain = max(0.0, features.level_at_20hz_db - features.level_at_10hz_db)
+
+    # 3-shelf: add inner deficit (10→5 Hz) if enabled and significant.
+    inner_gain = 0.0
+    if max_shelves >= 3:
+        inner_gain = max(0.0, features.level_at_10hz_db - features.level_at_5hz_db)
+
+    gains = [g for g in [inner_gain, mid_gain, outer_gain] if g > 1.0]
+    total = sum(gains)
     if total < 1.0:
         return None
+
     # Cliff scaling: preserve the ratio, cap the sum.
-    if total > _MAX_TOTAL_CHAIN_GAIN_DB:
-        scale = _MAX_TOTAL_CHAIN_GAIN_DB / total
+    if total > max_total_gain_db:
+        scale = max_total_gain_db / total
         inner_gain *= scale
+        mid_gain *= scale
         outer_gain *= scale
+
+    # Knee frequencies: spread across the rolloff range.
+    mid_knee_hz = float(np.clip(features.shoulder_peak_hz / 2.0, 8.0, 14.0))
+    inner_knee_hz = float(np.clip(features.shoulder_peak_hz / 3.0, 5.0, 10.0))
+
     chain: list[dict] = []
-    if inner_gain > 1.0:
+    if max_shelves >= 3 and inner_gain > 1.0:
         chain.append({
             "type": "LowShelf",
             "freq": inner_knee_hz,
-            "q": 0.8,
+            "q": q,
             "gain": float(inner_gain),
+        })
+    if mid_gain > 1.0:
+        chain.append({
+            "type": "LowShelf",
+            "freq": mid_knee_hz,
+            "q": q,
+            "gain": float(mid_gain),
         })
     if outer_gain > 1.0:
         chain.append({
             "type": "LowShelf",
             "freq": outer_knee_hz,
-            "q": 0.8,
+            "q": q,
             "gain": float(outer_gain),
         })
     if not chain:
@@ -425,13 +457,22 @@ class MeasurementAdvisor:
 
     name = "measurement"
 
-    # Slope (dB/octave) above which a single LowShelf cannot cleanly
-    # match the rolloff and we need a multi-knee chain.
-    _MULTI_KNEE_SLOPE_THRESHOLD = 15.0
-
-    # Shoulder peak below this (in dB relative to 80 Hz) means the
-    # film has no meaningful LFE shoulder - probably dialogue-heavy.
-    _MIN_SHOULDER_PEAK_DB = 2.0
+    def __init__(
+        self,
+        *,
+        multi_knee_slope_threshold: float = 10.0,  # E19: lowered from 15.0
+        multi_knee_q: float = 0.9,                 # E19: raised from 0.8
+        max_total_chain_gain_db: float = _MAX_TOTAL_CHAIN_GAIN_DB,
+        max_shelves: int = 2,                       # E20: 2 or 3
+        cascade_gain_ratio: float = 7.0,
+        cascade_q: float = 0.9,
+    ):
+        self._multi_knee_slope_threshold = multi_knee_slope_threshold
+        self._multi_knee_q = multi_knee_q
+        self._max_total_chain_gain_db = max_total_chain_gain_db
+        self._max_shelves = max_shelves
+        self._cascade_gain_ratio = cascade_gain_ratio
+        self._cascade_q = cascade_q
 
     def advise(self, metadata: MediaMetadata, features: CurveFeatures) -> Advice:
         # Guard: dialogue-dominant / flat curves have low peak AND
@@ -439,7 +480,7 @@ class MeasurementAdvisor:
         # shoulder peak (because the bottom dropped so far) but will
         # still have a large dynamic range - we want to correct those.
         if (
-            features.shoulder_peak_db < self._MIN_SHOULDER_PEAK_DB
+            features.shoulder_peak_db < 2.0
             and features.dynamic_range_db < 15.0
         ):
             return _clamp_advice(
@@ -475,13 +516,18 @@ class MeasurementAdvisor:
         # Multi-knee: steep slopes still need a 2-shelf chain because
         # one shelf can't match the shape. But the GAIN is still just
         # the deficit — we don't add slope extension on top.
-        is_multi_knee_slope = slope > self._MULTI_KNEE_SLOPE_THRESHOLD
+        is_multi_knee_slope = slope > self._multi_knee_slope_threshold
         is_multi_knee_dynamic, _ = looks_multi_knee(features)
         is_cliff = is_multi_knee_slope or is_multi_knee_dynamic
 
         chain: tuple[dict, ...] | None = None
         if is_cliff:
-            chain = _measurement_chain(features)
+            chain = _measurement_chain(
+                features,
+                q=self._multi_knee_q,
+                max_total_gain_db=self._max_total_chain_gain_db,
+                max_shelves=self._max_shelves,
+            )
 
         reasoning = (
             f"peak={features.shoulder_peak_db:+.1f}dB, "
@@ -499,6 +545,8 @@ class MeasurementAdvisor:
                 filters=chain,
                 reasoning=reasoning,
                 confidence=0.7,
+                cascade_gain_ratio=self._cascade_gain_ratio,
+                cascade_q=self._cascade_q,
             ),
             source="measurement",
         )
@@ -699,6 +747,48 @@ class MockAdvisor:
 # ---------------------------------------------------------------------------
 # OllamaAdvisor - real LLM via local Ollama server
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# GainAdjustedAdvisor — thin wrapper for feedback loops (E21)
+# ---------------------------------------------------------------------------
+
+
+class GainAdjustedAdvisor:
+    """Wrapper that offsets an inner advisor's max_gain_db.
+
+    Used by `propose_filters_with_feedback()` to iteratively adjust
+    the correction target when the initial proposal under- or
+    over-corrects.
+
+    Clears ``advice.filters`` to force the cascade builder to
+    reconstruct with the adjusted gain (otherwise an explicit chain
+    from the inner advisor would be used unchanged).
+    """
+
+    def __init__(self, inner, gain_offset: float):
+        self._inner = inner
+        self._gain_offset = gain_offset
+        self.name = f"{inner.name}+fb({gain_offset:+.1f})"
+
+    def advise(self, metadata: MediaMetadata, features: CurveFeatures) -> Advice:
+        advice = self._inner.advise(metadata, features)
+        adjusted_gain = max(0.0, advice.max_gain_db + self._gain_offset)
+        return _clamp_advice(
+            Advice(
+                max_gain_db=adjusted_gain,
+                knee_hz=advice.knee_hz,
+                filters=None,  # force cascade re-evaluation
+                reasoning=(
+                    f"{advice.reasoning} "
+                    f"[feedback adj {self._gain_offset:+.1f}dB]"
+                ),
+                confidence=advice.confidence,
+                cascade_gain_ratio=advice.cascade_gain_ratio,
+                cascade_q=advice.cascade_q,
+            ),
+            source=advice.source,
+        )
 
 
 # ---------------------------------------------------------------------------

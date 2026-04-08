@@ -891,9 +891,258 @@ strictly non-regressing with meaningful improvements. Offer
 **Kept**: `load_and_smooth_blended()` added to `_auto_beq_helpers.py`.
 Strategy sweep CSV: `.pytest_cache/auto_beq_sweep_strategies.csv`.
 
-### E19 — NN training with chunked audio features
+### E19 - MeasurementAdvisor constant calibration (one-at-a-time sweep)
 
-**Hypothesis**: The XGBoost model (E18) validates on real audio using
+**Hypothesis**: The cascade and multi-knee constants were tuned for
+Welch input. With blended extraction as default, recalibrating them
+may improve results.
+
+**Method**: Made MeasurementAdvisor constants configurable via
+constructor args. Swept 18 configurations (one-at-a-time + combined
+winner) across 31 film/episode tests with blended-a0.7 extraction.
+
+**Parameters swept**:
+- `cascade_gain_ratio`: 5.0, 6.0, **7.0** (baseline), 8.0, 9.0
+- `cascade_q`: 0.7, 0.8, **0.9** (baseline), 1.0, 1.2
+- `multi_knee_slope_threshold`: **10.0**, 12.0, **15.0** (baseline), 18.0, 20.0
+- `multi_knee_q`: 0.6, 0.7, **0.8** (baseline), **0.9**, 1.0
+
+**Results (558 tests)**:
+
+| Config | P/M/F | Imp | Deg | Avg Δ |
+|---|---|---|---|---|
+| baseline (g7/cQ0.9/s15/mQ0.8) | 9/4/18 | 0 | 0 | +0.00 |
+| **s10** (slope threshold 10) | 10/3/18 | 1 | 0 | -0.26 |
+| **mQ0.9** (multi-knee Q 0.9) | 9/5/17 | 1 | 0 | -0.04 |
+| **s10+mQ0.9** (combined) | **10/4/17** | **2** | **0** | **-0.32** |
+| all cascade_gain_ratio variants | 9/4/18 | 0 | 0 | +0.00 |
+| all cascade_q variants | 9/4/18 | 0 | 0 | +0.00 |
+
+**Key findings**:
+
+1. **`cascade_gain_ratio` and `cascade_q` have ZERO effect** across
+   all variants tested (5.0-9.0 and 0.7-1.2 respectively). The
+   cascade construction is completely insensitive to these parameters
+   in the current test set. This makes sense: the cascade is a target
+   for the fitter, and the fitter adjusts to match regardless of how
+   the target was constructed.
+
+2. **Lowering `multi_knee_slope_threshold` to 10** (from 15) flips
+   Blue Eye Samurai MARGINAL→PASS (-1.03 dB). By triggering the
+   multi-knee path for less steep rolloffs, more titles get the
+   explicit 2-shelf chain which the fitter can match better than
+   a single-knee cascade.
+
+3. **Raising `multi_knee_q` to 0.9** (from 0.8) flips Super Mario
+   Bros FAIL→MARGINAL (-0.55 dB). Tighter Q in the multi-knee shelves
+   produces a steeper correction knee that better matches the
+   catalogue's shape.
+
+4. **The two winners are complementary** (different parameters) and
+   combine cleanly: **s10+mQ0.9 gives 2 improvements, 0 degradations,
+   avg Δ=-0.32 dB**. Several other titles improve substantially
+   (Elio -2.02, KPop -1.91, Garfield -1.91) but remain FAIL.
+
+**Combined config detail (s10+mQ0.9)**:
+- Blue Eye Samurai: MARGINAL(1.95) → PASS(0.92) ✓
+- Super Mario Bros: FAIL(3.22) → MARGINAL(2.66) ✓
+- Elio: FAIL(6.38) → FAIL(4.37) — big improvement, still FAIL
+- KPop Demon Hunters: FAIL(6.91) → FAIL(5.00)
+- The Garfield Movie: FAIL(5.15) → FAIL(3.24)
+
+**Recommendation**: Update MeasurementAdvisor defaults to
+`multi_knee_slope_threshold=10.0` and `multi_knee_q=0.9`. These
+are strictly non-regressing with meaningful improvements.
+
+**New baseline after E19**: 10 PASS / 4 MARGINAL / 17 FAIL
+(was 9/4/18).
+
+**Kept**: configurable constructor in `MeasurementAdvisor`,
+`test_library_sweep_e19` in sweep file.
+CSV: `.pytest_cache/auto_beq_sweep_e19.csv`.
+
+### E20 - Multi-knee improvements: 3-shelf cascade + gain cap
+
+**Hypothesis**: High-gain catalogue entries (Splinter Cell 37-42 dB,
+KPop 36 dB) fail because the 2-shelf chain with 30 dB cap can't
+reach them. A 3-shelf cascade (splitting deficit across 5→10→20→peak)
+and/or a higher gain cap should improve these titles.
+
+**Method**: Extended `_measurement_chain()` to support 3-shelf mode
+(adds inner shelf at shoulder/3 for the 10→5 Hz deficit). Swept 6
+configs across 31 tests:
+
+| Config | P/M/F | Imp | Deg | Avg Δ |
+|---|---|---|---|---|
+| baseline (2-shelf, 30 dB) | 10/4/17 | 0 | 0 | +0.00 |
+| 3-shelf, 30 dB | 9/3/19 | 0 | 2 | +0.30 |
+| **2-shelf, 35 dB** | **10/5/16** | **1** | **0** | **-0.27** |
+| 3-shelf, 35 dB | 10/4/17 | 2 | 1 | -0.01 |
+| 2-shelf, 40 dB | 11/4/16 | 2 | 1 | -0.43 |
+| 3-shelf, 40 dB | 11/3/17 | 3 | 2 | -0.20 |
+
+**Key findings**:
+
+1. **3-shelf HURTS**: Blue Eye Samurai regresses PASS→FAIL in every
+   3-shelf config (+2.34 dB). The 3rd shelf at 5-10 Hz produces a
+   target shape the fitter can't match — the added degree of freedom
+   in the target makes the greedy shelf+PEQ fitter less effective.
+   Verdict: keep `max_shelves=2`.
+
+2. **Raising gain cap to 35 is safe**: Flow flips FAIL→MARGINAL
+   (-2.38 dB), 0 degradations. The higher cap lets the multi-knee
+   chain reach deeper without cliff-scaling down the gains.
+
+3. **Cap 40 is too aggressive**: gains Flow FAIL→PASS and one
+   Splinter Cell FAIL→MARGINAL, but also regresses a different
+   Splinter Cell episode MARGINAL→FAIL. Net +1, but not zero-risk.
+
+**Recommendation**: raise `_MAX_TOTAL_CHAIN_GAIN_DB` from 30 to 35.
+Zero degradations, one grade improvement.
+
+**New baseline after E20**: 10 PASS / 5 MARGINAL / 16 FAIL
+(was 10/4/17 after E19).
+
+**Kept**: `max_shelves` constructor param (default stays 2),
+`_MAX_TOTAL_CHAIN_GAIN_DB` raised to 35.
+`test_library_sweep_e20` in sweep file.
+
+---
+
+### E21 - Self-feedback loop (iterative gain adjustment)
+
+**Hypothesis**: The single-pass pipeline faithfully reproduces a wrong
+target if the advisor's gain is off. An iterative loop that evaluates
+corrected-curve flatness and adjusts gain should improve results.
+
+**Method**: `propose_filters_with_feedback()` wraps
+`propose_filters_from_measured()` in a loop. After each pass, it
+computes `corrected = measured + chain_response` and checks flatness
+in-band. If residual deficit or overshoot exceeds the threshold, it
+adjusts gain by half the error via `GainAdjustedAdvisor` and re-runs.
+
+**Configs tested** (155 tests, 5 configs × 31 films):
+
+| Config | P/M/F | Imp | Deg | Avg Δ |
+|---|---|---|---|---|
+| single-pass (baseline) | 10/5/16 | 0 | 0 | +0.00 |
+| iter=3, thr=3 | 8/3/20 | 3 | 8 | +0.94 |
+| iter=3, thr=2 | 8/3/20 | 3 | 8 | +0.94 |
+| iter=3, thr=1 | 8/3/20 | 3 | 8 | +0.94 |
+| iter=5, thr=2 | 8/3/20 | 3 | 8 | +0.94 |
+
+**Key findings**:
+
+1. **All feedback configs produce identical results** regardless of
+   threshold (1/2/3 dB) or iteration count (3/5). This means the
+   loop converges in exactly one adjustment — the first iteration's
+   gain offset is the same regardless of threshold, and subsequent
+   iterations don't improve further.
+
+2. **The feedback loop is net negative**: 3 improvements but 8
+   degradations. It improves under-corrected titles (Garfield, two
+   Scavengers Reign episodes) by boosting gain, but ALSO boosts
+   gain on already-correct titles, pushing them into over-correction
+   (Pantheon +4.59 dB, Flow +5.45 dB, X-Men +3.92 dB).
+
+3. **Root cause**: the flatness metric evaluates "how flat is the
+   corrected curve" — but the BEQ goal is NOT a flat curve. It's to
+   match the catalogue's intended correction, which often leaves
+   deliberate rolloff below 10 Hz. The feedback loop sees residual
+   rolloff at 5-10 Hz as "under-correction" and boosts gain, but
+   that rolloff was CORRECT. The metric is fundamentally wrong for
+   BEQ.
+
+4. **The existing single-pass pipeline is better because** the
+   advisor's gain estimate (deficit at 10 Hz) is inherently
+   conservative — it doesn't try to flatten below 10 Hz. The
+   feedback loop breaks this conservatism.
+
+**Verdict**: E21 feedback loop is **not adopted**. The flatness
+metric needs to evaluate against the INTENDED correction shape
+(which we don't have at inference time), not against "perfectly
+flat." Without ground truth, the loop has no way to know when to
+stop adding gain.
+
+**Possible future direction**: if we ever have a "correction shape
+template" (e.g., typical BEQ rolloff profile learned from catalogue
+entries), the feedback loop could evaluate residual against that
+template instead of flat. But that's essentially supervised learning,
+which is a different approach.
+
+**Kept**: `GainAdjustedAdvisor` and `propose_filters_with_feedback()`
+remain in the codebase for future experimentation.
+`test_library_sweep_e21` in sweep file.
+
+---
+
+## Full experiment history (E1–E21)
+
+### Progression table
+
+| # | Name | What changed | Adopted? | Cumulative baseline |
+|---|------|-------------|----------|---------------------|
+| **E1** | Single shelf + residual PEQs | Baseline: flatten measured curve with shelf+PEQ fitter | No — wrong objective (BEQ extends, doesn't flatten) | 0/0/3 (3 titles) |
+| **E2** | N-filter iterative fitter | Greedy shelf+PEQ fitter, max 6 filters, Q 0.3–4.0 | **Yes** — fitter math proven | — (synthetic only) |
+| **E3** | Rolloff-depth classifier | Classify mild/middle/cliff, cap gain per class | No — overfit to 3 fixtures | 1/1/1 |
+| **E4** | Advisor interface + MockAdvisor | Advisor supplies max_gain+knee; single LowShelf Q=0.7 target | **Yes** (architecture) | 1/0/2 |
+| **E5** | Q=0.9 correction target | Raise shelf Q 0.7→0.9 | No — helps EoT, hurts MM | 1/1/1 |
+| **E6** | Cascaded shelf target | N shelves at Q=0.9, ~7 dB each (matches catalogue construction) | **Yes** | 2/0/1 |
+| **E7** | Ollama llama3.1:8b | Use local LLM for gain+knee recommendation | No — numeric calibration poor | 0/0/3 |
+| **E8** | Few-shot prompt | Add 4 labelled examples to LLM prompt | No — anchored LLM to low numbers | 1/0/2 |
+| **E9** | Aesthetic-over-measurement prompt | Prompt: "BEQ is aesthetic, not measurement-derived" + film list | Partial — cheating with film names | 2/0/1 |
+| **E10** | Advice.filters field | Advisor can prescribe explicit multi-knee filter chains | **Yes** (plumbing) | 2/0/1 (Mock) |
+| **E11** | Multi-step Ollama + looks_multi_knee() | 3-call LLM (tier→numbers→chain) + programmatic cliff detection | No — prompts overfit to fixtures | 2/1/0 (overfit) |
+| **E12** | Self-feedback refinement loop | LLM evaluates chain response, adjusts in loop (max 3×) | No — can't rescue wrong tier | 1/0/2 |
+| **E13** | De-overfit prompts | Strip film names, use general principles only | **Yes** (honest baseline) | 1/1/1 |
+| **E14** | Pure-measurement advisor | deficit + slope extension formula, no LLM | No — 3 distinct failure modes | 0/0/3 |
+| **E15** | Absolute dBFS diagnostic | Log un-normalised levels before anchor normalisation | **Yes** (diagnostic) | — |
+| **E15c** | EoT codec mismatch | Discovered test used wrong catalogue entry (Atmos vs DTS-HD) | Bug fix | — |
+| **E16** | Catalogue-first pipeline | propose_or_lookup: catalogue match primary, auto fallback | **Yes** (production) | — |
+| **E17a** | Knee = rolloff-start | Use 3 dB-below-peak frequency instead of shoulder peak | **Yes** | 1/3/0 (4 titles) |
+| **E17b** | Rolloff threshold sweep | Test 3/4/6 dB thresholds | Kept 3 dB default | — |
+| **E17c** | Topology classification | gentle/moderate/cliff classes with per-class gain formula | **Yes** | 10/2/22 (34 eps) |
+| **E17d** | Expert formula (gain=peak−L10) | Simplify to deficit-only, raise chain cap 18→30 dB | **Yes** (baseline) | **10/4/20** (34 eps) |
+| | | *— library sweep expanded to 31 titles —* | | |
+| **E18** | Chunked-percentile extraction | STFT peak per chunk → P90, chunk sizes 30/60/90s | Partial | mixed |
+| **E18b** | Blended extraction strategy | 70% Welch + 30% chunked P90 @ 60s (6 strategies tested) | **Yes** (default) | 9/4/18 → +2/0 grade changes |
+| **E19** | Advisor constant calibration | slope threshold 15→10, multi-knee Q 0.8→0.9 (18 configs) | **Yes** | **10/4/17** |
+| **E20** | Multi-knee gain cap | Cap 30→35 dB; 3-shelf tested but rejected (6 configs) | **Cap 35 yes** | **10/5/16** |
+| **E21** | Self-feedback loop | Iterative gain adjustment via corrected-curve flatness | **No** (+3/−8) | unchanged |
+| **E22** | NN + chunked audio | XGBoost validated with blended extraction (4 strategies) | Partial — blend-a0.3 best (-0.88 dB) | NN: 0P/1M/13F |
+
+### Phases
+
+1. **E1–E3** (procedural heuristics): failed to generalise beyond fixtures
+2. **E4–E6** (advisor abstraction + cascade targets): shelf decomposition works
+3. **E7–E12** (LLM-based tier classification): multi-step Ollama can work but prompts overfit
+4. **E13–E15c** (pure-measurement baseline + diagnostics): 41% ceiling; found EoT codec bug
+5. **E16–E17d** (catalogue-first + formula refinement): topology classification unlocked gains
+6. **E18–E20** (spectrum extraction + calibration): blended extraction + recalibrated params
+7. **E21** (feedback loop): rejected — metric fundamentally wrong for BEQ
+8. **E22** (NN + chunked extraction): blended features close 32% of real-vs-synthetic gap
+
+### Current baseline
+
+**10 PASS / 5 MARGINAL / 16 FAIL** across 31 test cases (48% non-FAIL).
+
+Key architectural components:
+- `ExtractionStrategy` enum + `load_measured()` dispatcher (default: blend-a0.7-P90)
+- `MeasurementAdvisor` with configurable constants (slope threshold, Q, gain cap)
+- `AdvisorConfig` dataclass for parameterised sweeps
+- `GainAdjustedAdvisor` wrapper for future feedback experiments
+- Unified test infrastructure: `test_library_sweep_e19`, `_e20`, `_e21`,
+  `_strategies`, `_chunked` — all share `_SWEEP_FILMS` and grading thresholds
+- CSV reports per experiment + unified `scripts/sweep_report.py` generator
+
+Remaining bottleneck: the advisor's deficit formula (`peak - L10`) is a
+good first approximation but can't capture catalogue entries with
+aesthetic choices divorced from the measured curve. Supervised learning
+or catalogue-pattern templates are the next frontier.
+
+### E22 — NN training with chunked audio features
+
+**Hypothesis**: The XGBoost model (E18 NN) validates on real audio using
 Welch-only feature extraction. E18b showed that blended/chunked
 extraction captures transient bass events that Welch dilutes. If the
 NN receives more accurate input features at validation time, downstream
