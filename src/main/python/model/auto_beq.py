@@ -387,20 +387,22 @@ def infer_correction_from_measured(
             # (+4-7 dB each Q=0.8-1.0) to reach deep extension; a
             # single large shelf has a different knee shape.
             #
-            # Rule of thumb: one shelf per ~7 dB of requested gain.
+            # Rule of thumb: one shelf per ~N dB of requested gain.
             # For Mad Max (+15 dB) -> 2 shelves of +7.5 dB each.
             # For EoT (+28 dB) -> 4 shelves of +7 dB each.
             # For John Wick (+13 dB) -> 2 shelves of +6.5 dB each.
-            n_shelves = max(1, int(round(advice.max_gain_db / 7.0)))
+            gain_ratio = getattr(advice, "cascade_gain_ratio", 7.0)
+            shelf_q = getattr(advice, "cascade_q", 0.9)
+            n_shelves = max(1, int(round(advice.max_gain_db / gain_ratio)))
             per_shelf_gain = advice.max_gain_db / n_shelves
             shelf_chain = [
                 {"type": "LowShelf", "freq": float(advice.knee_hz),
-                 "q": 0.9, "gain": float(per_shelf_gain)}
+                 "q": shelf_q, "gain": float(per_shelf_gain)}
                 for _ in range(n_shelves)
             ]
             log.info(
-                "advisor correction target: %d cascaded LowShelf @ %.1f Hz Q=0.9 +%.2f dB each",
-                n_shelves, advice.knee_hz, per_shelf_gain,
+                "advisor correction target: %d cascaded LowShelf @ %.1f Hz Q=%.1f +%.2f dB each",
+                n_shelves, advice.knee_hz, shelf_q, per_shelf_gain,
             )
             correction = evaluate_filter_chain(
                 shelf_chain, freqs_hz, fs=DEFAULT_FS,

@@ -640,3 +640,190 @@ def test_library_sweep_strategies(
         strategy=strategy,
         catalogue_filter_count=len(film.catalogue_entry["filters"]),
     )
+
+
+# ---------------------------------------------------------------------------
+# E19: MeasurementAdvisor constant calibration sweep.
+#
+# One-at-a-time sweep of cascade_gain_ratio, cascade_q,
+# multi_knee_slope_threshold, and multi_knee_q. Each config varies one
+# parameter from the baseline while holding the rest at defaults.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class AdvisorConfig:
+    """One MeasurementAdvisor configuration to test."""
+    cascade_gain_ratio: float = 7.0
+    cascade_q: float = 0.9
+    multi_knee_slope_threshold: float = 15.0
+    multi_knee_q: float = 0.8
+    max_total_chain_gain_db: float = 30.0
+
+    @property
+    def label(self) -> str:
+        return (
+            f"g{self.cascade_gain_ratio:.0f}"
+            f"-cQ{self.cascade_q:.1f}"
+            f"-s{self.multi_knee_slope_threshold:.0f}"
+            f"-mQ{self.multi_knee_q:.1f}"
+            f"-cap{self.max_total_chain_gain_db:.0f}"
+        )
+
+
+_BASELINE_CONFIG = AdvisorConfig()
+
+_E19_CONFIGS = [
+    _BASELINE_CONFIG,
+    # Vary cascade_gain_ratio
+    AdvisorConfig(cascade_gain_ratio=5.0),
+    AdvisorConfig(cascade_gain_ratio=6.0),
+    AdvisorConfig(cascade_gain_ratio=8.0),
+    AdvisorConfig(cascade_gain_ratio=9.0),
+    # Vary cascade_q
+    AdvisorConfig(cascade_q=0.7),
+    AdvisorConfig(cascade_q=0.8),
+    AdvisorConfig(cascade_q=1.0),
+    AdvisorConfig(cascade_q=1.2),
+    # Vary multi_knee_slope_threshold
+    AdvisorConfig(multi_knee_slope_threshold=10.0),
+    AdvisorConfig(multi_knee_slope_threshold=12.0),
+    AdvisorConfig(multi_knee_slope_threshold=18.0),
+    AdvisorConfig(multi_knee_slope_threshold=20.0),
+    # Vary multi_knee_q
+    AdvisorConfig(multi_knee_q=0.6),
+    AdvisorConfig(multi_knee_q=0.7),
+    AdvisorConfig(multi_knee_q=0.9),
+    AdvisorConfig(multi_knee_q=1.0),
+]
+
+_E19_REPORT_PATH = Path(os.environ.get(
+    "AUTO_BEQ_E19_REPORT", ".pytest_cache/auto_beq_sweep_e19.csv",
+))
+
+
+def _run_one_film_e19(
+    film: SweepFilm, config: AdvisorConfig,
+) -> tuple[SweepFilm, MatchMetrics, MatchMetrics, str, AdvisorConfig] | None:
+    """Run baseline + one advisor config for a film."""
+    from model.auto_beq import propose_filters_from_measured
+    from model.auto_beq_advisor import MeasurementAdvisor
+
+    if not film.path.exists():
+        return None
+
+    fs = 1000
+    freqs = DEFAULT_GRID
+    wav_path = _extract_lfe_wav(film.path, target_fs=fs)
+    measured = load_measured(wav_path, fs=fs, freqs=freqs)
+
+    metadata = MediaMetadata(title=film.title, year=film.year)
+    ground_resp = evaluate_filter_chain(
+        film.catalogue_entry["filters"], freqs, fs=fs,
+    )
+
+    # Baseline: default MeasurementAdvisor.
+    baseline_advisor = MeasurementAdvisor()
+    baseline_proposed = propose_filters_from_measured(
+        measured, freqs, fs=fs, advisor=baseline_advisor, metadata=metadata,
+    )
+    baseline_metrics = compute_match_metrics(
+        -ground_resp, baseline_proposed, freqs, fs=fs,
+    )
+
+    # Test: configured MeasurementAdvisor.
+    test_advisor = MeasurementAdvisor(
+        cascade_gain_ratio=config.cascade_gain_ratio,
+        cascade_q=config.cascade_q,
+        multi_knee_slope_threshold=config.multi_knee_slope_threshold,
+        multi_knee_q=config.multi_knee_q,
+        max_total_chain_gain_db=config.max_total_chain_gain_db,
+    )
+    test_proposed = propose_filters_from_measured(
+        measured, freqs, fs=fs, advisor=test_advisor, metadata=metadata,
+    )
+    test_metrics = compute_match_metrics(
+        -ground_resp, test_proposed, freqs, fs=fs,
+    )
+
+    log.info(
+        "%s %s | baseline=%s(%.2f) test=%s(%.2f) delta=%+.2f",
+        film.title, config.label,
+        baseline_metrics.verdict, baseline_metrics.mean_abs_err_db,
+        test_metrics.verdict, test_metrics.mean_abs_err_db,
+        test_metrics.mean_abs_err_db - baseline_metrics.mean_abs_err_db,
+    )
+    return film, baseline_metrics, test_metrics, "measurement", config
+
+
+def _append_e19_report(
+    film: SweepFilm,
+    baseline_metrics: MatchMetrics,
+    test_metrics: MatchMetrics,
+    config: AdvisorConfig,
+    catalogue_filter_count: int,
+) -> None:
+    is_new = not _E19_REPORT_PATH.exists()
+    _E19_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _E19_REPORT_PATH.open("a", newline="") as f:
+        w = csv.writer(f)
+        if is_new:
+            w.writerow([
+                "title", "year", "config", "cascade_gain_ratio", "cascade_q",
+                "multi_knee_slope_threshold", "multi_knee_q", "max_chain_gain",
+                "baseline_verdict", "baseline_mean", "baseline_max",
+                "test_verdict", "test_mean", "test_max",
+                "mean_delta", "catalogue_filters", "summed_gain",
+            ])
+        mean_delta = test_metrics.mean_abs_err_db - baseline_metrics.mean_abs_err_db
+        w.writerow([
+            film.title,
+            film.year if film.year is not None else "",
+            config.label,
+            f"{config.cascade_gain_ratio:.1f}",
+            f"{config.cascade_q:.1f}",
+            f"{config.multi_knee_slope_threshold:.0f}",
+            f"{config.multi_knee_q:.1f}",
+            f"{config.max_total_chain_gain_db:.0f}",
+            baseline_metrics.verdict,
+            f"{baseline_metrics.mean_abs_err_db:.2f}",
+            f"{baseline_metrics.max_abs_err_db:.2f}",
+            test_metrics.verdict,
+            f"{test_metrics.mean_abs_err_db:.2f}",
+            f"{test_metrics.max_abs_err_db:.2f}",
+            f"{mean_delta:+.2f}",
+            catalogue_filter_count,
+            f"{_summed_low_shelf_gain(film.catalogue_entry):.1f}",
+        ])
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
+@pytest.mark.parametrize(
+    "config",
+    _E19_CONFIGS,
+    ids=[c.label for c in _E19_CONFIGS],
+)
+@pytest.mark.parametrize(
+    "film",
+    _SWEEP_FILMS,
+    ids=[_sweep_film_id(f) for f in _SWEEP_FILMS] or None,
+)
+def test_library_sweep_e19(film: SweepFilm, config: AdvisorConfig, caplog):
+    """E19: MeasurementAdvisor constant calibration sweep.
+
+    No assertions. Run with:
+        SPIKE_TEST=...::test_library_sweep_e19 bash scripts/run-spike-tests.sh
+    """
+    caplog.set_level(logging.INFO, logger="auto_beq_sweep")
+    result = _run_one_film_e19(film, config)
+    if result is None:
+        pytest.skip(f"media file not accessible: {film.path}")
+    film, baseline_metrics, test_metrics, advisor_name, config = result
+    _append_e19_report(
+        film=film,
+        baseline_metrics=baseline_metrics,
+        test_metrics=test_metrics,
+        config=config,
+        catalogue_filter_count=len(film.catalogue_entry["filters"]),
+    )
