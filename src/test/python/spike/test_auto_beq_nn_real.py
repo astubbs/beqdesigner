@@ -280,3 +280,122 @@ def test_train_full_catalogue_validate_real_audio(tmp_path):
     print(f"  Mean downstream loss (synthetic): {synth_mean:.2f} dB")
     print(f"  Mean downstream loss (real audio): {mean_loss:.2f} dB")
     print(f"  Gap (real - synthetic):            {mean_loss - synth_mean:.2f} dB")
+
+
+@pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")
+def test_ablation_audio_vs_metadata(tmp_path):
+    """E18e ablation: audio-only vs metadata-only vs full (audio+metadata).
+
+    Trains three XGBoost models on the same catalogue data, each seeing a
+    different subset of the 90-dim feature vector:
+      - audio-only:    dims 0–8 (9 frequency bins), metadata zeroed
+      - metadata-only: dims 9–89 (81 metadata features), audio zeroed
+      - full:          all 90 dims (baseline, same as E18d)
+
+    Evaluates all three on real-audio validation set. The delta between
+    audio-only and full quantifies how much metadata contributes. If
+    metadata-only outperforms audio-only, it means production context
+    (studio, year, format) is a stronger signal than the measured curve
+    for predicting BEQ filter parameters.
+    """
+    from model.auto_beq_catalogue import _fetch_or_cache
+    from model.auto_beq_nn import N_AUDIO_FEATURES
+
+    log.info("=== E18e ablation: audio vs metadata ===")
+
+    # --- Reuse data pipeline from main test ---
+    catalogue = _fetch_or_cache()
+    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
+
+    tmdb_cache = load_cache()
+    tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
+
+    X_all, Y_all, entries_all = [], [], []
+    for e in deduped:
+        features = _synthetic_features(e, DEFAULT_GRID)
+        metadata = enrich_media_metadata(e, tmdb_cache)
+        X_all.append(build_feature_vector(features, metadata))
+        Y_all.append(catalogue_entry_to_labels(e))
+        entries_all.append(e)
+    X_all = np.array(X_all, dtype=np.float32)
+    Y_all = np.array(Y_all, dtype=np.float32)
+
+    # Hold out real-audio titles.
+    real_tmdb_ids = {p["tmdb_id"] for p in _PAIRS}
+    train_mask = np.array([
+        str(e.get("theMovieDB", "")).strip() not in real_tmdb_ids
+        for e in entries_all
+    ])
+    X_train = X_all[train_mask]
+    Y_train = Y_all[train_mask]
+
+    # Real-audio validation features.
+    X_val_real, Y_val, val_entries = [], [], []
+    for p in _PAIRS:
+        entry = p["catalogue_entry"]
+        features = _extract_real_audio_features(p["wav_path"], DEFAULT_GRID, _DEFAULT_FS)
+        metadata = enrich_media_metadata(entry, tmdb_cache)
+        X_val_real.append(build_feature_vector(features, metadata))
+        Y_val.append(catalogue_entry_to_labels(entry))
+        val_entries.append(entry)
+    X_val_real = np.array(X_val_real, dtype=np.float32)
+    Y_val = np.array(Y_val, dtype=np.float32)
+
+    # Synthetic validation features (same titles).
+    X_val_synth = []
+    for entry in val_entries:
+        features = _synthetic_features(entry, DEFAULT_GRID)
+        metadata = enrich_media_metadata(entry, tmdb_cache)
+        X_val_synth.append(build_feature_vector(features, metadata))
+    X_val_synth = np.array(X_val_synth, dtype=np.float32)
+
+    # --- Create feature masks ---
+    n = N_AUDIO_FEATURES  # 9
+    audio_mask = np.zeros(X_train.shape[1], dtype=bool)
+    audio_mask[:n] = True
+    meta_mask = ~audio_mask
+
+    # --- Train 3 models ---
+    def _mask_features(X, mask):
+        X_masked = X.copy()
+        X_masked[:, ~mask] = 0.0
+        return X_masked
+
+    def _eval_model(model, X_val, val_entries, label):
+        Y_pred = model.predict(X_val)
+        total = 0.0
+        for i, entry in enumerate(val_entries):
+            pred_filters = labels_to_filters(Y_pred[i])
+            total += downstream_loss(pred_filters, entry["filters"], DEFAULT_GRID)
+        return total / len(val_entries)
+
+    variants = [
+        ("audio-only", audio_mask),
+        ("metadata-only", meta_mask),
+        ("full (audio+meta)", np.ones(X_train.shape[1], dtype=bool)),
+    ]
+
+    print(f"\n{'='*70}")
+    print(f"  E18e ABLATION: audio-only vs metadata-only vs full")
+    print(f"  Training on {len(X_train)} synthetic entries")
+    print(f"  Validating on {len(val_entries)} real-audio titles")
+    print(f"{'='*70}\n")
+    print(f"  {'Variant':25s} {'Real audio':>12s} {'Synthetic':>12s} {'Gap':>8s}")
+    print(f"  {'-'*60}")
+
+    for name, mask in variants:
+        X_tr = _mask_features(X_train, mask)
+        X_vr = _mask_features(X_val_real, mask)
+        X_vs = _mask_features(X_val_synth, mask)
+
+        model = train_xgboost(X_tr, Y_train)
+
+        real_loss = _eval_model(model, X_vr, val_entries, name)
+        synth_loss = _eval_model(model, X_vs, val_entries, name)
+        gap = real_loss - synth_loss
+        print(f"  {name:25s} {real_loss:10.2f} dB {synth_loss:10.2f} dB {gap:+6.2f} dB")
+
+    print(f"\n  Interpretation:")
+    print(f"  - If full < audio-only: metadata is helping")
+    print(f"  - If metadata-only < audio-only: production context outweighs measured curve")
+    print(f"  - Gap column: how much harder real audio is vs synthetic")
