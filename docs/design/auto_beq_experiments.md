@@ -1962,4 +1962,23 @@ capture transient bass events that Welch dilutes.
 the validation feature extraction changes. Uses parallel ProcessPoolExecutor
 for speed (scipy Welch is single-threaded).
 
-**Status**: Running.
+**Result** (180 WAVs, parallel extraction):
+
+| Strategy | Real audio | Synthetic | Gap | Time |
+|---|---|---|---|---|
+| Welch-only | 4.61 dB | 2.98 dB | +1.63 dB | 39s |
+| **Blended (α=0.7, 60s P90)** | **4.48 dB** | 2.99 dB | **+1.49 dB** | 38s |
+
+**Findings**:
+1. **Blended improves by 0.13 dB** on real audio — modest but consistent.
+   The chunked P90 captures transient bass events that Welch dilutes.
+2. **Synthetic loss is identical** (2.98 vs 2.99) — the improvement is
+   entirely in real-audio transfer, not synthetic fitting.
+3. **Gap tightened by 0.14 dB** (1.63 → 1.49) — blended features
+   transfer better from synthetic to real.
+4. **Parallel extraction: 9× speedup** — 180 WAVs in 39s (was ~6 min
+   serial). ProcessPoolExecutor fully uses all CPU cores.
+5. The improvement is smaller than expected — the NN's 9-bin Option A
+   feature vector may not be granular enough to capture the chunking
+   benefit. Option B (27-value chunk feature matrix) would be the next
+   escalation if this proves valuable.
