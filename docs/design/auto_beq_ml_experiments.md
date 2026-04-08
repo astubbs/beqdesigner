@@ -281,8 +281,7 @@ Titles below threshold: flagged for human review in BEQDesigner. Above threshold
 
 1. ✅ E18 initial code path — synthetic training data, XGBoost, full Advisor integration
 2. ✅ TMDb metadata fetcher — batch job to populate studio + mixer fields
-3. ✅ Repo-committed TMDb metadata mirror — training loads from repo, hits TMDb only for delta
-4. Real-audio validation — train on full catalogue, validate on available WAV files
+3. Real-audio validation — train on full catalogue, validate on available WAV files
 5. XGBoost ablation: audio-only vs audio+metadata — quantifies metadata contribution
 6. Escalate to 1D CNN on RTX 3090 with hyperparameter search
 7. If CNN meets threshold: E19 is an enhancement, not a requirement
@@ -295,21 +294,16 @@ Titles below threshold: flagged for human review in BEQDesigner. Above threshold
 ## TMDb metadata strategy
 
 The BEQ catalogue carries TMDb IDs on every entry. We fetch studio, mixer,
-director, and country from the TMDb API and maintain a **repo-committed
-mirror** so that:
-- New users / contributors don't each independently hit TMDb for 8k entries
-- Training is reproducible without network access
-- The mirror is keyed by TMDb ID and only needs updating when new catalogue
-  entries appear
-
-**Primary source:** `src/test/resources/auto_beq/tmdb_metadata.json` (committed)
-**Fallback:** live TMDb API fetch for any TMDb IDs not in the repo copy
-**Local user cache:** `~/.config/beqdesigner/tmdb_metadata_cache.json` (fast warm cache)
+director, and country from the TMDb API and cache locally at
+`~/.config/beqdesigner/tmdb_metadata_cache.json`. Once fetched, entries
+are never re-fetched (movie metadata doesn't change). First run fetches
+~8k entries; subsequent runs are instant from cache.
 
 **TODO:** Persist the TMDb-enriched catalogue as part of our git DB catalogue
 output. When we produce and persist BEQ profiles, include the TMDb metadata
 alongside the filter parameters. This way the enriched data propagates
-automatically with the profiles — no separate metadata sync step needed.
+automatically with the profiles — no separate metadata sync step needed,
+and new users get the metadata for free without hitting TMDb independently.
 
 ---
 

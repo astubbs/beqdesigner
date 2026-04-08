@@ -38,7 +38,7 @@ technical spike for the magic-wand vision (Tier 1 of feats/magic-wand).
    - 60-dim feature vector: 9 audio (Option A) + 51 metadata
    - `MediaMetadata` extended with studio/genres/source/mixer fields
    - New tests: `src/test/python/spike/test_auto_beq_nn.py`
-3. ✅ TMDb metadata fetcher — batch fetch studio/mixer, repo-committed mirror
+3. ✅ TMDb metadata fetcher — batch fetch studio/mixer, local user cache
 4. Run ablation: audio-only vs audio+metadata (XGBoost feature importances)
 5. Escalate to 1D CNN on RTX 3090
 6. E19 hybrid (model warm-start + scipy) — after E18 validated
