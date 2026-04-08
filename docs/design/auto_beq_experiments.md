@@ -1831,3 +1831,44 @@ CNN still has a 3.92 dB gap vs the metadata-only model's 0.00 dB gap.
 - CNN improved 18 dB but still trails XGBoost approaches on real audio
 - Early fusion gap collapsed from 2.90 to 0.62 dB — author stabilises transfer
 - The animated kids' film outliers suggest a genre-specific calibration issue
+
+### E30 - Expanded validation: 20 titles (14 movies + 6 TV series)
+
+**Goal**: More representative validation by matching WAVs to catalogue via
+title+year (not just TMDb ID), picking up 6 TV series: Blue Eye Samurai,
+Mindhunter, Scavengers Reign, South Park, Spawn, X-Men '97.
+
+**Result** (20 real-audio titles, trained on ~8,213 synthetic with author):
+
+| Test | 14 titles (E29) | 20 titles (E30) |
+|---|---|---|
+| E25 early fusion | 5.07 dB | 6.42 dB |
+| E25e audio-only | 4.51 dB | 4.80 dB |
+| **E25e metadata-only** | **3.09 dB** | **3.41 dB** |
+| E27 late fusion (α=0.3) | 4.35 dB | 5.45 dB |
+| Synth-to-real gap | 0.62 dB | 1.70 dB |
+
+Feature importances: audio 13.3% vs metadata 86.7%. Authors still dominate
+(5 of top 15, aron7awol 14.4%, mobe1969 5.8%).
+
+**Per-title standouts**:
+- **Mindhunter: 0.83 dB** — best single title ever, well under threshold
+- **Elio: 1.29 dB** — improved from 1.88 dB
+- **KPop Demon Hunters: 2.08 dB** — near threshold
+- South Park: 2.90 dB, Mad Max: 2.77 dB, Blue Eye Samurai: 3.42 dB
+- Outliers: Flow 12.57 dB, Spawn 11.15 dB, Super Mario 11.24 dB
+
+**Key findings**:
+1. **TV content is harder** — the 6 new TV titles pulled the mean up by
+   ~1 dB. Spawn (1997) and South Park have very different audio
+   characteristics from modern movies.
+2. **The metadata-only model generalises best** — 3.41 dB across 20 titles
+   with zero synthetic-to-real gap. Production context (author + studio +
+   year + format) remains the most robust predictor.
+3. **The gap widened** from 0.62 to 1.70 dB for early fusion — TV content's
+   different audio characteristics expose the synthetic training weakness
+   more than movies do.
+4. **Mindhunter at 0.83 dB is extraordinary** — a Netflix drama with
+   distinctive sound design. The model may be leveraging the combination
+   of author (mobe1969) + studio (Netflix) + year (2017) + genre (drama)
+   to closely match the catalogue entry.
