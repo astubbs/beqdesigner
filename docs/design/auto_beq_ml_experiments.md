@@ -324,11 +324,14 @@ and new users get the metadata for free without hitting TMDb independently.
   GitHub, caches at `{beq-dir}/beq_catalogue.json`, freshness-checked via
   HTTP Last-Modified (no arbitrary TTL). Catalogue loaded once into memory
   at startup — indexed by tmdb ID + title+year fallback for tvdb/imdb.
-- Standalone script: scp to NAS, run locally, no project deps
+- **Dockerised**: `docker/Dockerfile` + `docker-compose.example.yml`. Build once,
+  deploy to NAS via `docker save | ssh nas docker load`. No scp, no version drift.
+  Imports from `model.media_constants` + `model.wav_integrity` (stdlib-only, no numpy).
 - Atomic writes: `.tmp` → rename on success + `-f wav` for format, prevents corruption
 - Sample rate 1000 Hz hardcoded (coupled to BEQ analysis algorithm)
 - Config persisted at `{beq-dir}/.extract_config.json` — no args needed after first run
 - Self-hash logged at startup for version tracking on remote servers
+- Breadth-first extraction: alternates movies + TV, one episode per show per round
 
 **Legacy cache** (`_auto_beq_helpers.py`):
 - Structure: mirrors source media path under `~/Downloads/beqdesigner/audio-cache/`

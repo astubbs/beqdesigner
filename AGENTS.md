@@ -104,6 +104,46 @@ so the user can see results incrementally: `AUTO_BEQ_SWEEP_LIMIT=1`.
 | `scripts/extract_lfe.py` | Extract LFE WAVs to portable cache. **Standalone** — no project deps, scp to NAS | yes | **yes** |
 | `scripts/verify_wav_cache.py` | Verify WAV cache integrity, delete corrupt files | yes | no (imports wav_integrity) |
 | `scripts/wav_cache_status.py` | Summarise WAV cache: counts, titles, author breakdown, growth | yes | no (imports helpers) |
+| `docker/Dockerfile` | Docker image: Python 3.13-slim + ffmpeg + project source | — | — |
+| `docker/docker-compose.example.yml` | Example compose config — copy, edit paths, run | — | — |
+
+## Docker (NAS LFE extraction)
+
+The extraction pipeline runs in Docker for NAS deployment — no code
+duplication, no scp of scripts, no version drift.
+
+**Setup (one-time):**
+```bash
+# Build image
+docker build -f docker/Dockerfile -t beq-extract .
+
+# Deploy to NAS
+docker save beq-extract | ssh nas docker load
+
+# Copy and edit compose config on NAS
+scp docker/docker-compose.example.yml nas:/path/to/beqdesigner/docker-compose.yml
+# Edit volume paths to match NAS media layout
+```
+
+**Usage on NAS:**
+```bash
+cd /path/to/beqdesigner
+
+# Extract LFE WAVs (resumes from cache, breadth-first ordering)
+docker compose run extract
+
+# Verify WAV cache integrity
+docker compose run verify
+
+# Check training set status (run on dev machine, not Docker — needs numpy)
+poetry run python3 scripts/wav_cache_status.py /path/to/wav-cache
+```
+
+**After code changes:** rebuild image and redeploy:
+```bash
+docker build -f docker/Dockerfile -t beq-extract .
+docker save beq-extract | ssh nas docker load
+```
 
 All `.sh` scripts must have the executable flag set (`chmod +x`).
 
