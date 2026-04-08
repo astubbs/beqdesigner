@@ -39,7 +39,11 @@ from model.auto_beq_advisor import MediaMetadata, get_advisor
 from spike._auto_beq_helpers import (
     _extract_lfe_wav,
     _have_tool,
+    _strategy_from_env,
     load_and_smooth,
+    load_and_smooth_blended,
+    load_and_smooth_chunked,
+    load_measured,
 )
 from spike.sweep_discover import bucket_rating, load_catalogue_by_digest, load_config
 
@@ -159,6 +163,7 @@ def _append_sweep_report(
     advisor_name: str,
     metrics: Any,
     catalogue_filter_count: int,
+    extraction_strategy: str = "",
 ) -> None:
     is_new = not _SWEEP_REPORT_PATH.exists()
     _SWEEP_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -167,8 +172,9 @@ def _append_sweep_report(
         if is_new:
             w.writerow([
                 "rating_bucket", "rating", "release_year", "title",
-                "catalogue_filter_count", "advisor", "verdict",
-                "mean_err_db", "max_err_db", "summed_catalogue_gain_db",
+                "catalogue_filter_count", "advisor", "extraction",
+                "verdict", "mean_err_db", "max_err_db",
+                "summed_catalogue_gain_db",
             ])
         w.writerow([
             f"{bucket_rating(film.rating):.1f}",
@@ -177,6 +183,7 @@ def _append_sweep_report(
             film.title,
             catalogue_filter_count,
             advisor_name,
+            extraction_strategy,
             metrics.verdict,
             f"{metrics.mean_abs_err_db:.2f}",
             f"{metrics.max_abs_err_db:.2f}",
@@ -188,6 +195,7 @@ def _run_one_film(film: SweepFilm) -> tuple[SweepFilm, MatchMetrics, str] | None
     """Run the auto-BEQ pipeline for one media file. Thread-safe.
 
     Returns (film, metrics, advisor_name) or None if skipped.
+    Uses the configured extraction strategy (default: blend-a0.7-P90).
     """
     from model.auto_beq import propose_filters_from_measured
 
@@ -196,8 +204,9 @@ def _run_one_film(film: SweepFilm) -> tuple[SweepFilm, MatchMetrics, str] | None
         return None
 
     fs = 1000
+    strategy = _strategy_from_env()
     wav_path = _extract_lfe_wav(film.path, target_fs=fs)
-    measured = load_and_smooth(wav_path, fs=fs, freqs=DEFAULT_GRID)
+    measured = load_measured(wav_path, fs=fs, freqs=DEFAULT_GRID, strategy=strategy)
 
     advisor = get_advisor()
     metadata = MediaMetadata(title=film.title, year=film.year)
@@ -245,6 +254,7 @@ def test_library_sweep(film: SweepFilm, caplog):
         advisor_name=advisor_name,
         metrics=metrics,
         catalogue_filter_count=len(film.catalogue_entry["filters"]),
+        extraction_strategy=_strategy_from_env().label,
     )
 
 
@@ -294,6 +304,7 @@ def test_library_sweep_parallel():
                 advisor_name=advisor_name,
                 metrics=metrics,
                 catalogue_filter_count=len(film.catalogue_entry["filters"]),
+                extraction_strategy=_strategy_from_env().label,
             )
 
     total = sum(verdicts.values())
@@ -308,3 +319,844 @@ def test_library_sweep_parallel():
         f"{n_workers} workers)"
     )
     OllamaAdvisor.print_host_stats()
+
+
+# ---------------------------------------------------------------------------
+# E18: Chunked percentile sweep — compare chunked spectrum extraction
+# against the Welch baseline across the full library.
+# ---------------------------------------------------------------------------
+
+_CHUNKED_REPORT_PATH = Path(os.environ.get(
+    "AUTO_BEQ_CHUNKED_REPORT", ".pytest_cache/auto_beq_sweep_chunked.csv",
+))
+
+
+def _run_one_film_chunked(
+    film: SweepFilm, chunk_s: float,
+) -> tuple[SweepFilm, MatchMetrics, MatchMetrics, str, float] | None:
+    """Run both Welch and chunked pipelines for one film.
+
+    Returns (film, baseline_metrics, chunked_metrics, advisor_name, chunk_s)
+    or None if skipped.
+    """
+    import numpy as np
+
+    from model.auto_beq import propose_filters_from_measured
+
+    if not film.path.exists():
+        log.warning("media file not accessible: %s", film.path)
+        return None
+
+    fs = 1000
+    freqs = DEFAULT_GRID
+    wav_path = _extract_lfe_wav(film.path, target_fs=fs)
+
+    # Baseline: whole-film Welch.
+    baseline_curve = load_and_smooth(wav_path, fs=fs, freqs=freqs)
+    # Chunked: STFT peak per chunk → P90.
+    chunked_curve = load_and_smooth_chunked(
+        wav_path, fs=fs, freqs=freqs, chunk_s=chunk_s,
+    )
+
+    # Log delta at 10 Hz and 20 Hz.
+    idx_10 = int(np.argmin(np.abs(freqs - 10.0)))
+    idx_20 = int(np.argmin(np.abs(freqs - 20.0)))
+    log.info(
+        "%s chunk_s=%.0f | 10Hz delta=%+.1f dB, 20Hz delta=%+.1f dB",
+        film.title, chunk_s,
+        chunked_curve[idx_10] - baseline_curve[idx_10],
+        chunked_curve[idx_20] - baseline_curve[idx_20],
+    )
+
+    advisor = get_advisor()
+    metadata = MediaMetadata(title=film.title, year=film.year)
+
+    ground_resp = evaluate_filter_chain(
+        film.catalogue_entry["filters"], freqs, fs=fs,
+    )
+
+    # Baseline metrics.
+    baseline_proposed = propose_filters_from_measured(
+        baseline_curve, freqs, fs=fs, advisor=advisor, metadata=metadata,
+    )
+    baseline_metrics = compute_match_metrics(
+        -ground_resp, baseline_proposed, freqs, fs=fs,
+    )
+
+    # Chunked metrics.
+    chunked_proposed = propose_filters_from_measured(
+        chunked_curve, freqs, fs=fs, advisor=advisor, metadata=metadata,
+    )
+    chunked_metrics = compute_match_metrics(
+        -ground_resp, chunked_proposed, freqs, fs=fs,
+    )
+
+    log.info(
+        "%s chunk_s=%.0f | baseline=%s(%.2f/%.2f) chunked=%s(%.2f/%.2f)",
+        film.title, chunk_s,
+        baseline_metrics.verdict, baseline_metrics.mean_abs_err_db,
+        baseline_metrics.max_abs_err_db,
+        chunked_metrics.verdict, chunked_metrics.mean_abs_err_db,
+        chunked_metrics.max_abs_err_db,
+    )
+    return film, baseline_metrics, chunked_metrics, advisor.name, chunk_s
+
+
+def _append_chunked_report(
+    film: SweepFilm,
+    advisor_name: str,
+    baseline_metrics: MatchMetrics,
+    chunked_metrics: MatchMetrics,
+    chunk_s: float,
+    catalogue_filter_count: int,
+) -> None:
+    is_new = not _CHUNKED_REPORT_PATH.exists()
+    _CHUNKED_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _CHUNKED_REPORT_PATH.open("a", newline="") as f:
+        w = csv.writer(f)
+        if is_new:
+            w.writerow([
+                "title", "year", "chunk_s", "advisor",
+                "baseline_verdict", "baseline_mean", "baseline_max",
+                "chunked_verdict", "chunked_mean", "chunked_max",
+                "mean_delta", "catalogue_filters", "summed_gain",
+            ])
+        mean_delta = chunked_metrics.mean_abs_err_db - baseline_metrics.mean_abs_err_db
+        w.writerow([
+            film.title,
+            film.year if film.year is not None else "",
+            f"{chunk_s:.0f}",
+            advisor_name,
+            baseline_metrics.verdict,
+            f"{baseline_metrics.mean_abs_err_db:.2f}",
+            f"{baseline_metrics.max_abs_err_db:.2f}",
+            chunked_metrics.verdict,
+            f"{chunked_metrics.mean_abs_err_db:.2f}",
+            f"{chunked_metrics.max_abs_err_db:.2f}",
+            f"{mean_delta:+.2f}",
+            catalogue_filter_count,
+            f"{_summed_low_shelf_gain(film.catalogue_entry):.1f}",
+        ])
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
+@pytest.mark.parametrize("chunk_s", [30.0, 60.0, 90.0])
+@pytest.mark.parametrize(
+    "film",
+    _SWEEP_FILMS,
+    ids=[_sweep_film_id(f) for f in _SWEEP_FILMS] or None,
+)
+def test_library_sweep_chunked(film: SweepFilm, chunk_s: float, caplog):
+    """E18: chunked-percentile sweep — compare vs Welch baseline per film.
+
+    No assertions. Both Welch and chunked results are logged side-by-side
+    and appended to the chunked sweep CSV report. Run with:
+
+        SPIKE_TEST=...::test_library_sweep_chunked bash scripts/run-spike-tests.sh
+    """
+    caplog.set_level(logging.INFO, logger="auto_beq_sweep")
+    result = _run_one_film_chunked(film, chunk_s)
+    if result is None:
+        pytest.skip(f"media file not accessible: {film.path}")
+    film, baseline_metrics, chunked_metrics, advisor_name, chunk_s = result
+    _append_chunked_report(
+        film=film,
+        advisor_name=advisor_name,
+        baseline_metrics=baseline_metrics,
+        chunked_metrics=chunked_metrics,
+        chunk_s=chunk_s,
+        catalogue_filter_count=len(film.catalogue_entry["filters"]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# E18b: Strategy sweep — percentile and blending variations at 60s chunks.
+#
+# Sub-experiments:
+#   - Percentile: P75, P80, P90 (lower percentile = less peak bias)
+#   - Blended: alpha=0.3, 0.5, 0.7 (Welch weight; higher = more Welch)
+# All at 60s chunk length (E18 sweet spot).
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ExtractionStrategy:
+    """One spectrum extraction strategy to test."""
+    name: str
+    percentile: float
+    alpha: float | None  # None = pure chunked, float = blended weight
+
+    @property
+    def label(self) -> str:
+        if self.alpha is not None:
+            return f"blend-a{self.alpha:.1f}-P{self.percentile:.0f}"
+        return f"chunked-P{self.percentile:.0f}"
+
+
+_STRATEGIES = [
+    ExtractionStrategy("chunked-P75", percentile=75.0, alpha=None),
+    ExtractionStrategy("chunked-P80", percentile=80.0, alpha=None),
+    ExtractionStrategy("chunked-P90", percentile=90.0, alpha=None),
+    ExtractionStrategy("blend-0.3", percentile=90.0, alpha=0.3),
+    ExtractionStrategy("blend-0.5", percentile=90.0, alpha=0.5),
+    ExtractionStrategy("blend-0.7", percentile=90.0, alpha=0.7),
+]
+
+_STRATEGY_REPORT_PATH = Path(os.environ.get(
+    "AUTO_BEQ_STRATEGY_REPORT", ".pytest_cache/auto_beq_sweep_strategies.csv",
+))
+
+
+def _run_one_film_strategy(
+    film: SweepFilm, strategy: ExtractionStrategy, chunk_s: float = 60.0,
+) -> tuple[SweepFilm, MatchMetrics, MatchMetrics, str, ExtractionStrategy] | None:
+    """Run Welch baseline + one extraction strategy for a film."""
+    import numpy as np
+
+    from model.auto_beq import propose_filters_from_measured
+
+    if not film.path.exists():
+        return None
+
+    fs = 1000
+    freqs = DEFAULT_GRID
+    wav_path = _extract_lfe_wav(film.path, target_fs=fs)
+
+    baseline_curve = load_and_smooth(wav_path, fs=fs, freqs=freqs)
+
+    if strategy.alpha is not None:
+        test_curve = load_and_smooth_blended(
+            wav_path, fs=fs, freqs=freqs,
+            chunk_s=chunk_s, percentile=strategy.percentile,
+            alpha=strategy.alpha,
+        )
+    else:
+        test_curve = load_and_smooth_chunked(
+            wav_path, fs=fs, freqs=freqs,
+            chunk_s=chunk_s, percentile=strategy.percentile,
+        )
+
+    advisor = get_advisor()
+    metadata = MediaMetadata(title=film.title, year=film.year)
+    ground_resp = evaluate_filter_chain(
+        film.catalogue_entry["filters"], freqs, fs=fs,
+    )
+
+    baseline_proposed = propose_filters_from_measured(
+        baseline_curve, freqs, fs=fs, advisor=advisor, metadata=metadata,
+    )
+    baseline_metrics = compute_match_metrics(
+        -ground_resp, baseline_proposed, freqs, fs=fs,
+    )
+
+    test_proposed = propose_filters_from_measured(
+        test_curve, freqs, fs=fs, advisor=advisor, metadata=metadata,
+    )
+    test_metrics = compute_match_metrics(
+        -ground_resp, test_proposed, freqs, fs=fs,
+    )
+
+    log.info(
+        "%s %s | baseline=%s(%.2f) test=%s(%.2f) delta=%+.2f",
+        film.title, strategy.label,
+        baseline_metrics.verdict, baseline_metrics.mean_abs_err_db,
+        test_metrics.verdict, test_metrics.mean_abs_err_db,
+        test_metrics.mean_abs_err_db - baseline_metrics.mean_abs_err_db,
+    )
+    return film, baseline_metrics, test_metrics, advisor.name, strategy
+
+
+def _append_strategy_report(
+    film: SweepFilm,
+    advisor_name: str,
+    baseline_metrics: MatchMetrics,
+    test_metrics: MatchMetrics,
+    strategy: ExtractionStrategy,
+    catalogue_filter_count: int,
+) -> None:
+    is_new = not _STRATEGY_REPORT_PATH.exists()
+    _STRATEGY_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _STRATEGY_REPORT_PATH.open("a", newline="") as f:
+        w = csv.writer(f)
+        if is_new:
+            w.writerow([
+                "title", "year", "strategy", "percentile", "alpha", "advisor",
+                "baseline_verdict", "baseline_mean", "baseline_max",
+                "test_verdict", "test_mean", "test_max",
+                "mean_delta", "catalogue_filters", "summed_gain",
+            ])
+        mean_delta = test_metrics.mean_abs_err_db - baseline_metrics.mean_abs_err_db
+        w.writerow([
+            film.title,
+            film.year if film.year is not None else "",
+            strategy.label,
+            f"{strategy.percentile:.0f}",
+            f"{strategy.alpha:.1f}" if strategy.alpha is not None else "",
+            advisor_name,
+            baseline_metrics.verdict,
+            f"{baseline_metrics.mean_abs_err_db:.2f}",
+            f"{baseline_metrics.max_abs_err_db:.2f}",
+            test_metrics.verdict,
+            f"{test_metrics.mean_abs_err_db:.2f}",
+            f"{test_metrics.max_abs_err_db:.2f}",
+            f"{mean_delta:+.2f}",
+            catalogue_filter_count,
+            f"{_summed_low_shelf_gain(film.catalogue_entry):.1f}",
+        ])
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
+@pytest.mark.parametrize(
+    "strategy",
+    _STRATEGIES,
+    ids=[s.label for s in _STRATEGIES],
+)
+@pytest.mark.parametrize(
+    "film",
+    _SWEEP_FILMS,
+    ids=[_sweep_film_id(f) for f in _SWEEP_FILMS] or None,
+)
+def test_library_sweep_strategies(
+    film: SweepFilm, strategy: ExtractionStrategy, caplog,
+):
+    """E18b: strategy sweep — percentile and blending variations.
+
+    No assertions. Run with:
+        SPIKE_TEST=...::test_library_sweep_strategies bash scripts/run-spike-tests.sh
+    """
+    caplog.set_level(logging.INFO, logger="auto_beq_sweep")
+    result = _run_one_film_strategy(film, strategy)
+    if result is None:
+        pytest.skip(f"media file not accessible: {film.path}")
+    film, baseline_metrics, test_metrics, advisor_name, strategy = result
+    _append_strategy_report(
+        film=film,
+        advisor_name=advisor_name,
+        baseline_metrics=baseline_metrics,
+        test_metrics=test_metrics,
+        strategy=strategy,
+        catalogue_filter_count=len(film.catalogue_entry["filters"]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# E19: MeasurementAdvisor constant calibration sweep.
+#
+# One-at-a-time sweep of cascade_gain_ratio, cascade_q,
+# multi_knee_slope_threshold, and multi_knee_q. Each config varies one
+# parameter from the baseline while holding the rest at defaults.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class AdvisorConfig:
+    """One MeasurementAdvisor configuration to test."""
+    cascade_gain_ratio: float = 7.0
+    cascade_q: float = 0.9
+    multi_knee_slope_threshold: float = 10.0   # E19 default
+    multi_knee_q: float = 0.9                  # E19 default
+    max_total_chain_gain_db: float = 30.0
+    max_shelves: int = 2
+
+    @property
+    def label(self) -> str:
+        return (
+            f"g{self.cascade_gain_ratio:.0f}"
+            f"-cQ{self.cascade_q:.1f}"
+            f"-s{self.multi_knee_slope_threshold:.0f}"
+            f"-mQ{self.multi_knee_q:.1f}"
+            f"-cap{self.max_total_chain_gain_db:.0f}"
+            f"-sh{self.max_shelves}"
+        )
+
+
+_BASELINE_CONFIG = AdvisorConfig()  # E19 defaults: s10, mQ0.9
+
+_E19_CONFIGS = [
+    _BASELINE_CONFIG,
+    # Vary cascade_gain_ratio
+    AdvisorConfig(cascade_gain_ratio=5.0),
+    AdvisorConfig(cascade_gain_ratio=6.0),
+    AdvisorConfig(cascade_gain_ratio=8.0),
+    AdvisorConfig(cascade_gain_ratio=9.0),
+    # Vary cascade_q
+    AdvisorConfig(cascade_q=0.7),
+    AdvisorConfig(cascade_q=0.8),
+    AdvisorConfig(cascade_q=1.0),
+    AdvisorConfig(cascade_q=1.2),
+    # Vary multi_knee_slope_threshold (from pre-E19 baseline 15.0)
+    AdvisorConfig(multi_knee_slope_threshold=12.0),
+    AdvisorConfig(multi_knee_slope_threshold=15.0),
+    AdvisorConfig(multi_knee_slope_threshold=18.0),
+    AdvisorConfig(multi_knee_slope_threshold=20.0),
+    # Vary multi_knee_q (from pre-E19 baseline 0.8)
+    AdvisorConfig(multi_knee_q=0.6),
+    AdvisorConfig(multi_knee_q=0.7),
+    AdvisorConfig(multi_knee_q=0.8),
+    AdvisorConfig(multi_knee_q=1.0),
+]
+
+_E19_REPORT_PATH = Path(os.environ.get(
+    "AUTO_BEQ_E19_REPORT", ".pytest_cache/auto_beq_sweep_e19.csv",
+))
+
+
+def _run_one_film_e19(
+    film: SweepFilm, config: AdvisorConfig,
+) -> tuple[SweepFilm, MatchMetrics, MatchMetrics, str, AdvisorConfig] | None:
+    """Run baseline + one advisor config for a film."""
+    from model.auto_beq import propose_filters_from_measured
+    from model.auto_beq_advisor import MeasurementAdvisor
+
+    if not film.path.exists():
+        return None
+
+    fs = 1000
+    freqs = DEFAULT_GRID
+    wav_path = _extract_lfe_wav(film.path, target_fs=fs)
+    measured = load_measured(wav_path, fs=fs, freqs=freqs)
+
+    metadata = MediaMetadata(title=film.title, year=film.year)
+    ground_resp = evaluate_filter_chain(
+        film.catalogue_entry["filters"], freqs, fs=fs,
+    )
+
+    # Baseline: default MeasurementAdvisor.
+    baseline_advisor = MeasurementAdvisor()
+    baseline_proposed = propose_filters_from_measured(
+        measured, freqs, fs=fs, advisor=baseline_advisor, metadata=metadata,
+    )
+    baseline_metrics = compute_match_metrics(
+        -ground_resp, baseline_proposed, freqs, fs=fs,
+    )
+
+    # Test: configured MeasurementAdvisor.
+    test_advisor = MeasurementAdvisor(
+        cascade_gain_ratio=config.cascade_gain_ratio,
+        cascade_q=config.cascade_q,
+        multi_knee_slope_threshold=config.multi_knee_slope_threshold,
+        multi_knee_q=config.multi_knee_q,
+        max_total_chain_gain_db=config.max_total_chain_gain_db,
+        max_shelves=config.max_shelves,
+    )
+    test_proposed = propose_filters_from_measured(
+        measured, freqs, fs=fs, advisor=test_advisor, metadata=metadata,
+    )
+    test_metrics = compute_match_metrics(
+        -ground_resp, test_proposed, freqs, fs=fs,
+    )
+
+    log.info(
+        "%s %s | baseline=%s(%.2f) test=%s(%.2f) delta=%+.2f",
+        film.title, config.label,
+        baseline_metrics.verdict, baseline_metrics.mean_abs_err_db,
+        test_metrics.verdict, test_metrics.mean_abs_err_db,
+        test_metrics.mean_abs_err_db - baseline_metrics.mean_abs_err_db,
+    )
+    return film, baseline_metrics, test_metrics, "measurement", config
+
+
+def _append_e19_report(
+    film: SweepFilm,
+    baseline_metrics: MatchMetrics,
+    test_metrics: MatchMetrics,
+    config: AdvisorConfig,
+    catalogue_filter_count: int,
+) -> None:
+    is_new = not _E19_REPORT_PATH.exists()
+    _E19_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _E19_REPORT_PATH.open("a", newline="") as f:
+        w = csv.writer(f)
+        if is_new:
+            w.writerow([
+                "title", "year", "config", "cascade_gain_ratio", "cascade_q",
+                "multi_knee_slope_threshold", "multi_knee_q", "max_chain_gain",
+                "baseline_verdict", "baseline_mean", "baseline_max",
+                "test_verdict", "test_mean", "test_max",
+                "mean_delta", "catalogue_filters", "summed_gain",
+            ])
+        mean_delta = test_metrics.mean_abs_err_db - baseline_metrics.mean_abs_err_db
+        w.writerow([
+            film.title,
+            film.year if film.year is not None else "",
+            config.label,
+            f"{config.cascade_gain_ratio:.1f}",
+            f"{config.cascade_q:.1f}",
+            f"{config.multi_knee_slope_threshold:.0f}",
+            f"{config.multi_knee_q:.1f}",
+            f"{config.max_total_chain_gain_db:.0f}",
+            baseline_metrics.verdict,
+            f"{baseline_metrics.mean_abs_err_db:.2f}",
+            f"{baseline_metrics.max_abs_err_db:.2f}",
+            test_metrics.verdict,
+            f"{test_metrics.mean_abs_err_db:.2f}",
+            f"{test_metrics.max_abs_err_db:.2f}",
+            f"{mean_delta:+.2f}",
+            catalogue_filter_count,
+            f"{_summed_low_shelf_gain(film.catalogue_entry):.1f}",
+        ])
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
+@pytest.mark.parametrize(
+    "config",
+    _E19_CONFIGS,
+    ids=[c.label for c in _E19_CONFIGS],
+)
+@pytest.mark.parametrize(
+    "film",
+    _SWEEP_FILMS,
+    ids=[_sweep_film_id(f) for f in _SWEEP_FILMS] or None,
+)
+def test_library_sweep_e19(film: SweepFilm, config: AdvisorConfig, caplog):
+    """E19: MeasurementAdvisor constant calibration sweep.
+
+    No assertions. Run with:
+        SPIKE_TEST=...::test_library_sweep_e19 bash scripts/run-spike-tests.sh
+    """
+    caplog.set_level(logging.INFO, logger="auto_beq_sweep")
+    result = _run_one_film_e19(film, config)
+    if result is None:
+        pytest.skip(f"media file not accessible: {film.path}")
+    film, baseline_metrics, test_metrics, advisor_name, config = result
+    _append_e19_report(
+        film=film,
+        baseline_metrics=baseline_metrics,
+        test_metrics=test_metrics,
+        config=config,
+        catalogue_filter_count=len(film.catalogue_entry["filters"]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# E20: Multi-knee advisor improvements — 3-shelf cascade + gain cap sweep.
+#
+# Tests whether a 3-shelf chain (splitting the deficit across 5→10→20→peak
+# instead of just 10→20→peak) improves high-gain catalogue entries.
+# Also tests raising the gain cap from 30 to 35/40 dB.
+# ---------------------------------------------------------------------------
+
+_E20_CONFIGS = [
+    AdvisorConfig(),                                                    # baseline: 2-shelf, 30 dB
+    AdvisorConfig(max_shelves=3),                                       # 3-shelf, 30 dB
+    AdvisorConfig(max_shelves=3, max_total_chain_gain_db=35.0),         # 3-shelf, 35 dB
+    AdvisorConfig(max_shelves=3, max_total_chain_gain_db=40.0),         # 3-shelf, 40 dB
+    AdvisorConfig(max_total_chain_gain_db=35.0),                        # 2-shelf, 35 dB
+    AdvisorConfig(max_total_chain_gain_db=40.0),                        # 2-shelf, 40 dB
+]
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
+@pytest.mark.parametrize(
+    "config",
+    _E20_CONFIGS,
+    ids=[c.label for c in _E20_CONFIGS],
+)
+@pytest.mark.parametrize(
+    "film",
+    _SWEEP_FILMS,
+    ids=[_sweep_film_id(f) for f in _SWEEP_FILMS] or None,
+)
+def test_library_sweep_e20(film: SweepFilm, config: AdvisorConfig, caplog):
+    """E20: multi-knee improvements — 3-shelf cascade + gain cap sweep.
+
+    No assertions. Run with:
+        SPIKE_TEST=...::test_library_sweep_e20 bash scripts/run-spike-tests.sh
+    """
+    caplog.set_level(logging.INFO, logger="auto_beq_sweep")
+    result = _run_one_film_e19(film, config)  # reuses same runner
+    if result is None:
+        pytest.skip(f"media file not accessible: {film.path}")
+    film, baseline_metrics, test_metrics, advisor_name, config = result
+    _append_e19_report(
+        film=film,
+        baseline_metrics=baseline_metrics,
+        test_metrics=test_metrics,
+        config=config,
+        catalogue_filter_count=len(film.catalogue_entry["filters"]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# E21: Self-feedback loop — iterative gain adjustment at the advisor level.
+#
+# Tests whether running propose_filters_from_measured in a loop with
+# gain adjustments based on residual flatness improves results.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class FeedbackConfig:
+    """One feedback loop configuration to test."""
+    max_iterations: int
+    flatness_threshold_db: float
+
+    @property
+    def label(self) -> str:
+        return f"fb-iter{self.max_iterations}-thr{self.flatness_threshold_db:.0f}"
+
+
+_E21_CONFIGS = [
+    FeedbackConfig(max_iterations=1, flatness_threshold_db=99),  # = single pass (baseline)
+    FeedbackConfig(max_iterations=3, flatness_threshold_db=3),
+    FeedbackConfig(max_iterations=3, flatness_threshold_db=2),
+    FeedbackConfig(max_iterations=3, flatness_threshold_db=1),
+    FeedbackConfig(max_iterations=5, flatness_threshold_db=2),
+]
+
+_E21_REPORT_PATH = Path(os.environ.get(
+    "AUTO_BEQ_E21_REPORT", ".pytest_cache/auto_beq_sweep_e21.csv",
+))
+
+
+def _run_one_film_e21(
+    film: SweepFilm, config: FeedbackConfig,
+) -> tuple[SweepFilm, MatchMetrics, MatchMetrics, str, FeedbackConfig] | None:
+    """Run baseline (single-pass) + feedback loop for a film."""
+    from model.auto_beq import (
+        propose_filters_from_measured,
+        propose_filters_with_feedback,
+    )
+    from model.auto_beq_advisor import MeasurementAdvisor
+
+    if not film.path.exists():
+        return None
+
+    fs = 1000
+    freqs = DEFAULT_GRID
+    wav_path = _extract_lfe_wav(film.path, target_fs=fs)
+    measured = load_measured(wav_path, fs=fs, freqs=freqs)
+
+    advisor = MeasurementAdvisor()
+    metadata = MediaMetadata(title=film.title, year=film.year)
+    ground_resp = evaluate_filter_chain(
+        film.catalogue_entry["filters"], freqs, fs=fs,
+    )
+
+    # Baseline: single-pass.
+    baseline_proposed = propose_filters_from_measured(
+        measured, freqs, fs=fs, advisor=advisor, metadata=metadata,
+    )
+    baseline_metrics = compute_match_metrics(
+        -ground_resp, baseline_proposed, freqs, fs=fs,
+    )
+
+    # Test: feedback loop.
+    test_proposed = propose_filters_with_feedback(
+        measured, freqs, fs=fs,
+        advisor=advisor, metadata=metadata,
+        max_iterations=config.max_iterations,
+        flatness_threshold_db=config.flatness_threshold_db,
+    )
+    test_metrics = compute_match_metrics(
+        -ground_resp, test_proposed, freqs, fs=fs,
+    )
+
+    log.info(
+        "%s %s | baseline=%s(%.2f) test=%s(%.2f) delta=%+.2f",
+        film.title, config.label,
+        baseline_metrics.verdict, baseline_metrics.mean_abs_err_db,
+        test_metrics.verdict, test_metrics.mean_abs_err_db,
+        test_metrics.mean_abs_err_db - baseline_metrics.mean_abs_err_db,
+    )
+    return film, baseline_metrics, test_metrics, "measurement", config
+
+
+def _append_e21_report(
+    film: SweepFilm,
+    baseline_metrics: MatchMetrics,
+    test_metrics: MatchMetrics,
+    config: FeedbackConfig,
+    catalogue_filter_count: int,
+) -> None:
+    is_new = not _E21_REPORT_PATH.exists()
+    _E21_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _E21_REPORT_PATH.open("a", newline="") as f:
+        w = csv.writer(f)
+        if is_new:
+            w.writerow([
+                "title", "year", "config", "max_iterations",
+                "flatness_threshold",
+                "baseline_verdict", "baseline_mean", "baseline_max",
+                "test_verdict", "test_mean", "test_max",
+                "mean_delta", "catalogue_filters", "summed_gain",
+            ])
+        mean_delta = test_metrics.mean_abs_err_db - baseline_metrics.mean_abs_err_db
+        w.writerow([
+            film.title,
+            film.year if film.year is not None else "",
+            config.label,
+            config.max_iterations,
+            f"{config.flatness_threshold_db:.0f}",
+            baseline_metrics.verdict,
+            f"{baseline_metrics.mean_abs_err_db:.2f}",
+            f"{baseline_metrics.max_abs_err_db:.2f}",
+            test_metrics.verdict,
+            f"{test_metrics.mean_abs_err_db:.2f}",
+            f"{test_metrics.max_abs_err_db:.2f}",
+            f"{mean_delta:+.2f}",
+            catalogue_filter_count,
+            f"{_summed_low_shelf_gain(film.catalogue_entry):.1f}",
+        ])
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
+@pytest.mark.parametrize(
+    "config",
+    _E21_CONFIGS,
+    ids=[c.label for c in _E21_CONFIGS],
+)
+@pytest.mark.parametrize(
+    "film",
+    _SWEEP_FILMS,
+    ids=[_sweep_film_id(f) for f in _SWEEP_FILMS] or None,
+)
+def test_library_sweep_e21(film: SweepFilm, config: FeedbackConfig, caplog):
+    """E21: self-feedback loop — iterative gain adjustment.
+
+    No assertions. Run with:
+        SPIKE_TEST=...::test_library_sweep_e21 bash scripts/run-spike-tests.sh
+    """
+    caplog.set_level(logging.INFO, logger="auto_beq_sweep")
+    result = _run_one_film_e21(film, config)
+    if result is None:
+        pytest.skip(f"media file not accessible: {film.path}")
+    film, baseline_metrics, test_metrics, advisor_name, config = result
+    _append_e21_report(
+        film=film,
+        baseline_metrics=baseline_metrics,
+        test_metrics=test_metrics,
+        config=config,
+        catalogue_filter_count=len(film.catalogue_entry["filters"]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cross-advisor comparison — run all viable advisors across the library.
+#
+# This is the "run everything and compare" test. Each advisor represents
+# a different experiment lineage:
+#   - heuristic:       E3 (rolloff-depth classifier)
+#   - measurement:     E17d/E19/E20 (current default, deficit formula)
+#   - topology:        E17c (gentle/moderate/cliff classification)
+#   - slope_extension: E14 (deficit + slope projection)
+#
+# Ollama and Mock are excluded (network-dependent / fixture-dependent).
+# All advisors use the current default extraction (blend-a0.7-P90).
+# ---------------------------------------------------------------------------
+
+_ADVISOR_NAMES = ["heuristic", "measurement", "topology", "slope_extension"]
+
+_ADVISOR_REPORT_PATH = Path(os.environ.get(
+    "AUTO_BEQ_ADVISOR_REPORT", ".pytest_cache/auto_beq_sweep_advisors.csv",
+))
+
+
+def _run_one_film_advisor(
+    film: SweepFilm, advisor_name: str,
+) -> tuple[SweepFilm, MatchMetrics, str] | None:
+    """Run one advisor for one film."""
+    from model.auto_beq import propose_filters_from_measured
+
+    if not film.path.exists():
+        return None
+
+    fs = 1000
+    freqs = DEFAULT_GRID
+    wav_path = _extract_lfe_wav(film.path, target_fs=fs)
+    measured = load_measured(wav_path, fs=fs, freqs=freqs)
+
+    try:
+        advisor = get_advisor(advisor_name)
+    except Exception as exc:
+        log.warning("advisor %s failed to construct: %s", advisor_name, exc)
+        return None
+
+    metadata = MediaMetadata(title=film.title, year=film.year)
+
+    try:
+        proposed = propose_filters_from_measured(
+            measured, freqs, fs=fs, advisor=advisor, metadata=metadata,
+        )
+    except Exception as exc:
+        log.warning("%s advisor failed on %s: %s", advisor_name, film.title, exc)
+        return None
+
+    ground_resp = evaluate_filter_chain(
+        film.catalogue_entry["filters"], freqs, fs=fs,
+    )
+    metrics = compute_match_metrics(-ground_resp, proposed, freqs, fs=fs)
+
+    log.info(
+        "%s [%s]: verdict=%s mean=%.2f max=%.2f",
+        film.title, advisor_name, metrics.verdict,
+        metrics.mean_abs_err_db, metrics.max_abs_err_db,
+    )
+    return film, metrics, advisor_name
+
+
+def _append_advisor_report(
+    film: SweepFilm,
+    advisor_name: str,
+    metrics: MatchMetrics,
+    catalogue_filter_count: int,
+) -> None:
+    is_new = not _ADVISOR_REPORT_PATH.exists()
+    _ADVISOR_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _ADVISOR_REPORT_PATH.open("a", newline="") as f:
+        w = csv.writer(f)
+        if is_new:
+            w.writerow([
+                "title", "year", "advisor", "verdict",
+                "mean_err_db", "max_err_db",
+                "catalogue_filters", "summed_gain",
+            ])
+        w.writerow([
+            film.title,
+            film.year if film.year is not None else "",
+            advisor_name,
+            metrics.verdict,
+            f"{metrics.mean_abs_err_db:.2f}",
+            f"{metrics.max_abs_err_db:.2f}",
+            catalogue_filter_count,
+            f"{_summed_low_shelf_gain(film.catalogue_entry):.1f}",
+        ])
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
+@pytest.mark.parametrize("advisor_name", _ADVISOR_NAMES)
+@pytest.mark.parametrize(
+    "film",
+    _SWEEP_FILMS,
+    ids=[_sweep_film_id(f) for f in _SWEEP_FILMS] or None,
+)
+def test_library_sweep_advisors(film: SweepFilm, advisor_name: str, caplog):
+    """Cross-advisor comparison: run all advisors across the library.
+
+    No assertions. Produces a unified CSV for comparative analysis.
+    Run with:
+        SPIKE_TEST=...::test_library_sweep_advisors bash scripts/run-spike-tests.sh
+
+    Or run all sweep tests together:
+        SPIKE_TEST=src/test/python/spike/test_auto_beq_library_sweep.py bash scripts/run-spike-tests.sh
+    """
+    caplog.set_level(logging.INFO, logger="auto_beq_sweep")
+    result = _run_one_film_advisor(film, advisor_name)
+    if result is None:
+        pytest.skip(f"media file not accessible or advisor failed: {film.path}")
+    film, metrics, advisor_name = result
+    _append_advisor_report(
+        film=film,
+        advisor_name=advisor_name,
+        metrics=metrics,
+        catalogue_filter_count=len(film.catalogue_entry["filters"]),
+    )
