@@ -44,22 +44,87 @@ N_AUDIO_FORMAT = len(_AUDIO_FORMAT_BUCKETS)  # 6
 _SOURCE_BUCKETS = ["disc", "streaming", "unknown"]
 N_SOURCE = len(_SOURCE_BUCKETS)  # 3
 
-# Studio vocabulary — top-30 studios by catalogue frequency + "other" bucket.
-# Covers ~20% of entries directly; the rest fall into "other". Each studio
-# gets its own XGBoost split point — no hash collisions.
+# Studio parent-company groups — subsidiaries share mixing stages.
+# A film mixed at Disney's Buena Vista stages has the same bass rolloff
+# tendencies whether it's branded Pixar or Marvel. Grouping gives 35%
+# coverage in 11 dims vs 20% in 30 dims with individual studios.
+_STUDIO_PARENT_GROUPS: dict[str, list[str]] = {
+    "disney": [
+        "walt disney pictures", "pixar", "marvel studios", "touchstone pictures",
+        "lucasfilm", "hollywood pictures", "walt disney animation studios",
+        "20th century fox", "20th century studios", "searchlight pictures",
+        "dreamworks animation", "blue sky studios",
+    ],
+    "warner": [
+        "warner bros. pictures", "warner bros. animation", "new line cinema",
+        "castle rock entertainment", "dc films", "dc studios", "hbo films",
+        "warner animation group",
+    ],
+    "universal": [
+        "universal pictures", "focus features", "working title films",
+        "illumination", "amblin entertainment", "gramercy pictures",
+        "universal 1440 entertainment", "dreamworks pictures",
+    ],
+    "sony/columbia": [
+        "columbia pictures", "tristar pictures", "screen gems",
+        "sony pictures", "revolution studios", "sony pictures animation",
+    ],
+    "paramount": [
+        "paramount pictures", "paramount animation", "republic pictures",
+        "paramount players", "miramax",
+    ],
+    "lionsgate": [
+        "lionsgate", "lionsgate films", "summit entertainment",
+        "artisan entertainment", "studiocanal",
+    ],
+    "mgm": [
+        "metro-goldwyn-mayer", "united artists", "orion pictures",
+    ],
+    "netflix": ["netflix"],
+    "amazon": ["amazon studios", "amazon mgm studios"],
+    "a24": ["a24"],
+    "blumhouse": ["blumhouse productions"],
+}
+
+
+def _resolve_studio_parent(studio: str | None, all_studios: tuple[str, ...] = ()) -> str:
+    """Resolve a studio name to its parent company.
+
+    Checks primary studio first, then all production companies from TMDb.
+    Returns the parent group name (lowercase) or the original studio name
+    (lowercase) if no parent match.
+    """
+    candidates = []
+    if studio:
+        candidates.append(studio.lower().strip())
+    candidates.extend(s.lower().strip() for s in all_studios)
+
+    for candidate in candidates:
+        for parent, subsidiaries in _STUDIO_PARENT_GROUPS.items():
+            if candidate in subsidiaries or any(sub in candidate for sub in subsidiaries):
+                return parent
+    # No parent match — return primary studio name for individual vocab lookup.
+    return (studio or "").lower().strip()
+
+
+# Hybrid studio vocab: 11 parent groups + top ungrouped studios + "other".
+# Parent groups carry the mixing-stage signal (35% coverage); individual
+# ungrouped studios add indie/international coverage (~10% more).
 _STUDIO_VOCAB = [
-    "paramount pictures", "universal pictures", "columbia pictures",
-    "warner bros. pictures", "new line cinema", "walt disney pictures",
-    "lionsgate", "warner bros. animation", "marvel studios",
-    "dreamworks animation", "20th century fox", "metro-goldwyn-mayer",
-    "blumhouse productions", "dreamworks pictures", "dimension films",
-    "cj entertainment", "yash raj films", "a24", "tristar pictures",
-    "pixar", "legendary pictures", "screen gems", "village roadshow pictures",
-    "miramax", "touchstone pictures", "summit entertainment",
-    "eon productions", "t-series", "20th century studios", "europacorp",
+    # Parent groups (11)
+    "disney", "warner", "universal", "sony/columbia", "paramount",
+    "lionsgate", "mgm", "netflix", "amazon", "a24", "blumhouse",
+    # Top ungrouped individual studios (≥15 entries in catalogue)
+    "dimension films", "yash raj films", "cj entertainment", "studio dragon",
+    "t-series", "media asia films", "legendary pictures", "jce movies",
+    "xyz films", "europacorp", "anonymous content", "next entertainment world",
+    "village roadshow pictures", "eon productions", "canal+",
+    "relativity media", "regency enterprises", "imagine entertainment",
+    "skydance media", "plan b entertainment",
+    # Catch-all
     "other",
 ]
-N_STUDIO = len(_STUDIO_VOCAB)  # 31
+N_STUDIO = len(_STUDIO_VOCAB)  # 32
 
 # Mixer vocabulary — top-20 sound re-recording mixers + "other" + "unknown".
 # Covers ~17% of entries with known mixers. Sparse but each name is a
@@ -100,9 +165,9 @@ N_METADATA_FEATURES = (
     + N_COUNTRY       # 5
     + 1               # runtime normalised
     + 1               # rating normalised
-)  # = 80
+)  # = 81
 
-N_FEATURES = N_AUDIO_FEATURES + N_METADATA_FEATURES  # 89
+N_FEATURES = N_AUDIO_FEATURES + N_METADATA_FEATURES  # 90
 
 # ---------------------------------------------------------------------------
 # Label constants (filter parameter output vector)
@@ -244,10 +309,12 @@ def build_metadata_features(metadata: MediaMetadata) -> np.ndarray:
     # Source one-hot (Tier 1)
     parts.append(_source_onehot(getattr(metadata, "source", None)))
 
-    # Studio — one-hot against top-30 vocabulary (Tier 1, most predictive).
-    # Each major studio gets its own XGBoost split point, no hash collisions.
+    # Studio — resolved to parent company, then one-hot against hybrid vocab.
+    # Disney subsidiaries (Pixar, Marvel, etc.) share mixing stages → same group.
     studio = getattr(metadata, "studio", None)
-    parts.append(_vocab_onehot(studio, _STUDIO_VOCAB))
+    all_studios = getattr(metadata, "all_studios", ())
+    resolved_studio = _resolve_studio_parent(studio, all_studios)
+    parts.append(_vocab_onehot(resolved_studio, _STUDIO_VOCAB))
 
     # Mixer — one-hot against top-20 vocabulary (Tier 2).
     # "Sound Re-Recording Mixer" from TMDb credits.

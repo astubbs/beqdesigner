@@ -84,6 +84,7 @@ class MediaMetadata:
     language: str | None = None         # "English", "Korean", etc.
     # Tier 1 — needs external lookup (TMDb); zero-padded in ML model until then
     studio: str | None = None           # "Disney", "Warner", "Universal", etc.
+    all_studios: tuple[str, ...] = ()   # all production companies from TMDb
     # Tier 2 — needs external lookup (IMDB); zero-padded until then
     supervising_mixer: str | None = None
     # Tier 3 — from catalogue, low marginal value but cost-free

@@ -266,6 +266,7 @@ def enrich_media_metadata(entry: dict, cache: dict[str, dict]):
         genres=tuple(entry.get("genres", [])),
         language=entry.get("language") or None,
         studio=tmdb.get("studio"),
+        all_studios=tuple(tmdb.get("all_studios", [])),
         supervising_mixer=primary_mixer,
         rating=entry.get("rating") or None,
         runtime_min=int(entry.get("runtime", 0) or 0) or None,

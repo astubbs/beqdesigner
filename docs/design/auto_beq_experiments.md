@@ -948,3 +948,55 @@ Updated feature importances (top 15):
 4. **The gap is closing**: 2.0 dB synthetic-to-real gap means the model
    trained on "perfect inverse" curves transfers reasonably to real audio.
    Still room to improve with real audio training data.
+
+### E18d - Studio-family grouping (parent company resolution)
+
+**Problem**: Even with proper one-hot encoding (E18c), studio didn't crack
+the top 15 feature importances. Root cause: top-30 individual studios only
+cover 20% of catalogue entries — 80% fall into "other", diluting the signal.
+
+**Analysis of alternatives**:
+
+| Approach | Dims | Coverage | Notes |
+|---|---|---|---|
+| Top-30 individual + other (E18c) | 31 | 20% | Too many in "other" |
+| Top-100 individual + other | 101 | 30% | Diminishing returns, high dim cost |
+| Parent groups (11) + other | 12 | 35% | Best coverage per dim |
+| **Hybrid (11 parents + ~20 ungrouped + other)** | **~32** | **~45%** | Recommended |
+
+**Physical rationale**: Disney subsidiaries (Walt Disney Pictures, Pixar,
+Marvel Studios, Touchstone, Lucasfilm, 20th Century Fox, Searchlight, Blue
+Sky, Walt Disney Animation Studios) literally share mixing stages and
+mastering engineers. A film mixed at Disney's Buena Vista stages has the
+same bass rolloff tendencies whether it's branded Pixar or Marvel. Same
+for Warner subsidiaries (Warner Bros., New Line Cinema, DC, Castle Rock,
+HBO Films, Warner Animation Group).
+
+**Parent group definitions** (from TMDb data analysis):
+
+| Parent | Subsidiaries | Entries | Coverage |
+|---|---|---|---|
+| Disney | Walt Disney Pictures, Pixar, Marvel Studios, Touchstone, Lucasfilm, 20th Century Fox/Studios, Searchlight, Blue Sky, DreamWorks Animation, Walt Disney Animation Studios | 555 | 6.9% |
+| Warner | Warner Bros. Pictures, Warner Bros. Animation, New Line Cinema, Castle Rock, DC Films/Studios, HBO Films, Warner Animation Group | 462 | 5.8% |
+| Universal | Universal Pictures, Focus Features, Working Title, Illumination, Amblin, Universal 1440, DreamWorks Pictures | 422 | 5.3% |
+| Sony/Columbia | Columbia Pictures, TriStar, Screen Gems, Sony Pictures, Sony Pictures Animation | 372 | 4.6% |
+| Lionsgate | Lionsgate, Summit Entertainment, StudioCanal | 310 | 3.9% |
+| Paramount | Paramount Pictures, Paramount Animation, Miramax | 294 | 3.7% |
+| MGM | Metro-Goldwyn-Mayer, United Artists, Orion Pictures | 156 | 1.9% |
+| Amazon | Amazon Studios, Amazon MGM Studios | 63 | 0.8% |
+| Blumhouse | Blumhouse Productions | 61 | 0.8% |
+| A24 | A24 | 41 | 0.5% |
+| Netflix | Netflix | 40 | 0.5% |
+| **Total grouped** | | **2,776** | **34.7%** |
+
+**Resolution logic**: Check primary studio name against parent group
+subsidiary lists. If no match, check ALL production companies from TMDb
+credits (e.g. "Legendary Pictures" as primary + "Warner Bros." as co-producer
+→ resolves to "Warner"). Ungrouped studios with ≥15 entries get their own
+one-hot bucket.
+
+**Implementation**: `_resolve_studio_parent(studio, all_studios)` in
+`auto_beq_nn.py`. Hybrid vocab: 11 parent groups + ~20 top ungrouped +
+"other" ≈ 32 dims total (down from 31 but 45% vs 20% coverage).
+
+**Status**: Implementing.

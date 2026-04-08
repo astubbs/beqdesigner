@@ -244,17 +244,19 @@ def test_feature_vector_with_studio(tmp_path, monkeypatch):
     vec = build_feature_vector(features, metadata)
     assert vec.shape == (N_FEATURES,)
 
-    # Studio slot should have exactly one 1.0 (one-hot against vocab).
+    # Studio slot should have exactly one 1.0 (one-hot against hybrid vocab).
     # In the full vector: audio(9) + year(1) + format(6) + source(3) = 19
-    from model.auto_beq_nn import N_STUDIO
+    from model.auto_beq_nn import N_STUDIO, _STUDIO_VOCAB
     studio_slice = vec[19:19 + N_STUDIO]
     assert studio_slice.sum() == 1.0, (
         f"studio should be one-hot when studio='{metadata.studio}', "
         f"got sum={studio_slice.sum()}"
     )
-    # "Columbia Pictures" should hit index 2 in the vocab, not the "other" bucket.
-    assert studio_slice[-1] == 0.0, (
-        f"Columbia Pictures should match vocab, not 'other'; got {studio_slice}"
+    # "Columbia Pictures" should resolve to "sony/columbia" parent group.
+    sony_idx = _STUDIO_VOCAB.index("sony/columbia")
+    assert studio_slice[sony_idx] == 1.0, (
+        f"Columbia Pictures should resolve to 'sony/columbia' (idx {sony_idx}), "
+        f"got argmax={int(studio_slice.argmax())} ({_STUDIO_VOCAB[int(studio_slice.argmax())]})"
     )
 
     # Without studio, the "other" bucket (last position) should be 1.0.
@@ -269,5 +271,5 @@ def test_feature_vector_with_studio(tmp_path, monkeypatch):
     studio_slice_none = vec_no_studio[19:19 + N_STUDIO]
     assert studio_slice_none[-1] == 1.0, "studio=None should activate 'other' bucket"
 
-    print(f"\nWith studio '{metadata.studio}': vocab hit at idx={int(studio_slice.argmax())}")
+    print(f"\nWith studio '{metadata.studio}': resolved to '{_STUDIO_VOCAB[int(studio_slice.argmax())]}' (idx {int(studio_slice.argmax())})")
     print(f"Without studio: 'other' bucket at idx={int(studio_slice_none.argmax())}")
