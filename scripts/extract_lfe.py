@@ -474,6 +474,12 @@ def main(argv: list[str] | None = None):
         datefmt="%H:%M:%S",
     )
 
+    # Log script identity — self-hash for version tracking on remote servers.
+    import hashlib
+    script_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
+    log.info("extract_lfe.py [%s]", script_hash)
+    log.info("python %s on %s", sys.version.split()[0], sys.platform)
+
     # --- Config: load saved paths, prompt if missing, save for next run ---
     config = _load_or_prompt_config(args.beq_dir, args.media_roots)
     beq_dir = config["beq_dir"]
