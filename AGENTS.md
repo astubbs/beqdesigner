@@ -103,6 +103,7 @@ so the user can see results incrementally: `AUTO_BEQ_SWEEP_LIMIT=1`.
 | `scripts/sweep_report.py` | Generate unified sweep report + session summary | yes | no |
 | `scripts/extract_lfe.py` | Extract LFE WAVs to portable cache. **Standalone** — no project deps, scp to NAS | yes | **yes** |
 | `scripts/verify_wav_cache.py` | Verify WAV cache integrity, delete corrupt files | yes | no (imports wav_integrity) |
+| `scripts/wav_cache_status.py` | Summarise WAV cache: counts, titles, author breakdown, growth | yes | no (imports helpers) |
 
 All `.sh` scripts must have the executable flag set (`chmod +x`).
 
