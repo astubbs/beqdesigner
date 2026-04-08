@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Standalone LFE extractor — portable WAV cache builder.
 
+**STANDALONE BY DESIGN** — this script intentionally has ZERO project
+dependencies. It uses only Python stdlib + ffmpeg/ffprobe. This is so it
+can be scp'd to a NAS and run directly without checking out the project.
+Do not add imports from model.* or spike.* — any shared logic that exists
+in those modules is deliberately duplicated here for portability.
+
 Scans media roots for .mkv files with [tmdb-NNN] in their path, extracts
 the LFE channel (or mono downmix) to a portable WAV cache keyed by TMDb ID.
 

@@ -13,51 +13,28 @@ Usage:
 
     # Verbose (show valid files too):
     python3 verify_wav_cache.py ~/Downloads/beqdesigner/audio-cache -v
+
+Requires PYTHONPATH to include src/main/python (uses model.wav_integrity).
+Run via: PYTHONPATH=src/main/python python3 scripts/verify_wav_cache.py ...
+Or via: poetry run python3 scripts/verify_wav_cache.py ...
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-import struct
 import sys
-import wave
 from pathlib import Path
 
+# Allow running from repo root without setting PYTHONPATH.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_SRC = _REPO_ROOT / "src" / "main" / "python"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from model.wav_integrity import validate_wav_header, verify_cache
+
 log = logging.getLogger("verify_wav_cache")
-
-
-def verify_wav(wav_path: Path) -> tuple[bool, str]:
-    """Validate a WAV file's header matches its actual file size."""
-    try:
-        file_size = wav_path.stat().st_size
-    except OSError as exc:
-        return False, f"cannot stat: {exc}"
-    if file_size == 0:
-        return False, "empty file (0 bytes)"
-    try:
-        with wave.open(str(wav_path), "rb") as wf:
-            n_frames = wf.getnframes()
-            n_channels = wf.getnchannels()
-            sample_width = wf.getsampwidth()
-            frame_rate = wf.getframerate()
-    except (wave.Error, EOFError, struct.error) as exc:
-        return False, f"invalid WAV header: {exc}"
-
-    expected_data = n_frames * n_channels * sample_width
-    if file_size - expected_data < 0:
-        return False, (
-            f"TRUNCATED: header declares {n_frames} frames "
-            f"({expected_data:,} data bytes) but file is only "
-            f"{file_size:,} bytes ({expected_data - file_size:,} bytes short)"
-        )
-
-    duration_s = n_frames / frame_rate if frame_rate > 0 else 0
-    return True, (
-        f"ok: {n_frames:,} frames, {frame_rate} Hz, "
-        f"{duration_s:.0f}s ({duration_s / 60:.1f} min), "
-        f"{file_size:,} bytes"
-    )
 
 
 def main(argv: list[str] | None = None):
@@ -87,57 +64,42 @@ def main(argv: list[str] | None = None):
         log.error("cache root does not exist: %s", args.cache_root)
         sys.exit(1)
 
-    wav_files = sorted(args.cache_root.rglob("*.wav"))
-    if not wav_files:
-        log.info("no WAV files found in %s", args.cache_root)
-        return
+    valid, corrupt = verify_cache(args.cache_root)
 
-    valid_count = 0
-    corrupt_count = 0
-    corrupt_paths = []
-
-    for wav in wav_files:
-        ok, reason = verify_wav(wav)
-        try:
-            rel = wav.relative_to(args.cache_root)
-        except ValueError:
-            rel = wav
-
-        if ok:
-            valid_count += 1
-            if args.verbose:
-                log.info("  VALID  %s — %s", rel, reason)
-        else:
-            corrupt_count += 1
-            corrupt_paths.append(wav)
-            log.warning("  CORRUPT  %s — %s", rel, reason)
+    if args.verbose:
+        for p in valid:
+            try:
+                rel = p.relative_to(args.cache_root)
+            except ValueError:
+                rel = p
+            ok, reason = validate_wav_header(p)
+            log.info("  VALID  %s — %s", rel, reason)
 
     # Summary.
     log.info("")
     log.info("=" * 60)
     log.info("  WAV Cache Verification")
     log.info("  Root:    %s", args.cache_root)
-    log.info("  Scanned: %d files", len(wav_files))
-    log.info("  Valid:   %d", valid_count)
-    log.info("  Corrupt: %d", corrupt_count)
+    log.info("  Scanned: %d files", len(valid) + len(corrupt))
+    log.info("  Valid:   %d", len(valid))
+    log.info("  Corrupt: %d", len(corrupt))
     log.info("=" * 60)
 
-    if corrupt_paths and args.delete:
+    if corrupt and args.delete:
         log.info("")
-        for p in corrupt_paths:
+        for p in corrupt:
             log.info("  Deleting: %s", p.name)
             p.unlink()
-            # Clean up empty parent dirs.
             try:
                 p.parent.rmdir()
             except OSError:
                 pass
-        log.info("  Deleted %d corrupt file(s).", len(corrupt_paths))
-    elif corrupt_paths:
+        log.info("  Deleted %d corrupt file(s).", len(corrupt))
+    elif corrupt:
         log.info("")
         log.info("  Run with --delete to remove corrupt files.")
 
-    sys.exit(1 if corrupt_count > 0 else 0)
+    sys.exit(1 if corrupt else 0)
 
 
 if __name__ == "__main__":

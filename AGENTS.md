@@ -94,12 +94,15 @@ so the user can see results incrementally: `AUTO_BEQ_SWEEP_LIMIT=1`.
 
 ## Scripts
 
-| Script | Purpose | Executable |
-|---|---|---|
-| `scripts/run-sweep-discover.sh` | Discover media + match catalogue | yes |
-| `scripts/run-sweep-tests.sh` | Run auto-BEQ pipeline on discovered media | yes |
-| `scripts/run-spike-tests.sh` | Full spike test suite (unit + integration) | yes |
-| `scripts/spike_auto_beq.py` | Interactive single-title CLI playground | no (run via poetry) |
+| Script | Purpose | Executable | Standalone? |
+|---|---|---|---|
+| `scripts/run-sweep-discover.sh` | Discover media + match catalogue | yes | no |
+| `scripts/run-sweep-tests.sh` | Run auto-BEQ pipeline on discovered media | yes | no |
+| `scripts/run-spike-tests.sh` | Full spike test suite (unit + integration) | yes | no |
+| `scripts/spike_auto_beq.py` | Interactive single-title CLI playground | no (run via poetry) | no |
+| `scripts/sweep_report.py` | Generate unified sweep report + session summary | yes | no |
+| `scripts/extract_lfe.py` | Extract LFE WAVs to portable cache. **Standalone** — no project deps, scp to NAS | yes | **yes** |
+| `scripts/verify_wav_cache.py` | Verify WAV cache integrity, delete corrupt files | yes | no (imports wav_integrity) |
 
 All `.sh` scripts must have the executable flag set (`chmod +x`).
 
