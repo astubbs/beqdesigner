@@ -40,12 +40,28 @@ def catalogue_snapshot():
 
 @pytest.fixture(scope="session", autouse=True)
 def logger():
-    logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)
+    log_dir = Path.home() / ".config" / "beqdesigner"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "beqdesigner.log"
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(funcName)s - %(message)s'
+    )
+
+    # Console handler (stdout).
     ch = logging.StreamHandler()
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(funcName)s - %(message)s')
     ch.setFormatter(formatter)
-    logger.addHandler(ch)
+    root.addHandler(ch)
+
+    # Persistent file handler — always available at:
+    #   tail -f ~/.config/beqdesigner/beqdesigner.log
+    fh = logging.FileHandler(str(log_file), mode="a", encoding="utf-8")
+    fh.setFormatter(formatter)
+    root.addHandler(fh)
+
+    logging.getLogger("auto_beq").info("=== session start, log file: %s ===", log_file)
 
 
 @pytest.fixture
