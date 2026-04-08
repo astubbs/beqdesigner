@@ -590,12 +590,14 @@ def main(argv: list[str] | None = None):
         media = media[:args.limit]
         log.info("limited to %d titles", len(media))
 
-    # Extract.
+    # Extract with ETA tracking.
     total = len(media)
     extracted = 0
     skipped = 0
     errors = 0
     start_time = time.time()
+    extract_times: list[float] = []  # seconds per extraction (for ETA)
+    extract_rates: list[float] = []  # MB/s per extraction (for per-file estimates)
 
     for i, m in enumerate(media):
         title = m["title"]
@@ -611,15 +613,37 @@ def main(argv: list[str] | None = None):
                          content_type=content_type, season=season, episode=episode)
 
         pct = (i + 1) * 100 // total
-        prefix = f"[{i + 1}/{total} {pct}%]"
+
+        # ETA calculation.
+        if extract_times:
+            avg_rate = sum(extract_rates) / len(extract_rates)  # MB/s
+            remaining = sum(mm["size_bytes"] / 1e6 for mm in media[i:] if not cache_path(
+                wav_root, mm["title"], mm["year"], mm["media_id"],
+                content_type=mm.get("content_type", "film"),
+                season=mm.get("season"), episode=mm.get("episode"),
+            ).exists())
+            eta_s = remaining / avg_rate if avg_rate > 0 else 0
+            eta_str = f" ETA {eta_s / 60:.0f}m" if eta_s > 60 else f" ETA {eta_s:.0f}s"
+        else:
+            eta_str = ""
+
+        prefix = f"[{i + 1}/{total} {pct}%{eta_str}]"
 
         if wav.exists():
             log.info("%s CACHED: %s (%s)%s [%s]", prefix, title, year, ep_label, media_id)
             skipped += 1
             continue
 
-        log.info("%s Extracting: %s (%s)%s [%s] — %.0f MB",
-                 prefix, title, year, ep_label, media_id, size_mb)
+        # Estimate extraction time for this file based on average MB/s rate.
+        if extract_rates:
+            avg_rate = sum(extract_rates) / len(extract_rates)
+            est_s = size_mb / avg_rate if avg_rate > 0 else 0
+            est_str = f", est ~{est_s / 60:.1f}m" if est_s > 60 else f", est ~{est_s:.0f}s"
+        else:
+            est_str = ""
+
+        log.info("%s Extracting: %s (%s)%s [%s] — %.0f MB%s",
+                 prefix, title, year, ep_label, media_id, size_mb, est_str)
         log.info("  source: %s", m["path"])
 
         t0 = time.time()
@@ -629,9 +653,12 @@ def main(argv: list[str] | None = None):
         if ok:
             wav_size = wav.stat().st_size
             wav_duration = wav_size / (_SAMPLE_RATE * 2)
-            log.info("  done in %.1fs — %d bytes (%.0fs audio)",
-                     elapsed, wav_size, wav_duration)
+            rate = size_mb / elapsed if elapsed > 0 else 0
+            log.info("  done in %.1fs (%.1f MB/s) — %d bytes (%.0fs audio)",
+                     elapsed, rate, wav_size, wav_duration)
             extracted += 1
+            extract_times.append(elapsed)
+            extract_rates.append(rate)
         else:
             errors += 1
 
