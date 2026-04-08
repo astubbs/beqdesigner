@@ -278,9 +278,60 @@ def discover_media(roots: list[Path], catalogue_index: dict) -> list[dict]:
         if len(no_catalogue) > 10:
             log.info("  ... and %d more", len(no_catalogue) - 10)
 
-    # Sort by size (smallest first = fastest extraction).
-    results.sort(key=lambda r: r["size_bytes"])
+    # Sort: breadth-first interleaving of movies and TV episodes.
+    # TV episodes are spread across shows (one episode per show per round)
+    # so we get coverage of all shows before depth on any one show.
+    # Movies and TV rounds alternate to keep the balance even.
+    results = _breadth_first_sort(results)
     return results, missing_ids
+
+
+def _breadth_first_sort(media: list[dict]) -> list[dict]:
+    """Sort media for breadth-first extraction.
+
+    Movies: sorted by size (smallest first).
+    TV: one episode per show per round, sorted by size within each round.
+    Output: alternates between one movie and one TV episode per step.
+    """
+    from collections import defaultdict
+
+    movies = sorted(
+        [m for m in media if m.get("content_type") != "TV"],
+        key=lambda m: m["size_bytes"],
+    )
+
+    # Group TV episodes by show (media_id), sorted by season+episode within each.
+    tv_by_show: dict[str, list[dict]] = defaultdict(list)
+    for m in media:
+        if m.get("content_type") == "TV":
+            tv_by_show[m["media_id"]].append(m)
+    for eps in tv_by_show.values():
+        eps.sort(key=lambda m: (m.get("season") or 0, m.get("episode") or 0))
+
+    # Round-robin across shows: take episode 0 from each show, then episode 1, etc.
+    tv_rounds: list[dict] = []
+    show_ids = sorted(tv_by_show.keys())
+    max_eps = max((len(eps) for eps in tv_by_show.values()), default=0)
+    for round_idx in range(max_eps):
+        for show_id in show_ids:
+            eps = tv_by_show[show_id]
+            if round_idx < len(eps):
+                tv_rounds.append(eps[round_idx])
+
+    # Interleave: alternate movie, TV, movie, TV...
+    result = []
+    mi, ti = 0, 0
+    while mi < len(movies) or ti < len(tv_rounds):
+        if mi < len(movies):
+            result.append(movies[mi])
+            mi += 1
+        if ti < len(tv_rounds):
+            result.append(tv_rounds[ti])
+            ti += 1
+
+    log.info("extraction order: %d movies + %d TV episodes (%d shows) = %d total",
+             len(movies), len(tv_rounds), len(tv_by_show), len(result))
+    return result
 
 
 # ---------------------------------------------------------------------------
