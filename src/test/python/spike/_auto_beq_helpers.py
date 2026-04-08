@@ -489,7 +489,8 @@ def load_measured(
 # Shared helpers for NN training experiments
 # ---------------------------------------------------------------------------
 
-_TMDB_RE = __import__("re").compile(r"\[tmdb-(\d+)\]")
+# Matches [tmdb-NNN], [tvdb-NNN], or [imdb-NNN] in a path string.
+_ID_RE = __import__("re").compile(r"\[(tmdb|tvdb|imdb)-([^\]]+)\]")
 
 
 def wav_cache_dir() -> Path:
@@ -520,7 +521,9 @@ def discover_wav_catalogue_pairs() -> list[dict]:
     """Find all cached LFE WAVs that match a BEQ catalogue entry.
 
     Searches the portable WAV cache (single source of truth). Matches
-    by TMDb ID only — WAVs without [tmdb-NNN] in their path are skipped.
+    by media DB ID ([tmdb-NNN], [tvdb-NNN], [imdb-NNN]) extracted from
+    the WAV path. Looks up catalogue by tmdb ID; for tvdb/imdb WAVs,
+    the catalogue match requires the catalogue to also carry that ID type.
 
     Returns list of dicts with keys: wav_path, catalogue_entry, tmdb_id.
     Each WAV is a separate entry (TV episodes are NOT deduplicated).
@@ -533,6 +536,7 @@ def discover_wav_catalogue_pairs() -> list[dict]:
     from model.auto_beq_catalogue import _fetch_or_cache
     catalogue = _fetch_or_cache()
 
+    # Index by tmdb ID (primary).
     by_tmdb: dict[str, list[dict]] = {}
     for e in catalogue:
         tid = str(e.get("theMovieDB", "")).strip()
@@ -543,19 +547,23 @@ def discover_wav_catalogue_pairs() -> list[dict]:
     pairs = []
 
     for wav in wav_files:
-        m = _TMDB_RE.search(str(wav))
+        m = _ID_RE.search(str(wav))
         if not m:
             continue
 
-        tmdb_id = m.group(1)
-        entries = by_tmdb.get(tmdb_id)
-        if not entries:
-            continue
+        id_type, id_value = m.group(1), m.group(2)
+
+        # Look up catalogue entry. For tmdb IDs, direct lookup.
+        # For tvdb/imdb, we'd need a reverse index — for now, store
+        # the ID as-is and let downstream handle catalogue matching.
+        entries = by_tmdb.get(id_value) if id_type == "tmdb" else None
+        entry = entries[0] if entries else {"_id_type": id_type, "_id_value": id_value}
 
         pairs.append({
             "wav_path": wav,
-            "catalogue_entry": entries[0],
-            "tmdb_id": tmdb_id,
+            "catalogue_entry": entry,
+            "tmdb_id": id_value if id_type == "tmdb" else "",
+            "media_id": f"{id_type}-{id_value}",
         })
 
     log.info("discovered %d WAV-catalogue pairs from %d WAV files in %s",

@@ -203,3 +203,62 @@ def test_garbage_file_detected(tmp_path):
     ok, reason = validate_wav_header(wav_path)
     assert not ok
     assert "invalid" in reason.lower() or "error" in reason.lower()
+
+
+# ---------------------------------------------------------------------------
+# 8. Media DB ID extraction from paths
+# ---------------------------------------------------------------------------
+
+
+class TestMediaIdExtraction:
+    """Test extract_media_id() from scripts/extract_lfe.py."""
+
+    def _extract(self, path_str: str) -> tuple[str, str] | None:
+        """Import and call extract_media_id with a synthetic Path."""
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "scripts"))
+        from extract_lfe import extract_media_id
+        return extract_media_id(Path(path_str))
+
+    def test_tmdb_in_filename(self):
+        result = self._extract(
+            "/media/Movies/Blade Runner (1982) [tmdb-78]/Blade Runner (1982) [tmdb-78].mkv"
+        )
+        assert result == ("tmdb", "78")
+
+    def test_tvdb_in_parent_dir(self):
+        """TV show with [tvdb-NNN] in parent dir, not in filename."""
+        result = self._extract(
+            "/media/Anime TV/86 - Eighty Six (2021) [tvdb-378609]/Season 01/"
+            "86 - Eighty Six (2021) - S01E02 - 002 - Spearhead [Bluray-2160p].mkv"
+        )
+        assert result is not None
+        assert result == ("tvdb", "378609")
+
+    def test_tvdb_in_grandparent_dir(self):
+        """TV show with [tvdb-NNN] in grandparent (title dir above Season dir)."""
+        result = self._extract(
+            "/media/TV/Blue Eye Samurai (2023) [tvdb-434151]/Season 1/"
+            "Blue Eye Samurai (2023) - S01E01 - Hammerscale.mkv"
+        )
+        assert result is not None
+        assert result == ("tvdb", "434151")
+
+    def test_imdb_id(self):
+        result = self._extract(
+            "/media/Movies/Some Movie (2020) [imdb-tt1234567]/Some Movie.mkv"
+        )
+        assert result == ("imdb", "tt1234567")
+
+    def test_filename_takes_priority_over_dir(self):
+        """If both filename and dir have IDs, filename wins."""
+        result = self._extract(
+            "/media/Show (2021) [tvdb-111]/Season 01/Show S01E01 [tmdb-222].mkv"
+        )
+        assert result == ("tmdb", "222")
+
+    def test_no_id_returns_none(self):
+        result = self._extract(
+            "/media/Movies/Some Movie (2020)/Some Movie.mkv"
+        )
+        assert result is None

@@ -44,7 +44,8 @@ log = logging.getLogger("extract_lfe")
 
 _SAMPLE_RATE = 1000  # Hz — coupled to BEQ analysis algorithm, not configurable
 _MEDIA_EXTENSIONS = {".mkv"}
-_TMDB_RE = re.compile(r"\[tmdb-(\d+)\]")
+# Matches [tmdb-NNN], [tvdb-NNN], or [imdb-ttNNN] — any media DB ID tag.
+_ID_RE = re.compile(r"\[(tmdb|tvdb|imdb)-([^\]]+)\]")
 _TITLE_YEAR_RE = re.compile(r"^(.+?)\s*\((\d{4})\)")
 
 # Files under 500 MB are samples/trailers, not features.
@@ -58,6 +59,20 @@ _JUNK_SUBDIRS = {
 }
 
 
+def extract_media_id(media_path: Path) -> tuple[str, str] | None:
+    """Extract a media DB ID from a file path.
+
+    Searches (in order): filename, parent dir, grandparent dir.
+    First match wins. Returns (id_type, id_value) e.g. ("tmdb", "348")
+    or ("tvdb", "378609"), or None if no ID found.
+    """
+    for source in (media_path.name, media_path.parent.name, media_path.parent.parent.name):
+        m = _ID_RE.search(source)
+        if m:
+            return m.group(1), m.group(2)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Media discovery
 # ---------------------------------------------------------------------------
@@ -66,7 +81,7 @@ _JUNK_SUBDIRS = {
 def discover_media(roots: list[Path]) -> list[dict]:
     """Find all .mkv files with [tmdb-NNN] in their path.
 
-    Returns list of dicts: {path, tmdb_id, title, year, size_bytes}.
+    Returns list of dicts: {path, media_id, id_type, id_value, title, year, size_bytes, ...}.
     Files without TMDb IDs are logged and added to the missing list.
     """
     results = []
@@ -94,13 +109,14 @@ def discover_media(roots: list[Path]) -> list[dict]:
             if size < _MIN_FEATURE_SIZE:
                 continue
 
-            # Extract TMDb ID — required.
-            m = _TMDB_RE.search(str(f))
-            if not m:
+            # Extract media DB ID — required. Checks filename, parent, grandparent.
+            id_result = extract_media_id(f)
+            if not id_result:
                 missing_ids.append(str(f))
                 continue
 
-            tmdb_id = m.group(1)
+            id_type, id_value = id_result
+            media_id = f"{id_type}-{id_value}"
 
             # Extract title and year from directory name.
             title, year = None, None
@@ -111,7 +127,7 @@ def discover_media(roots: list[Path]) -> list[dict]:
                     year = m2.group(2)
                     break
             if not title:
-                title = f"unknown-{tmdb_id}"
+                title = f"unknown-{media_id}"
                 year = "0000"
 
             # Detect TV episodes.
@@ -125,15 +141,17 @@ def discover_media(roots: list[Path]) -> list[dict]:
             )
             content_type = "TV" if is_tv else "film"
 
-            # Deduplicate: movies by tmdb_id, TV by (tmdb_id, season, episode).
-            dedup_key = (tmdb_id, season, episode)
+            # Deduplicate: movies by media_id, TV by (media_id, season, episode).
+            dedup_key = (media_id, season, episode)
             if dedup_key in seen_keys:
                 continue
             seen_keys.add(dedup_key)
 
             results.append({
                 "path": f,
-                "tmdb_id": tmdb_id,
+                "media_id": media_id,      # e.g. "tmdb-348", "tvdb-378609"
+                "id_type": id_type,         # "tmdb", "tvdb", or "imdb"
+                "id_value": id_value,       # "348", "378609", etc.
                 "title": title,
                 "year": year,
                 "size_bytes": size,
@@ -166,28 +184,30 @@ def cache_path(
     wav_root: Path,
     title: str,
     year: str,
-    tmdb_id: str,
+    media_id: str,
     content_type: str = "film",
     season: int | None = None,
     episode: int | None = None,
 ) -> Path:
     """Build the portable cache path for a title.
 
+    ``media_id`` is e.g. "tmdb-78", "tvdb-378609" — included in dir and filename.
+
     Movies:
         wav_root/Movies/B/Blade Runner (1982) [tmdb-78]/Blade Runner (1982) [tmdb-78].lfe-1000hz.wav
     TV:
-        wav_root/TV/B/BLUE EYE SAMURAI (2023) [tmdb-225180]/Season 01/BLUE EYE SAMURAI S01E01 [tmdb-225180].lfe-1000hz.wav
+        wav_root/TV/E/86 - Eighty Six (2021) [tvdb-378609]/Season 01/86 - Eighty Six S01E02 [tvdb-378609].lfe-1000hz.wav
     """
     content_dir = "TV" if content_type.upper() == "TV" else "Movies"
     letter = title[0].upper() if title and title[0].isalpha() else "#"
-    title_dir = f"{title} ({year}) [tmdb-{tmdb_id}]"
+    title_dir = f"{title} ({year}) [{media_id}]"
 
     if content_type.upper() == "TV" and season is not None and episode is not None:
         season_dir = f"Season {season:02d}"
-        wav_name = f"{title} S{season:02d}E{episode:02d} [tmdb-{tmdb_id}].lfe-1000hz.wav"
+        wav_name = f"{title} S{season:02d}E{episode:02d} [{media_id}].lfe-1000hz.wav"
         return wav_root / content_dir / letter / title_dir / season_dir / wav_name
 
-    wav_name = f"{title} ({year}) [tmdb-{tmdb_id}].lfe-1000hz.wav"
+    wav_name = f"{title} ({year}) [{media_id}].lfe-1000hz.wav"
     return wav_root / content_dir / letter / title_dir / wav_name
 
 
@@ -483,7 +503,7 @@ def main(argv: list[str] | None = None):
     for i, m in enumerate(media):
         title = m["title"]
         year = m["year"]
-        tmdb_id = m["tmdb_id"]
+        media_id = m["media_id"]
         size_mb = m["size_bytes"] / 1e6
 
         content_type = m.get("content_type", "film")
@@ -491,19 +511,19 @@ def main(argv: list[str] | None = None):
         episode = m.get("episode")
         ep_label = f" S{season:02d}E{episode:02d}" if season is not None else ""
 
-        wav = cache_path(wav_root, title, year, tmdb_id,
+        wav = cache_path(wav_root, title, year, media_id,
                          content_type=content_type, season=season, episode=episode)
 
         pct = (i + 1) * 100 // total
         prefix = f"[{i + 1}/{total} {pct}%]"
 
         if wav.exists():
-            log.info("%s CACHED: %s (%s)%s [tmdb-%s]", prefix, title, year, ep_label, tmdb_id)
+            log.info("%s CACHED: %s (%s)%s [%s]", prefix, title, year, ep_label, media_id)
             skipped += 1
             continue
 
-        log.info("%s Extracting: %s (%s)%s [tmdb-%s] — %.0f MB",
-                 prefix, title, year, ep_label, tmdb_id, size_mb)
+        log.info("%s Extracting: %s (%s)%s [%s] — %.0f MB",
+                 prefix, title, year, ep_label, media_id, size_mb)
         log.info("  source: %s", m["path"])
 
         t0 = time.time()
