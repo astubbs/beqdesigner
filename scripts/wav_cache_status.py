@@ -123,6 +123,14 @@ def main():
     print(f"Training-ready: {len(pairs)} WAVs / {len(titles)} titles "
           f"({matched_movies} movies + {matched_tv} TV eps from {len(tv_shows)} shows)")
 
+    # Usage hints.
+    print()
+    print("Usage:")
+    print(f"  Check a specific cache:   python3 scripts/wav_cache_status.py /path/to/wav-cache")
+    print(f"  Verify integrity:         python3 scripts/verify_wav_cache.py {cache}")
+    print(f"  Extract more WAVs:        python3 scripts/extract_lfe.py --beq-dir {cache.parent}")
+    print(f"  Run NN training:          BEQ_WAV_CACHE={cache} bash scripts/run-spike-tests.sh")
+
 
 if __name__ == "__main__":
     main()
