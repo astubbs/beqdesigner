@@ -42,6 +42,8 @@ technical spike for the magic-wand vision (Tier 1 of feats/magic-wand).
 9. **In progress**: E31 — extract 50 titles from library, validate
 10. **TODO:** Persist TMDb-enriched catalogue into git DB catalogue output
 11. **TODO:** Train on real audio features (not synthetic)
+12. **TODO:** Dockerise extraction script to eliminate standalone code duplication
+    — script imports from main modules, runs in container with ffmpeg, no scp needed
 
 ### Immediate (pre-ML)
 1. Run library sweep against user's library.

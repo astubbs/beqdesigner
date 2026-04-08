@@ -1877,3 +1877,29 @@ Feature importances: audio 13.3% vs metadata 86.7%. Authors still dominate
 CNN continues to achieve the best synthetic loss but still overfits vs
 XGBoost on real audio. The dual-branch architecture doesn't compensate
 for the synthetic-to-real distribution mismatch.
+
+### E31 - NAS extraction + 111-title validation
+
+**Goal**: Extract LFE from the full NAS media library via standalone script
+(`scripts/extract_lfe.py`), validate on the much larger real-audio set.
+
+**Infrastructure**: Standalone extraction script running locally on NAS
+(no network transfer). BEQ catalogue auto-fetched from GitHub, only
+catalogue-matched media extracted. Breadth-first interleaving (movies +
+TV round-robin). Portable WAV cache at `{beq-dir}/wav-cache/`. Atomic
+writes + WAV integrity validation.
+
+**Result** (111 real-audio titles, trained on ~8,170 synthetic with author):
+
+| Metric | E30 (20 titles) | E31 (111 titles) |
+|---|---|---|
+| Real-audio mean loss | 6.42 dB | **4.09 dB** |
+| Synthetic mean loss | 4.72 dB | **2.90 dB** |
+| Synth-to-real gap | 1.70 dB | **1.19 dB** |
+
+**2.33 dB improvement on real audio** from 5× more validation data.
+The synthetic-to-real gap tightened from 1.70 to 1.19 dB — the model
+transfers better when evaluated on a diverse, representative set.
+
+Feature importances unchanged: authors dominate (aron7awol 13.9%,
+mobe1969 6.6%), audio bins and year/source in the middle tier.
