@@ -1926,4 +1926,40 @@ author makes metadata the dominant signal.
 | E27 (late fusion, no author) | 4.03 dB | 14 | Separate audio+meta models |
 | E30 (expanded set) | 6.42 dB | 20 | TV content harder |
 | E31 (NAS extraction, 111) | 3.36 dB | 111 | 5× more data + late fusion |
-| **E31 (NAS extraction, 171)** | **5.02 dB** | **171** | **Harder content in expanded set** |
+| E31 (NAS extraction, 171) | 5.02 dB | 171 | Harder content in expanded set |
+| **E31 late fusion (α=0.3, 171)** | **3.27 dB** | **171** | **Best ever on large set** |
+
+### E31 continued — 171-title validation (NAS extraction ongoing)
+
+**Setup**: NAS extraction script running breadth-first across 1,244 catalogue-
+matched titles. At time of test: 171 WAVs available (80 movies + 89 TV eps
+from 49 shows).
+
+**E25 early fusion (171 titles)**: 5.02 dB real, 3.22 dB synthetic, gap 1.80 dB.
+Slightly worse than 111-title (4.09 dB) — the expanded set includes harder
+content (older TV, anime, Bollywood).
+
+**E27 late fusion (171 titles)**:
+
+| Strategy | Real audio | Synthetic | Gap |
+|---|---|---|---|
+| E25 early fusion | 5.02 dB | 3.22 dB | +1.80 dB |
+| **E27 late fusion (α=0.3)** | **3.27 dB** | **2.90 dB** | **+0.37 dB** |
+| E27 late fusion (α=0.5) | 3.97 dB | 2.93 dB | +1.04 dB |
+| E27 late fusion (α=0.7) | 4.13 dB | 3.02 dB | +1.11 dB |
+
+**3.27 dB on 171 real-audio titles** — best combined model result on a
+large representative set. α=0.3 (metadata-heavy) still optimal. Gap
+collapsed to 0.37 dB — near-perfect synthetic-to-real transfer.
+
+### E32 — Chunked NN training (in progress)
+
+**Hypothesis**: Blended extraction (α=0.7 Welch + chunked P90 at 60s) for
+real-audio features should improve NN performance because chunked features
+capture transient bass events that Welch dilutes.
+
+**Implementation**: Same synthetic training data, same XGBoost model. Only
+the validation feature extraction changes. Uses parallel ProcessPoolExecutor
+for speed (scipy Welch is single-threaded).
+
+**Status**: Running.
