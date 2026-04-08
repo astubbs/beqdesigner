@@ -491,6 +491,85 @@ def propose_filters_from_measured(
     )
 
 
+def propose_filters_with_feedback(
+    measured_curve_db: np.ndarray,
+    freqs_hz: np.ndarray,
+    fs: int = DEFAULT_FS,
+    band: tuple[float, float] = DEFAULT_BAND,
+    max_filters: int = 6,
+    advisor: Advisor | None = None,
+    metadata: MediaMetadata | None = None,
+    max_iterations: int = 3,
+    flatness_threshold_db: float = 2.0,
+) -> list[dict]:
+    """Iterative correction: propose filters, evaluate, adjust, repeat.
+
+    Unlike ``propose_filters_from_measured`` (single-pass), this loops
+    at the ADVISOR level. After each pass it evaluates how flat the
+    corrected curve (measured + chain response) is in-band. If the
+    residual deficit or overshoot exceeds *flatness_threshold_db*, it
+    adjusts the advisor's gain and re-runs.
+
+    This is different from the PEQ iteration inside ``propose_filters``
+    which adjusts individual filter parameters to match a fixed target.
+    Here we adjust the TARGET itself.
+
+    Returns the best filter chain found across iterations.
+    """
+    from model.auto_beq_advisor import GainAdjustedAdvisor
+
+    band_mask = (freqs_hz >= band[0]) & (freqs_hz <= band[1])
+    current_advisor = advisor
+    best_proposed = []
+    best_flatness = float("inf")
+
+    for iteration in range(max_iterations):
+        proposed = propose_filters_from_measured(
+            measured_curve_db, freqs_hz, fs=fs, band=band,
+            max_filters=max_filters, advisor=current_advisor,
+            metadata=metadata,
+        )
+
+        if not proposed:
+            log.info("feedback iter %d: no filters proposed, stopping", iteration)
+            break
+
+        chain_response = evaluate_filter_chain(proposed, freqs_hz, fs=fs)
+        corrected = measured_curve_db + chain_response
+        band_corrected = corrected[band_mask]
+
+        max_deficit = float(max(0.0, -np.min(band_corrected)))
+        max_overshoot = float(max(0.0, np.max(band_corrected)))
+        flatness = max(max_deficit, max_overshoot)
+
+        log.info(
+            "feedback iter %d: deficit=%.1f overshoot=%.1f flatness=%.1f "
+            "(threshold=%.1f) advisor=%s",
+            iteration, max_deficit, max_overshoot, flatness,
+            flatness_threshold_db,
+            current_advisor.name if current_advisor else "none",
+        )
+
+        if flatness < best_flatness:
+            best_flatness = flatness
+            best_proposed = proposed
+
+        if flatness <= flatness_threshold_db:
+            log.info("feedback converged at iter %d (flatness=%.1f)", iteration, flatness)
+            break
+
+        # Adjust: apply half the residual error as a gain offset.
+        if max_deficit > max_overshoot:
+            gain_adj = max_deficit * 0.5
+        else:
+            gain_adj = -max_overshoot * 0.5
+
+        base_advisor = advisor if advisor is not None else current_advisor
+        current_advisor = GainAdjustedAdvisor(base_advisor, gain_adj)
+
+    return best_proposed
+
+
 def propose_or_lookup(
     title: str,
     measured_curve_db: np.ndarray | None = None,

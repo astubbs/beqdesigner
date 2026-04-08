@@ -738,6 +738,48 @@ class MockAdvisor:
 
 
 # ---------------------------------------------------------------------------
+# GainAdjustedAdvisor — thin wrapper for feedback loops (E21)
+# ---------------------------------------------------------------------------
+
+
+class GainAdjustedAdvisor:
+    """Wrapper that offsets an inner advisor's max_gain_db.
+
+    Used by `propose_filters_with_feedback()` to iteratively adjust
+    the correction target when the initial proposal under- or
+    over-corrects.
+
+    Clears ``advice.filters`` to force the cascade builder to
+    reconstruct with the adjusted gain (otherwise an explicit chain
+    from the inner advisor would be used unchanged).
+    """
+
+    def __init__(self, inner, gain_offset: float):
+        self._inner = inner
+        self._gain_offset = gain_offset
+        self.name = f"{inner.name}+fb({gain_offset:+.1f})"
+
+    def advise(self, metadata: MediaMetadata, features: CurveFeatures) -> Advice:
+        advice = self._inner.advise(metadata, features)
+        adjusted_gain = max(0.0, advice.max_gain_db + self._gain_offset)
+        return _clamp_advice(
+            Advice(
+                max_gain_db=adjusted_gain,
+                knee_hz=advice.knee_hz,
+                filters=None,  # force cascade re-evaluation
+                reasoning=(
+                    f"{advice.reasoning} "
+                    f"[feedback adj {self._gain_offset:+.1f}dB]"
+                ),
+                confidence=advice.confidence,
+                cascade_gain_ratio=advice.cascade_gain_ratio,
+                cascade_q=advice.cascade_q,
+            ),
+            source=advice.source,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Programmatic multi-knee detection
 # ---------------------------------------------------------------------------
 

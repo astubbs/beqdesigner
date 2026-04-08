@@ -881,3 +881,158 @@ def test_library_sweep_e20(film: SweepFilm, config: AdvisorConfig, caplog):
         config=config,
         catalogue_filter_count=len(film.catalogue_entry["filters"]),
     )
+
+
+# ---------------------------------------------------------------------------
+# E21: Self-feedback loop — iterative gain adjustment at the advisor level.
+#
+# Tests whether running propose_filters_from_measured in a loop with
+# gain adjustments based on residual flatness improves results.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class FeedbackConfig:
+    """One feedback loop configuration to test."""
+    max_iterations: int
+    flatness_threshold_db: float
+
+    @property
+    def label(self) -> str:
+        return f"fb-iter{self.max_iterations}-thr{self.flatness_threshold_db:.0f}"
+
+
+_E21_CONFIGS = [
+    FeedbackConfig(max_iterations=1, flatness_threshold_db=99),  # = single pass (baseline)
+    FeedbackConfig(max_iterations=3, flatness_threshold_db=3),
+    FeedbackConfig(max_iterations=3, flatness_threshold_db=2),
+    FeedbackConfig(max_iterations=3, flatness_threshold_db=1),
+    FeedbackConfig(max_iterations=5, flatness_threshold_db=2),
+]
+
+_E21_REPORT_PATH = Path(os.environ.get(
+    "AUTO_BEQ_E21_REPORT", ".pytest_cache/auto_beq_sweep_e21.csv",
+))
+
+
+def _run_one_film_e21(
+    film: SweepFilm, config: FeedbackConfig,
+) -> tuple[SweepFilm, MatchMetrics, MatchMetrics, str, FeedbackConfig] | None:
+    """Run baseline (single-pass) + feedback loop for a film."""
+    from model.auto_beq import (
+        propose_filters_from_measured,
+        propose_filters_with_feedback,
+    )
+    from model.auto_beq_advisor import MeasurementAdvisor
+
+    if not film.path.exists():
+        return None
+
+    fs = 1000
+    freqs = DEFAULT_GRID
+    wav_path = _extract_lfe_wav(film.path, target_fs=fs)
+    measured = load_measured(wav_path, fs=fs, freqs=freqs)
+
+    advisor = MeasurementAdvisor()
+    metadata = MediaMetadata(title=film.title, year=film.year)
+    ground_resp = evaluate_filter_chain(
+        film.catalogue_entry["filters"], freqs, fs=fs,
+    )
+
+    # Baseline: single-pass.
+    baseline_proposed = propose_filters_from_measured(
+        measured, freqs, fs=fs, advisor=advisor, metadata=metadata,
+    )
+    baseline_metrics = compute_match_metrics(
+        -ground_resp, baseline_proposed, freqs, fs=fs,
+    )
+
+    # Test: feedback loop.
+    test_proposed = propose_filters_with_feedback(
+        measured, freqs, fs=fs,
+        advisor=advisor, metadata=metadata,
+        max_iterations=config.max_iterations,
+        flatness_threshold_db=config.flatness_threshold_db,
+    )
+    test_metrics = compute_match_metrics(
+        -ground_resp, test_proposed, freqs, fs=fs,
+    )
+
+    log.info(
+        "%s %s | baseline=%s(%.2f) test=%s(%.2f) delta=%+.2f",
+        film.title, config.label,
+        baseline_metrics.verdict, baseline_metrics.mean_abs_err_db,
+        test_metrics.verdict, test_metrics.mean_abs_err_db,
+        test_metrics.mean_abs_err_db - baseline_metrics.mean_abs_err_db,
+    )
+    return film, baseline_metrics, test_metrics, "measurement", config
+
+
+def _append_e21_report(
+    film: SweepFilm,
+    baseline_metrics: MatchMetrics,
+    test_metrics: MatchMetrics,
+    config: FeedbackConfig,
+    catalogue_filter_count: int,
+) -> None:
+    is_new = not _E21_REPORT_PATH.exists()
+    _E21_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _E21_REPORT_PATH.open("a", newline="") as f:
+        w = csv.writer(f)
+        if is_new:
+            w.writerow([
+                "title", "year", "config", "max_iterations",
+                "flatness_threshold",
+                "baseline_verdict", "baseline_mean", "baseline_max",
+                "test_verdict", "test_mean", "test_max",
+                "mean_delta", "catalogue_filters", "summed_gain",
+            ])
+        mean_delta = test_metrics.mean_abs_err_db - baseline_metrics.mean_abs_err_db
+        w.writerow([
+            film.title,
+            film.year if film.year is not None else "",
+            config.label,
+            config.max_iterations,
+            f"{config.flatness_threshold_db:.0f}",
+            baseline_metrics.verdict,
+            f"{baseline_metrics.mean_abs_err_db:.2f}",
+            f"{baseline_metrics.max_abs_err_db:.2f}",
+            test_metrics.verdict,
+            f"{test_metrics.mean_abs_err_db:.2f}",
+            f"{test_metrics.max_abs_err_db:.2f}",
+            f"{mean_delta:+.2f}",
+            catalogue_filter_count,
+            f"{_summed_low_shelf_gain(film.catalogue_entry):.1f}",
+        ])
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
+@pytest.mark.parametrize(
+    "config",
+    _E21_CONFIGS,
+    ids=[c.label for c in _E21_CONFIGS],
+)
+@pytest.mark.parametrize(
+    "film",
+    _SWEEP_FILMS,
+    ids=[_sweep_film_id(f) for f in _SWEEP_FILMS] or None,
+)
+def test_library_sweep_e21(film: SweepFilm, config: FeedbackConfig, caplog):
+    """E21: self-feedback loop — iterative gain adjustment.
+
+    No assertions. Run with:
+        SPIKE_TEST=...::test_library_sweep_e21 bash scripts/run-spike-tests.sh
+    """
+    caplog.set_level(logging.INFO, logger="auto_beq_sweep")
+    result = _run_one_film_e21(film, config)
+    if result is None:
+        pytest.skip(f"media file not accessible: {film.path}")
+    film, baseline_metrics, test_metrics, advisor_name, config = result
+    _append_e21_report(
+        film=film,
+        baseline_metrics=baseline_metrics,
+        test_metrics=test_metrics,
+        config=config,
+        catalogue_filter_count=len(film.catalogue_entry["filters"]),
+    )
