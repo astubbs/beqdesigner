@@ -301,6 +301,36 @@ def load_and_smooth_chunked(
     return aggregated
 
 
+def load_and_smooth_blended(
+    wav_path: Path,
+    fs: int,
+    freqs: np.ndarray,
+    chunk_s: float = 60.0,
+    percentile: float = 90.0,
+    alpha: float = 0.5,
+) -> np.ndarray:
+    """Blend Welch average and chunked-percentile curves.
+
+    ``alpha`` controls the blend: 0.0 = pure chunked, 1.0 = pure Welch.
+    Default 0.5 = equal weight.
+
+    Both curves are computed independently (each normalised to 80 Hz
+    anchor and 1/6-oct smoothed), then blended in dB domain.
+    """
+    welch = load_and_smooth(wav_path, fs, freqs)
+    chunked = load_and_smooth_chunked(
+        wav_path, fs, freqs, chunk_s=chunk_s, percentile=percentile,
+    )
+    blended = alpha * welch + (1.0 - alpha) * chunked
+    log.info(
+        "blended curve (alpha=%.2f): 10Hz=%.1f 20Hz=%.1f 80Hz=%.1f dB",
+        alpha, blended[0],
+        blended[int(np.argmin(np.abs(freqs - 20.0)))],
+        blended[int(np.argmin(np.abs(freqs - 80.0)))],
+    )
+    return blended
+
+
 # Backwards-compatible aliases (the existing test_auto_beq.py uses
 # underscore-prefixed names).
 _have_tool = have_tool

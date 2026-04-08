@@ -40,6 +40,7 @@ from spike._auto_beq_helpers import (
     _extract_lfe_wav,
     _have_tool,
     load_and_smooth,
+    load_and_smooth_blended,
     load_and_smooth_chunked,
 )
 from spike.sweep_discover import bucket_rating, load_catalogue_by_digest, load_config
@@ -457,5 +458,176 @@ def test_library_sweep_chunked(film: SweepFilm, chunk_s: float, caplog):
         baseline_metrics=baseline_metrics,
         chunked_metrics=chunked_metrics,
         chunk_s=chunk_s,
+        catalogue_filter_count=len(film.catalogue_entry["filters"]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# E18b: Strategy sweep — percentile and blending variations at 60s chunks.
+#
+# Sub-experiments:
+#   - Percentile: P75, P80, P90 (lower percentile = less peak bias)
+#   - Blended: alpha=0.3, 0.5, 0.7 (Welch weight; higher = more Welch)
+# All at 60s chunk length (E18 sweet spot).
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ExtractionStrategy:
+    """One spectrum extraction strategy to test."""
+    name: str
+    percentile: float
+    alpha: float | None  # None = pure chunked, float = blended weight
+
+    @property
+    def label(self) -> str:
+        if self.alpha is not None:
+            return f"blend-a{self.alpha:.1f}-P{self.percentile:.0f}"
+        return f"chunked-P{self.percentile:.0f}"
+
+
+_STRATEGIES = [
+    ExtractionStrategy("chunked-P75", percentile=75.0, alpha=None),
+    ExtractionStrategy("chunked-P80", percentile=80.0, alpha=None),
+    ExtractionStrategy("chunked-P90", percentile=90.0, alpha=None),
+    ExtractionStrategy("blend-0.3", percentile=90.0, alpha=0.3),
+    ExtractionStrategy("blend-0.5", percentile=90.0, alpha=0.5),
+    ExtractionStrategy("blend-0.7", percentile=90.0, alpha=0.7),
+]
+
+_STRATEGY_REPORT_PATH = Path(os.environ.get(
+    "AUTO_BEQ_STRATEGY_REPORT", ".pytest_cache/auto_beq_sweep_strategies.csv",
+))
+
+
+def _run_one_film_strategy(
+    film: SweepFilm, strategy: ExtractionStrategy, chunk_s: float = 60.0,
+) -> tuple[SweepFilm, MatchMetrics, MatchMetrics, str, ExtractionStrategy] | None:
+    """Run Welch baseline + one extraction strategy for a film."""
+    import numpy as np
+
+    from model.auto_beq import propose_filters_from_measured
+
+    if not film.path.exists():
+        return None
+
+    fs = 1000
+    freqs = DEFAULT_GRID
+    wav_path = _extract_lfe_wav(film.path, target_fs=fs)
+
+    baseline_curve = load_and_smooth(wav_path, fs=fs, freqs=freqs)
+
+    if strategy.alpha is not None:
+        test_curve = load_and_smooth_blended(
+            wav_path, fs=fs, freqs=freqs,
+            chunk_s=chunk_s, percentile=strategy.percentile,
+            alpha=strategy.alpha,
+        )
+    else:
+        test_curve = load_and_smooth_chunked(
+            wav_path, fs=fs, freqs=freqs,
+            chunk_s=chunk_s, percentile=strategy.percentile,
+        )
+
+    advisor = get_advisor()
+    metadata = MediaMetadata(title=film.title, year=film.year)
+    ground_resp = evaluate_filter_chain(
+        film.catalogue_entry["filters"], freqs, fs=fs,
+    )
+
+    baseline_proposed = propose_filters_from_measured(
+        baseline_curve, freqs, fs=fs, advisor=advisor, metadata=metadata,
+    )
+    baseline_metrics = compute_match_metrics(
+        -ground_resp, baseline_proposed, freqs, fs=fs,
+    )
+
+    test_proposed = propose_filters_from_measured(
+        test_curve, freqs, fs=fs, advisor=advisor, metadata=metadata,
+    )
+    test_metrics = compute_match_metrics(
+        -ground_resp, test_proposed, freqs, fs=fs,
+    )
+
+    log.info(
+        "%s %s | baseline=%s(%.2f) test=%s(%.2f) delta=%+.2f",
+        film.title, strategy.label,
+        baseline_metrics.verdict, baseline_metrics.mean_abs_err_db,
+        test_metrics.verdict, test_metrics.mean_abs_err_db,
+        test_metrics.mean_abs_err_db - baseline_metrics.mean_abs_err_db,
+    )
+    return film, baseline_metrics, test_metrics, advisor.name, strategy
+
+
+def _append_strategy_report(
+    film: SweepFilm,
+    advisor_name: str,
+    baseline_metrics: MatchMetrics,
+    test_metrics: MatchMetrics,
+    strategy: ExtractionStrategy,
+    catalogue_filter_count: int,
+) -> None:
+    is_new = not _STRATEGY_REPORT_PATH.exists()
+    _STRATEGY_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _STRATEGY_REPORT_PATH.open("a", newline="") as f:
+        w = csv.writer(f)
+        if is_new:
+            w.writerow([
+                "title", "year", "strategy", "percentile", "alpha", "advisor",
+                "baseline_verdict", "baseline_mean", "baseline_max",
+                "test_verdict", "test_mean", "test_max",
+                "mean_delta", "catalogue_filters", "summed_gain",
+            ])
+        mean_delta = test_metrics.mean_abs_err_db - baseline_metrics.mean_abs_err_db
+        w.writerow([
+            film.title,
+            film.year if film.year is not None else "",
+            strategy.label,
+            f"{strategy.percentile:.0f}",
+            f"{strategy.alpha:.1f}" if strategy.alpha is not None else "",
+            advisor_name,
+            baseline_metrics.verdict,
+            f"{baseline_metrics.mean_abs_err_db:.2f}",
+            f"{baseline_metrics.max_abs_err_db:.2f}",
+            test_metrics.verdict,
+            f"{test_metrics.mean_abs_err_db:.2f}",
+            f"{test_metrics.max_abs_err_db:.2f}",
+            f"{mean_delta:+.2f}",
+            catalogue_filter_count,
+            f"{_summed_low_shelf_gain(film.catalogue_entry):.1f}",
+        ])
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
+@pytest.mark.parametrize(
+    "strategy",
+    _STRATEGIES,
+    ids=[s.label for s in _STRATEGIES],
+)
+@pytest.mark.parametrize(
+    "film",
+    _SWEEP_FILMS,
+    ids=[_sweep_film_id(f) for f in _SWEEP_FILMS] or None,
+)
+def test_library_sweep_strategies(
+    film: SweepFilm, strategy: ExtractionStrategy, caplog,
+):
+    """E18b: strategy sweep — percentile and blending variations.
+
+    No assertions. Run with:
+        SPIKE_TEST=...::test_library_sweep_strategies bash scripts/run-spike-tests.sh
+    """
+    caplog.set_level(logging.INFO, logger="auto_beq_sweep")
+    result = _run_one_film_strategy(film, strategy)
+    if result is None:
+        pytest.skip(f"media file not accessible: {film.path}")
+    film, baseline_metrics, test_metrics, advisor_name, strategy = result
+    _append_strategy_report(
+        film=film,
+        advisor_name=advisor_name,
+        baseline_metrics=baseline_metrics,
+        test_metrics=test_metrics,
+        strategy=strategy,
         catalogue_filter_count=len(film.catalogue_entry["filters"]),
     )

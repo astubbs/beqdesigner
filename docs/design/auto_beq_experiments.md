@@ -834,6 +834,63 @@ mixed results. Next step: either recalibrate MeasurementAdvisor's
 deficit formula for chunked input, or build a ChunkedAdvisor that
 accounts for the peak-vs-average gap.
 
+### E18b - Strategy sweep: percentile and blending variations
+
+**Hypothesis**: The E18 sweep showed chunked-P90 is too aggressive for
+some content. Two mitigation strategies: (a) lower percentile (P75/P80)
+to reduce peak bias, (b) blend Welch + chunked in dB domain.
+
+**Method**: 6 strategies tested at 60s chunk length across 31 film/episode
+tests (11 unique titles):
+- `chunked-P75`, `chunked-P80`, `chunked-P90` (percentile sweep)
+- `blend-a0.3-P90`, `blend-a0.5-P90`, `blend-a0.7-P90` (alpha=Welch weight)
+
+**Implementation**: `load_and_smooth_blended()` in `_auto_beq_helpers.py`,
+`test_library_sweep_strategies` in `test_auto_beq_library_sweep.py`.
+
+**Results (186 tests, MeasurementAdvisor)**:
+
+| Strategy | Baseline P/M/F | Test P/M/F | Improved | Degraded | Avg Δ |
+|---|---|---|---|---|---|
+| chunked-P75 | 7/6/18 | 7/1/23 | 1 | 5 | +0.39 dB |
+| chunked-P80 | 7/6/18 | 7/2/22 | 1 | 5 | +0.37 dB |
+| chunked-P90 | 7/6/18 | 9/5/17 | 5 | 2 | -0.10 dB |
+| blend-a0.3 | 7/6/18 | 9/4/18 | 3 | 1 | -0.06 dB |
+| blend-a0.5 | 7/6/18 | 8/4/19 | 2 | 2 | -0.03 dB |
+| **blend-a0.7** | **7/6/18** | **9/4/18** | **2** | **0** | **+0.01 dB** |
+
+**Key findings**:
+
+1. **`blend-a0.7-P90` is the safest strategy**: 2 grade improvements
+   (Blue Eye Samurai MARGINAL→PASS, Scavengers Reign MARGINAL→PASS),
+   **zero degradations**. Average delta is +0.01 dB — essentially
+   neutral on error while strictly improving grades.
+
+2. **Lower percentiles (P75/P80) backfire**: they produce *more*
+   degradations (5 each) than P90 (2). The lower percentile apparently
+   pushes the curve into a range that confuses the MeasurementAdvisor's
+   deficit formula. The P90 peak provides more signal, not less.
+
+3. **`chunked-P90` has the most raw improvements (5)** but also 2
+   degradations. The risk-reward is +3 net grade changes, best on that
+   metric but with X-Men '97 MARGINAL→FAIL as collateral.
+
+4. **`blend-a0.3-P90` is the aggressive blend**: 3 improvements, 1
+   degradation (X-Men '97). Adds Super Mario Bros FAIL→MARGINAL flip
+   vs blend-a0.7. More power but not zero-risk.
+
+5. **Blending works because it preserves Welch's calibrated level**
+   while incorporating the chunked curve's transient-event sensitivity.
+   Higher alpha (more Welch) = safer. α=0.7 is the conservative
+   sweet spot; α=0.3 is the aggressive option.
+
+**Recommendation**: default to `blend-a0.7-P90` for production —
+strictly non-regressing with meaningful improvements. Offer
+`blend-a0.3-P90` as a "more aggressive" option for power users.
+
+**Kept**: `load_and_smooth_blended()` added to `_auto_beq_helpers.py`.
+Strategy sweep CSV: `.pytest_cache/auto_beq_sweep_strategies.csv`.
+
 ---
 
 ## Next to try
