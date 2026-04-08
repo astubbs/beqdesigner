@@ -750,15 +750,12 @@ mapping from audio features (Option A: 9-bin percentile curve) + metadata
 (year, audio format, release type, studio, mixer, genre, country, runtime,
 rating) to corrective filter parameters. Bypasses all hand-coded rolloff rules.
 
-**Status**: Code path being built (branch: feats/neural-net-strat). Initial
-training uses **synthetic data**: rolloff curves derived from catalogue filter
-chains rather than real audio. No STFT pipeline needed at this stage.
-
 **Feature vector** (60 dims):
 - Audio: 9 bins at 20/25/30/35/40/50/60/70/80 Hz (Option A)
 - Metadata: year(1) + audio_format(6) + source(3) + studio_embed(16) +
   mixer_embed(8) + genre(10) + country(5) + runtime(1) + rating(1) = 51
-- Studio (most predictive) + mixer: zero-padded stubs until TMDb/IMDB lookup
+- Studio + mixer: feature-hashed from TMDb data (was zero-padded stubs
+  initially, now populated via `auto_beq_metadata.py`)
 
 **Y label** (16 dims): MAX_FILTER_SLOTS=4 × [type_int, freq, gain, q]
 
@@ -774,8 +771,99 @@ XGBoost feature importances gate escalation: if studio/year/format not high
 importance, metadata strategy needs revisiting before CNN.
 
 **New module**: `src/main/python/model/auto_beq_nn.py`
-**New tests**: `src/test/python/spike/test_auto_beq_nn.py` (7 tests)
+**New tests**: `src/test/python/spike/test_auto_beq_nn.py` (9 tests)
 **Deps added**: `xgboost`, `scikit-learn`
+
+### E18a - TMDb metadata enrichment
+
+**Goal**: Populate studio/mixer fields — the plan identifies studio as
+the "single most predictive metadata field" because mixing stages are
+per-studio.
+
+**Implementation**: `auto_beq_metadata.py` fetches movie details + credits
+from TMDb API for all catalogue entries (keyed by `theMovieDB` ID already
+present in every entry). Extracts: primary studio, all production companies,
+sound re-recording mixer(s), supervising sound editor(s), sound designer(s),
+director(s), production country.
+
+**Cache**: `~/.config/beqdesigner/tmdb_metadata_cache.json`. First run
+fetches ~8k entries (no artificial throttle, respects 429 Retry-After).
+Subsequent runs are instant from cache.
+
+**Result**: 7,920 entries fetched, ~300 errors (TV series entries that don't
+resolve as movies on TMDb — these need the `/tv/` endpoint).
+
+### E18b - Full-catalogue training with real-audio validation
+
+**Setup**: Trained XGBoost on the full deduplicated catalogue (~7k unique
+titles, synthetic features derived from catalogue filter chains) with TMDb
+metadata enrichment. Validated on 7 titles where we have extracted LFE WAV
+files from real media.
+
+**Result**: **FAIL — 7.43 dB mean downstream loss on real audio** (target <2 dB).
+
+Per-title real-audio results:
+
+| Title | Downstream loss | Verdict |
+|---|---|---|
+| Mad Max: Fury Road | 2.54 dB | MARGINAL |
+| Elio | 2.55 dB | FAIL |
+| KPop Demon Hunters | 4.69 dB | FAIL |
+| Zootopia 2 | 9.98 dB | FAIL |
+| John Wick | 10.23 dB | FAIL |
+| Despicable Me 4 | 10.64 dB | FAIL |
+| Flow | 11.35 dB | FAIL |
+
+Synthetic features on the same 7 titles: 4.44 dB mean loss.
+**Real-audio gap: +2.99 dB** — measured spectra are significantly harder
+than the "perfect inverse" synthetic curves.
+
+**Feature importances (top 15)**:
+
+| Feature | Importance | Notes |
+|---|---|---|
+| Audio format (Atmos) | 6.8% | Highest — Atmos titles have different headroom |
+| Source (Streaming) | 5.1% | Disc vs streaming gets different treatment |
+| Country (English) | 4.0% | Hollywood vs non-Hollywood mixing practices |
+| Audio 80 Hz | 3.5% | Upper bass band — most variation between titles |
+| Year | 2.8% | Temporal drift in rolloff practices is real |
+| Audio 30 Hz | 2.8% | |
+| Source (Unknown) | 2.7% | |
+| Audio 50 Hz | 2.3% | |
+| Audio 25 Hz | 2.3% | |
+| Country (Other) | 2.2% | |
+| Audio 40 Hz | 2.1% | |
+| Audio 70 Hz | 2.0% | |
+| Audio 60 Hz | 2.0% | |
+| Audio format (DD+) | 1.9% | |
+| Mixer (hash bin 1) | 1.8% | Individual mixer styles detectable |
+
+**Key findings**:
+1. **Metadata matters**: audio format and source/release type are the two
+   most important features — more important than any individual frequency
+   bin. The plan's thesis that metadata carries prediction when audio signal
+   is sparse appears correct.
+2. **Studio didn't surface**: 16-dim feature hash causes collisions across
+   ~3k unique studios. Many studios hash to the same bin, destroying the
+   signal. Needs a proper vocabulary or larger hash space.
+3. **Synthetic training data is not enough**: the 3 dB gap between
+   synthetic and real features means the model trained on "perfect inverse"
+   curves can't handle noisy measured spectra. Real audio features are
+   needed for training, not just validation.
+4. **Model prefers HighShelf incorrectly**: predicted filter types skew
+   heavily toward HighShelf when the catalogue overwhelmingly uses LowShelf.
+   The type_int encoding (LowShelf=0, HighShelf=1, PeakingEQ=2) may cause
+   XGBoost to treat type as continuous rather than categorical.
+5. **Year and country are predictive**: confirms that rolloff practices
+   changed over time and that Hollywood mixes differ from non-English mixes.
+
+**Lessons for next steps**:
+- Fix studio encoding before concluding metadata doesn't help
+- Need real audio features for training (STFT pipeline), not just validation
+- Consider encoding filter type as separate one-hot columns rather than
+  a single integer, so XGBoost treats it categorically
+- Run ablation: audio-only vs audio+metadata to quantify metadata contribution
+  once encoding issues are fixed
 
 ### E19 - Hybrid: trained model warm-start + scipy refinement
 
