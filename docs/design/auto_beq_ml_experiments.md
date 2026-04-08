@@ -280,13 +280,36 @@ Titles below threshold: flagged for human review in BEQDesigner. Above threshold
 ## Execution Order
 
 1. ✅ E18 initial code path — synthetic training data, XGBoost, full Advisor integration
-2. TMDb/IMDB metadata fetcher — batch job to populate studio + mixer fields
-3. XGBoost ablation: audio-only vs audio+metadata — quantifies metadata contribution
-4. Escalate to 1D CNN on RTX 3090 with hyperparameter search
-5. If CNN meets threshold: E19 is an enhancement, not a requirement
-6. If CNN plateaus: try transformer, then diagnose failure modes
-7. Build E19 hybrid once E18 architecture is finalised
-8. Always evaluate on fixed held-out test set — never touch it during development
+2. ✅ TMDb metadata fetcher — batch job to populate studio + mixer fields
+3. ✅ Repo-committed TMDb metadata mirror — training loads from repo, hits TMDb only for delta
+4. Real-audio validation — train on full catalogue, validate on available WAV files
+5. XGBoost ablation: audio-only vs audio+metadata — quantifies metadata contribution
+6. Escalate to 1D CNN on RTX 3090 with hyperparameter search
+7. If CNN meets threshold: E19 is an enhancement, not a requirement
+8. If CNN plateaus: try transformer, then diagnose failure modes
+9. Build E19 hybrid once E18 architecture is finalised
+10. Always evaluate on fixed held-out test set — never touch it during development
+
+---
+
+## TMDb metadata strategy
+
+The BEQ catalogue carries TMDb IDs on every entry. We fetch studio, mixer,
+director, and country from the TMDb API and maintain a **repo-committed
+mirror** so that:
+- New users / contributors don't each independently hit TMDb for 8k entries
+- Training is reproducible without network access
+- The mirror is keyed by TMDb ID and only needs updating when new catalogue
+  entries appear
+
+**Primary source:** `src/test/resources/auto_beq/tmdb_metadata.json` (committed)
+**Fallback:** live TMDb API fetch for any TMDb IDs not in the repo copy
+**Local user cache:** `~/.config/beqdesigner/tmdb_metadata_cache.json` (fast warm cache)
+
+**TODO:** Persist the TMDb-enriched catalogue as part of our git DB catalogue
+output. When we produce and persist BEQ profiles, include the TMDb metadata
+alongside the filter parameters. This way the enriched data propagates
+automatically with the profiles — no separate metadata sync step needed.
 
 ---
 
@@ -294,7 +317,7 @@ Titles below threshold: flagged for human review in BEQDesigner. Above threshold
 
 - `xgboost`, `scikit-learn` (joblib): dev deps — `poetry add --group dev xgboost scikit-learn`
 - `torch`: add when CNN stage begins
-- `cinemagoer`: IMDB metadata batch lookup — `poetry add --group dev cinemagoer`
+- `cinemagoer`: IMDB metadata batch lookup — `poetry add --group dev cinemagoer` (if TMDb insufficient)
 - RTX 3090 machine: SSH access, CUDA 11+, pytorch with CUDA support
 - Full catalogue audio corpus (when available)
 

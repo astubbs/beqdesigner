@@ -1,18 +1,27 @@
 """TMDb metadata fetcher for the ML training pipeline (Experiment 18).
 
 Fetches studio/distributor, sound re-recording mixer, director, and
-production country for BEQ catalogue entries using the TMDb API. Results
-are cached locally — once fetched, a title's metadata is never re-fetched.
+production country for BEQ catalogue entries using the TMDb API.
 
-The BEQ catalogue already carries ``theMovieDB`` IDs on every entry, so
-we skip the search step and go straight to the details endpoint.
+Three-tier cache strategy (no user fetches metadata that's already known):
+
+1. **Repo-committed mirror** — ``src/test/resources/auto_beq/tmdb_metadata.json``
+   Ships with the repo so new users / contributors have all known catalogue
+   metadata without hitting TMDb. Updated periodically and committed.
+2. **Local user cache** — ``~/.config/beqdesigner/tmdb_metadata_cache.json``
+   Warm cache for entries fetched during this user's sessions (includes
+   entries not yet committed to the repo mirror).
+3. **Live TMDb API** — only for TMDb IDs not found in either cache.
 
 Usage::
 
-    from model.auto_beq_metadata import fetch_metadata_batch, enrich_media_metadata
+    from model.auto_beq_metadata import load_metadata, fetch_metadata_batch, enrich_media_metadata
 
-    # Batch-fetch for all catalogue entries (rate-limited, cached):
-    cache = fetch_metadata_batch(catalogue_entries)
+    # Load from repo mirror + local cache (no network):
+    cache = load_metadata()
+
+    # Fetch any missing entries from TMDb and merge into cache:
+    cache = fetch_metadata_batch(catalogue_entries, cache=cache)
 
     # Enrich a single MediaMetadata for the ML pipeline:
     metadata = enrich_media_metadata(entry, cache)
@@ -39,37 +48,73 @@ _TMDB_BASE = "https://api.themoviedb.org/3"
 _REQUEST_TIMEOUT_S = 15
 _MAX_RETRIES = 3
 
-# Local cache file — never expires (TMDb metadata doesn't change).
+# Tier 1: repo-committed mirror (ships with the repo).
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_REPO_METADATA_FILE = _REPO_ROOT / "src" / "test" / "resources" / "auto_beq" / "tmdb_metadata.json"
+
+# Tier 2: local user cache (warm cache for user-fetched entries).
 _CACHE_DIR = Path.home() / ".config" / "beqdesigner"
 _CACHE_FILE = _CACHE_DIR / "tmdb_metadata_cache.json"
 
 
 # ---------------------------------------------------------------------------
-# Cache I/O
+# Cache I/O — three-tier loading
 # ---------------------------------------------------------------------------
 
 
-def load_cache() -> dict[str, dict]:
-    """Load the TMDb metadata cache from disk. Returns empty dict if missing."""
-    if _CACHE_FILE.exists():
+def _load_json(path: Path) -> dict[str, dict]:
+    """Load a JSON dict from path, returning empty dict on any failure."""
+    if path.exists():
         try:
-            with _CACHE_FILE.open() as f:
+            with path.open() as f:
                 data = json.load(f)
-            log.info("loaded TMDb cache: %d entries from %s", len(data), _CACHE_FILE)
+            log.info("loaded %d entries from %s", len(data), path)
             return data
         except (json.JSONDecodeError, OSError) as exc:
-            log.warning("failed to load TMDb cache: %s", exc)
+            log.warning("failed to load %s: %s", path, exc)
     return {}
 
 
+def load_metadata() -> dict[str, dict]:
+    """Load TMDb metadata from repo mirror + local user cache (no network).
+
+    Merges both sources. Local user cache entries take precedence over
+    repo entries (in case the user has fresher data).
+    """
+    repo = _load_json(_REPO_METADATA_FILE)
+    local = _load_json(_CACHE_FILE)
+    merged = {**repo, **local}
+    if repo and local:
+        log.info("merged metadata: %d repo + %d local = %d total (after dedup)",
+                 len(repo), len(local), len(merged))
+    return merged
+
+
+# Back-compat alias.
+load_cache = load_metadata
+
+
 def save_cache(cache: dict[str, dict]) -> None:
-    """Persist the TMDb metadata cache to disk."""
+    """Persist the TMDb metadata to the local user cache."""
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
     tmp = _CACHE_FILE.with_suffix(".tmp")
     with tmp.open("w") as f:
         json.dump(cache, f, indent=1, sort_keys=True)
     tmp.replace(_CACHE_FILE)
     log.info("saved TMDb cache: %d entries to %s", len(cache), _CACHE_FILE)
+
+
+def save_repo_metadata(cache: dict[str, dict]) -> None:
+    """Write the full metadata cache to the repo-committed mirror.
+
+    Call this after a batch fetch to update the repo copy. The updated
+    file should then be committed to git so other users get it for free.
+    """
+    tmp = _REPO_METADATA_FILE.with_suffix(".tmp")
+    with tmp.open("w") as f:
+        json.dump(cache, f, indent=1, sort_keys=True)
+    tmp.replace(_REPO_METADATA_FILE)
+    log.info("saved repo metadata mirror: %d entries to %s", len(cache), _REPO_METADATA_FILE)
 
 
 # ---------------------------------------------------------------------------
@@ -255,14 +300,23 @@ def enrich_media_metadata(entry: dict, cache: dict[str, dict]):
 # ---------------------------------------------------------------------------
 
 
-def fetch_all(catalogue_entries: list[dict] | None = None) -> dict[str, dict]:
+def fetch_all(
+    catalogue_entries: list[dict] | None = None,
+    update_repo_mirror: bool = True,
+) -> dict[str, dict]:
     """One-shot: fetch metadata for the full BEQ catalogue.
 
     If ``catalogue_entries`` is None, fetches the full catalogue via
     ``auto_beq_catalogue._fetch_or_cache()``.
+
+    When ``update_repo_mirror`` is True (default), writes the full merged
+    cache to the repo-committed mirror so it can be committed to git.
     """
     if catalogue_entries is None:
         from model.auto_beq_catalogue import _fetch_or_cache
         catalogue_entries = _fetch_or_cache()
 
-    return fetch_metadata_batch(catalogue_entries)
+    cache = fetch_metadata_batch(catalogue_entries)
+    if update_repo_mirror:
+        save_repo_metadata(cache)
+    return cache
