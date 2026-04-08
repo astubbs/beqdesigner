@@ -1076,28 +1076,62 @@ remain in the codebase for future experimentation.
 
 ---
 
-## Session summary: E18–E21 (2026-04-08)
+## Full experiment history (E1–E21)
 
-Starting baseline (E17d Welch + MeasurementAdvisor defaults):
-**9 PASS / 4 MARGINAL / 18 FAIL** across 31 test cases.
+### Progression table
 
-| Experiment | What changed | Grade Δ | Adopted? | New baseline |
-|---|---|---|---|---|
-| **E18** | Chunked-percentile extraction (STFT peak per chunk → P90) | mixed | Partial | — |
-| **E18b** | Blended extraction (70% Welch + 30% chunked P90 @ 60s) | +2 / 0 | **Yes** (default) | 9 P / 4 M / 18 F (via E18b sweep; grade changes vs Welch) |
-| **E19** | MeasurementAdvisor: slope threshold 15→10, multi-knee Q 0.8→0.9 | +2 / 0 | **Yes** | 10 P / 4 M / 17 F |
-| **E20** | Multi-knee gain cap 30→35 dB; 3-shelf tested but rejected | +1 / 0 | **Cap 35 yes** | 10 P / 5 M / 16 F |
-| **E21** | Self-feedback loop (iterative gain adjustment) | +3 / −8 | **No** | unchanged |
+| # | Name | What changed | Adopted? | Cumulative baseline |
+|---|------|-------------|----------|---------------------|
+| **E1** | Single shelf + residual PEQs | Baseline: flatten measured curve with shelf+PEQ fitter | No — wrong objective (BEQ extends, doesn't flatten) | 0/0/3 (3 titles) |
+| **E2** | N-filter iterative fitter | Greedy shelf+PEQ fitter, max 6 filters, Q 0.3–4.0 | **Yes** — fitter math proven | — (synthetic only) |
+| **E3** | Rolloff-depth classifier | Classify mild/middle/cliff, cap gain per class | No — overfit to 3 fixtures | 1/1/1 |
+| **E4** | Advisor interface + MockAdvisor | Advisor supplies max_gain+knee; single LowShelf Q=0.7 target | **Yes** (architecture) | 1/0/2 |
+| **E5** | Q=0.9 correction target | Raise shelf Q 0.7→0.9 | No — helps EoT, hurts MM | 1/1/1 |
+| **E6** | Cascaded shelf target | N shelves at Q=0.9, ~7 dB each (matches catalogue construction) | **Yes** | 2/0/1 |
+| **E7** | Ollama llama3.1:8b | Use local LLM for gain+knee recommendation | No — numeric calibration poor | 0/0/3 |
+| **E8** | Few-shot prompt | Add 4 labelled examples to LLM prompt | No — anchored LLM to low numbers | 1/0/2 |
+| **E9** | Aesthetic-over-measurement prompt | Prompt: "BEQ is aesthetic, not measurement-derived" + film list | Partial — cheating with film names | 2/0/1 |
+| **E10** | Advice.filters field | Advisor can prescribe explicit multi-knee filter chains | **Yes** (plumbing) | 2/0/1 (Mock) |
+| **E11** | Multi-step Ollama + looks_multi_knee() | 3-call LLM (tier→numbers→chain) + programmatic cliff detection | No — prompts overfit to fixtures | 2/1/0 (overfit) |
+| **E12** | Self-feedback refinement loop | LLM evaluates chain response, adjusts in loop (max 3×) | No — can't rescue wrong tier | 1/0/2 |
+| **E13** | De-overfit prompts | Strip film names, use general principles only | **Yes** (honest baseline) | 1/1/1 |
+| **E14** | Pure-measurement advisor | deficit + slope extension formula, no LLM | No — 3 distinct failure modes | 0/0/3 |
+| **E15** | Absolute dBFS diagnostic | Log un-normalised levels before anchor normalisation | **Yes** (diagnostic) | — |
+| **E15c** | EoT codec mismatch | Discovered test used wrong catalogue entry (Atmos vs DTS-HD) | Bug fix | — |
+| **E16** | Catalogue-first pipeline | propose_or_lookup: catalogue match primary, auto fallback | **Yes** (production) | — |
+| **E17a** | Knee = rolloff-start | Use 3 dB-below-peak frequency instead of shoulder peak | **Yes** | 1/3/0 (4 titles) |
+| **E17b** | Rolloff threshold sweep | Test 3/4/6 dB thresholds | Kept 3 dB default | — |
+| **E17c** | Topology classification | gentle/moderate/cliff classes with per-class gain formula | **Yes** | 10/2/22 (34 eps) |
+| **E17d** | Expert formula (gain=peak−L10) | Simplify to deficit-only, raise chain cap 18→30 dB | **Yes** (baseline) | **10/4/20** (34 eps) |
+| | | *— library sweep expanded to 31 titles —* | | |
+| **E18** | Chunked-percentile extraction | STFT peak per chunk → P90, chunk sizes 30/60/90s | Partial | mixed |
+| **E18b** | Blended extraction strategy | 70% Welch + 30% chunked P90 @ 60s (6 strategies tested) | **Yes** (default) | 9/4/18 → +2/0 grade changes |
+| **E19** | Advisor constant calibration | slope threshold 15→10, multi-knee Q 0.8→0.9 (18 configs) | **Yes** | **10/4/17** |
+| **E20** | Multi-knee gain cap | Cap 30→35 dB; 3-shelf tested but rejected (6 configs) | **Cap 35 yes** | **10/5/16** |
+| **E21** | Self-feedback loop | Iterative gain adjustment via corrected-curve flatness | **No** (+3/−8) | unchanged |
 
-**Final baseline: 10 PASS / 5 MARGINAL / 16 FAIL.**
+### Phases
 
-Key architectural additions:
+1. **E1–E3** (procedural heuristics): failed to generalise beyond fixtures
+2. **E4–E6** (advisor abstraction + cascade targets): shelf decomposition works
+3. **E7–E12** (LLM-based tier classification): multi-step Ollama can work but prompts overfit
+4. **E13–E15c** (pure-measurement baseline + diagnostics): 41% ceiling; found EoT codec bug
+5. **E16–E17d** (catalogue-first + formula refinement): topology classification unlocked gains
+6. **E18–E20** (spectrum extraction + calibration): blended extraction + recalibrated params
+7. **E21** (feedback loop): rejected — metric fundamentally wrong for BEQ
+
+### Current baseline
+
+**10 PASS / 5 MARGINAL / 16 FAIL** across 31 test cases (48% non-FAIL).
+
+Key architectural components:
 - `ExtractionStrategy` enum + `load_measured()` dispatcher (default: blend-a0.7-P90)
-- `AdvisorConfig` dataclass for parameterised advisor sweeps
+- `MeasurementAdvisor` with configurable constants (slope threshold, Q, gain cap)
+- `AdvisorConfig` dataclass for parameterised sweeps
 - `GainAdjustedAdvisor` wrapper for future feedback experiments
 - Unified test infrastructure: `test_library_sweep_e19`, `_e20`, `_e21`,
   `_strategies`, `_chunked` — all share `_SWEEP_FILMS` and grading thresholds
-- CSV reports per experiment for comparative analysis
+- CSV reports per experiment + unified `scripts/sweep_report.py` generator
 
 Remaining bottleneck: the advisor's deficit formula (`peak - L10`) is a
 good first approximation but can't capture catalogue entries with

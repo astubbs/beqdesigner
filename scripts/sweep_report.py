@@ -281,26 +281,52 @@ def print_title_matrix(results: list[ExperimentResult]) -> None:
 
 
 def print_baseline_progression() -> None:
-    """Print the historical baseline progression."""
+    """Print the full historical baseline progression (E1-E21)."""
     print()
-    print("=" * 95)
-    print("BASELINE PROGRESSION")
-    print("=" * 95)
+    print("=" * 100)
+    print("FULL EXPERIMENT HISTORY — BASELINE PROGRESSION")
+    print("=" * 100)
     print()
-    print(f"{'Stage':<50} {'P':>4} {'M':>4} {'F':>4} {'Total':>6} {'Non-FAIL%':>10}")
-    print("-" * 80)
+    print(f"{'#':<5} {'Stage':<58} {'P':>3} {'M':>3} {'F':>3} {'N':>3} {'Non-F%':>7} {'Adopted':>8}")
+    print("-" * 100)
 
+    # (label, P, M, F, total_titles, adopted)
     stages = [
-        ("E17d: Welch + MeasurementAdvisor (original)",        9,  4, 18),
-        ("E18b: + blend-a0.7-P90 extraction (default)",        9,  4, 18),
-        ("E19:  + slope threshold 10, multi-knee Q 0.9",      10,  4, 17),
-        ("E20:  + gain cap 35 dB",                            10,  5, 16),
-        ("E21:  feedback loop (NOT adopted)",                  10,  5, 16),
+        ("E1",   "Single shelf + residual PEQs (wrong objective)",       0, 0, 3,  3, "no"),
+        ("E2",   "N-filter iterative fitter (synthetic only)",           0, 0, 0,  0, "yes"),
+        ("E3",   "Rolloff-depth classifier (overfit)",                   1, 1, 1,  3, "no"),
+        ("E4",   "Advisor interface + MockAdvisor (Q=0.7)",              1, 0, 2,  3, "arch"),
+        ("E5",   "Q=0.9 correction target",                             1, 1, 1,  3, "no"),
+        ("E6",   "Cascaded shelf target (~7 dB each)",                   2, 0, 1,  3, "YES"),
+        ("E7",   "Ollama llama3.1:8b (poor calibration)",                0, 0, 3,  3, "no"),
+        ("E8",   "Few-shot prompt (anchored to low numbers)",            1, 0, 2,  3, "no"),
+        ("E9",   "Aesthetic prompt + film names (cheating)",             2, 0, 1,  3, "partial"),
+        ("E10",  "Advice.filters field (multi-knee plumbing)",           2, 0, 1,  3, "arch"),
+        ("E11",  "Multi-step Ollama + looks_multi_knee (overfit)",       2, 1, 0,  3, "no"),
+        ("E12",  "Self-feedback loop (LLM, can't fix tier)",             1, 0, 2,  3, "no"),
+        ("E13",  "De-overfit prompts (honest baseline)",                 1, 1, 1,  3, "YES"),
+        ("E14",  "Pure-measurement advisor (slope extension)",           0, 0, 3,  3, "no"),
+        ("E15",  "Absolute dBFS diagnostic",                             0, 0, 0,  0, "diag"),
+        ("E15c", "EoT codec mismatch discovered",                       0, 0, 0,  0, "bugfix"),
+        ("E16",  "Catalogue-first pipeline",                             0, 0, 0,  0, "prod"),
+        ("E17a", "Knee = rolloff-start (3 dB below peak)",               1, 3, 0,  4, "YES"),
+        ("E17b", "Rolloff threshold sweep (3/4/6 dB)",                   0, 0, 0,  0, "kept 3"),
+        ("E17c", "Topology classification (gentle/moderate/cliff)",     10, 2, 22, 34, "YES"),
+        ("E17d", "Expert formula (gain = peak - L10, cap 30)",          10, 4, 20, 34, "YES"),
+        ("",     "--- library expanded to 31 titles ---",                0, 0, 0,  0, ""),
+        ("E18",  "Chunked-percentile extraction (P90)",                  0, 0, 0,  0, "partial"),
+        ("E18b", "Blended extraction (70% Welch + 30% chunked)",         9, 4, 18, 31, "YES"),
+        ("E19",  "Slope threshold 15->10, multi-knee Q 0.8->0.9",      10, 4, 17, 31, "YES"),
+        ("E20",  "Multi-knee gain cap 30->35 dB",                       10, 5, 16, 31, "YES"),
+        ("E21",  "Self-feedback loop (flatness metric wrong)",          10, 5, 16, 31, "no"),
     ]
-    for label, p, m, f in stages:
-        total = p + m + f
-        nonfail = (p + m) / total * 100 if total else 0
-        print(f"{label:<50} {p:>4} {m:>4} {f:>4} {total:>6} {nonfail:>9.0f}%")
+    for exp, label, p, m, f, n, adopted in stages:
+        if n == 0:
+            # Diagnostic/architectural/separator row
+            print(f"{exp:<5} {label:<58} {'':>3} {'':>3} {'':>3} {'':>3} {'':>7} {adopted:>8}")
+        else:
+            nonfail = (p + m) / n * 100
+            print(f"{exp:<5} {label:<58} {p:>3} {m:>3} {f:>3} {n:>3} {nonfail:>6.0f}% {adopted:>8}")
 
 
 def write_unified_csv(results: list[ExperimentResult], path: Path) -> None:
