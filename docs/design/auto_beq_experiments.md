@@ -891,6 +891,75 @@ strictly non-regressing with meaningful improvements. Offer
 **Kept**: `load_and_smooth_blended()` added to `_auto_beq_helpers.py`.
 Strategy sweep CSV: `.pytest_cache/auto_beq_sweep_strategies.csv`.
 
+### E19 — NN training with chunked audio features
+
+**Hypothesis**: The XGBoost model (E18) validates on real audio using
+Welch-only feature extraction. E18b showed that blended/chunked
+extraction captures transient bass events that Welch dilutes. If the
+NN receives more accurate input features at validation time, downstream
+loss should decrease — the real-vs-synthetic gap should narrow.
+
+**Method**: Same XGBoost pipeline as E18 real-audio validation. Train
+once on full catalogue (synthetic features). Build **four** separate
+validation feature sets from the same WAV files, each using a different
+extraction strategy:
+- `welch` — baseline (identical to E18)
+- `blend-a0.7-P90` — conservative blend (E18b winner)
+- `blend-a0.3-P90` — aggressive blend
+- `chunked-P90-60s` — pure chunked percentile
+
+Compare downstream loss, verdict counts, and grade changes vs the
+Welch baseline across all strategies.
+
+**Key question**: Does the real-vs-synthetic performance gap shrink
+when we use chunked/blended extraction? If so, the gap was partly
+caused by Welch averaging out transient bass events that the synthetic
+features (perfect inverse of catalogue filters) always capture.
+
+**Implementation**: `test_nn_chunked_strategy_comparison()` in
+`test_auto_beq_nn_chunked.py`. Uses `load_measured()` from
+`_auto_beq_helpers.py` to dispatch to the appropriate extraction
+function based on strategy.
+
+**Results (14 titles, XGBoost trained on 8219 synthetic entries)**:
+
+| Strategy | Mean loss | PASS | MARGINAL | FAIL | Δ vs Welch |
+|---|---|---|---|---|---|
+| welch (baseline) | 7.09 dB | 0 | 1 | 13 | — |
+| blend-a0.7-P90 | 6.26 dB | 0 | 1 | 13 | -0.83 dB |
+| **blend-a0.3-P90** | **6.21 dB** | 0 | 1 | 13 | **-0.88 dB** |
+| chunked-P90 | 7.17 dB | 0 | 1 | 13 | +0.08 dB |
+
+Synthetic-vs-real gap analysis:
+- Synthetic mean loss: 4.33 dB
+- Welch real-audio gap: 2.76 dB (7.09 - 4.33)
+- Best (blend-a0.3) gap: 1.88 dB (6.21 - 4.33)
+- **Blended extraction closes 32% of the real-vs-synthetic gap**
+
+**Key findings**:
+1. **Blended extraction helps the NN** — both blend strategies reduce
+   mean downstream loss by ~0.85 dB. The improvement comes from more
+   accurate input features at validation time.
+2. **Pure chunked is neutral** — too aggressive for NN inputs, same
+   as E18b found for MeasurementAdvisor. The blending preserves
+   Welch's calibrated baseline while adding chunked's transient
+   sensitivity.
+3. **No verdict flips** — the 0.88 dB improvement isn't enough to
+   cross grading thresholds. The NN's overall accuracy (7+ dB mean
+   loss) is the bottleneck, not the extraction method.
+4. **blend-a0.3 slightly beats blend-a0.7** for NN (opposite of E18b
+   where a0.7 was safer for MeasurementAdvisor). The NN can tolerate
+   more chunked signal because it learned feature patterns, whereas
+   the MeasurementAdvisor's fixed formula overshoots.
+5. **The real-vs-synthetic gap (2.76 dB) confirms E18's finding**: the
+   "perfect inverse" assumption costs ~3 dB. Blended extraction
+   recovers about a third of that.
+
+**Lesson**: blended extraction is a free ~0.9 dB improvement for NN
+validation. But the NN's overall accuracy needs improvement before
+extraction method becomes the limiting factor. Next: improve the model
+(more features, better architecture) rather than tuning extraction.
+
 ---
 
 ## Next to try

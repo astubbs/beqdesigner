@@ -446,6 +446,120 @@ def load_measured(
     raise ValueError(f"unknown extraction method: {strategy.method}")
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers for NN training experiments
+# ---------------------------------------------------------------------------
+
+_TMDB_RE = __import__("re").compile(r"\[tmdb-(\d+)\]")
+
+
+def discover_wav_catalogue_pairs() -> list[dict]:
+    """Find all cached LFE WAVs that match a BEQ catalogue entry.
+
+    Returns list of dicts with keys: wav_path, catalogue_entry, tmdb_id.
+    """
+    try:
+        cache_root = audio_cache_dir()
+    except RuntimeError:
+        return []
+
+    from model.auto_beq_catalogue import _fetch_or_cache
+    catalogue = _fetch_or_cache()
+
+    by_tmdb: dict[str, list[dict]] = {}
+    for e in catalogue:
+        tid = str(e.get("theMovieDB", "")).strip()
+        if tid:
+            by_tmdb.setdefault(tid, []).append(e)
+
+    wav_files = sorted(cache_root.rglob("*.lfe-1000hz.wav"))
+    pairs = []
+    for wav in wav_files:
+        m = _TMDB_RE.search(str(wav))
+        if not m:
+            continue
+        tid = m.group(1)
+        entries = by_tmdb.get(tid)
+        if entries:
+            pairs.append({
+                "wav_path": wav,
+                "catalogue_entry": entries[0],
+                "tmdb_id": tid,
+            })
+    return pairs
+
+
+def synthetic_features(entry: dict, freqs_hz: np.ndarray):
+    """Compute CurveFeatures from the inverse of an entry's filter chain.
+
+    rolloff = -evaluate_filter_chain(entry["filters"]) represents what the
+    LFE would look like before BEQ correction.
+    """
+    from model.auto_beq import evaluate_filter_chain
+    from model.auto_beq_advisor import extract_curve_features
+
+    correction = evaluate_filter_chain(entry["filters"], freqs_hz, fs=1000)
+    rolloff = -correction
+    anchor_idx = int(np.argmin(np.abs(freqs_hz - 80.0)))
+    rolloff_norm = rolloff - rolloff[anchor_idx]
+    return extract_curve_features(rolloff_norm, freqs_hz)
+
+
+def build_training_dataset(freqs_hz: np.ndarray):
+    """Load full catalogue, dedup, enrich with TMDb cache, build (X, Y, entries).
+
+    Uses the local TMDb cache (expected to be fully populated). Does NOT
+    call fetch_metadata_batch — if a TMDb ID is missing from the cache,
+    its metadata fields will simply be empty/zero.
+
+    Returns (X, Y, entries, tmdb_cache) where X is float32 [N, 60],
+    Y is float32 [N, 16], entries is the list of catalogue dicts used.
+    """
+    from model.auto_beq_catalogue import _fetch_or_cache
+    from model.auto_beq_metadata import enrich_media_metadata, load_cache
+    from model.auto_beq_nn import build_feature_vector, catalogue_entry_to_labels, deduplicate_by_title
+
+    catalogue = _fetch_or_cache()
+    log.info("full catalogue: %d entries", len(catalogue))
+
+    deduped = deduplicate_by_title(catalogue)
+    deduped = [e for e in deduped if e.get("filters")]
+    log.info("after dedup + filter: %d unique titles with filters", len(deduped))
+
+    tmdb_cache = load_cache()
+    log.info("TMDb cache: %d entries", len(tmdb_cache))
+
+    X_list, Y_list, used = [], [], []
+    for e in deduped:
+        features = synthetic_features(e, freqs_hz)
+        metadata = enrich_media_metadata(e, tmdb_cache)
+        X_list.append(build_feature_vector(features, metadata))
+        Y_list.append(catalogue_entry_to_labels(e))
+        used.append(e)
+
+    X = np.array(X_list, dtype=np.float32)
+    Y = np.array(Y_list, dtype=np.float32)
+    log.info("training dataset: X=%s Y=%s", X.shape, Y.shape)
+    return X, Y, used, tmdb_cache
+
+
+def extract_features_with_strategy(
+    wav_path,
+    freqs_hz: np.ndarray,
+    fs: int,
+    strategy: ExtractionStrategy | None = None,
+):
+    """Load WAV → extract spectrum using strategy → extract_curve_features.
+
+    Uses ``load_measured()`` which dispatches to Welch, chunked, or blended.
+    If strategy is None, uses DEFAULT_STRATEGY.
+    """
+    from model.auto_beq_advisor import extract_curve_features
+
+    curve = load_measured(wav_path, fs, freqs_hz, strategy)
+    return extract_curve_features(curve, freqs_hz)
+
+
 # Backwards-compatible aliases (the existing test_auto_beq.py uses
 # underscore-prefixed names).
 _have_tool = have_tool
