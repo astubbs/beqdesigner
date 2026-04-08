@@ -71,7 +71,7 @@ def discover_media(roots: list[Path]) -> list[dict]:
     """
     results = []
     missing_ids = []
-    seen_tmdb = set()
+    seen_keys = set()  # (tmdb_id, season, episode) for dedup
 
     for root in roots:
         if not root.exists():
@@ -101,13 +101,10 @@ def discover_media(roots: list[Path]) -> list[dict]:
                 continue
 
             tmdb_id = m.group(1)
-            if tmdb_id in seen_tmdb:
-                continue  # deduplicate
-            seen_tmdb.add(tmdb_id)
 
             # Extract title and year from directory name.
             title, year = None, None
-            for dirname in (f.parent.name, f.parent.parent.name):
+            for dirname in (f.parent.name, f.parent.parent.name, f.parent.parent.parent.name):
                 m2 = _TITLE_YEAR_RE.match(dirname)
                 if m2:
                     title = m2.group(1).strip()
@@ -117,12 +114,32 @@ def discover_media(roots: list[Path]) -> list[dict]:
                 title = f"unknown-{tmdb_id}"
                 year = "0000"
 
+            # Detect TV episodes.
+            ep_match = _EPISODE_RE.search(f.stem)
+            season = int(ep_match.group(1)) if ep_match else None
+            episode = int(ep_match.group(2)) if ep_match else None
+
+            # Detect content type from path (TV dirs often contain "Season").
+            is_tv = ep_match is not None or any(
+                "season" in p.lower() for p in f.parts
+            )
+            content_type = "TV" if is_tv else "film"
+
+            # Deduplicate: movies by tmdb_id, TV by (tmdb_id, season, episode).
+            dedup_key = (tmdb_id, season, episode)
+            if dedup_key in seen_keys:
+                continue
+            seen_keys.add(dedup_key)
+
             results.append({
                 "path": f,
                 "tmdb_id": tmdb_id,
                 "title": title,
                 "year": year,
                 "size_bytes": size,
+                "content_type": content_type,
+                "season": season,
+                "episode": episode,
             })
 
     if missing_ids:
@@ -142,14 +159,36 @@ def discover_media(roots: list[Path]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def cache_path(wav_root: Path, title: str, year: str, tmdb_id: str) -> Path:
+_EPISODE_RE = re.compile(r"S(\d+)E(\d+)", re.IGNORECASE)
+
+
+def cache_path(
+    wav_root: Path,
+    title: str,
+    year: str,
+    tmdb_id: str,
+    content_type: str = "film",
+    season: int | None = None,
+    episode: int | None = None,
+) -> Path:
     """Build the portable cache path for a title.
 
-    Structure: wav_root/Letter/Title (Year) [tmdb-NNN]/lfe-1000hz.wav
+    Movies:
+        wav_root/Movies/B/Blade Runner (1982) [tmdb-78]/Blade Runner (1982) [tmdb-78].lfe-1000hz.wav
+    TV:
+        wav_root/TV/B/BLUE EYE SAMURAI (2023) [tmdb-225180]/Season 01/BLUE EYE SAMURAI S01E01 [tmdb-225180].lfe-1000hz.wav
     """
+    content_dir = "TV" if content_type.upper() == "TV" else "Movies"
     letter = title[0].upper() if title and title[0].isalpha() else "#"
-    dir_name = f"{title} ({year}) [tmdb-{tmdb_id}]"
-    return wav_root / letter / dir_name / "lfe-1000hz.wav"
+    title_dir = f"{title} ({year}) [tmdb-{tmdb_id}]"
+
+    if content_type.upper() == "TV" and season is not None and episode is not None:
+        season_dir = f"Season {season:02d}"
+        wav_name = f"{title} S{season:02d}E{episode:02d} [tmdb-{tmdb_id}].lfe-1000hz.wav"
+        return wav_root / content_dir / letter / title_dir / season_dir / wav_name
+
+    wav_name = f"{title} ({year}) [tmdb-{tmdb_id}].lfe-1000hz.wav"
+    return wav_root / content_dir / letter / title_dir / wav_name
 
 
 # ---------------------------------------------------------------------------
@@ -368,18 +407,24 @@ def main(argv: list[str] | None = None):
         tmdb_id = m["tmdb_id"]
         size_mb = m["size_bytes"] / 1e6
 
-        wav = cache_path(args.wav_root, title, year, tmdb_id)
+        content_type = m.get("content_type", "film")
+        season = m.get("season")
+        episode = m.get("episode")
+        ep_label = f" S{season:02d}E{episode:02d}" if season is not None else ""
+
+        wav = cache_path(args.wav_root, title, year, tmdb_id,
+                         content_type=content_type, season=season, episode=episode)
 
         pct = (i + 1) * 100 // total
         prefix = f"[{i + 1}/{total} {pct}%]"
 
         if wav.exists():
-            log.info("%s CACHED: %s (%s) [tmdb-%s]", prefix, title, year, tmdb_id)
+            log.info("%s CACHED: %s (%s)%s [tmdb-%s]", prefix, title, year, ep_label, tmdb_id)
             skipped += 1
             continue
 
-        log.info("%s Extracting: %s (%s) [tmdb-%s] — %.0f MB",
-                 prefix, title, year, tmdb_id, size_mb)
+        log.info("%s Extracting: %s (%s)%s [tmdb-%s] — %.0f MB",
+                 prefix, title, year, ep_label, tmdb_id, size_mb)
         log.info("  source: %s", m["path"])
 
         t0 = time.time()

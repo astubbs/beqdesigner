@@ -317,7 +317,8 @@ and new users get the metadata for free without hitting TMDb independently.
 ### WAV audio cache
 
 **Portable cache** (`scripts/extract_lfe.py`):
-- Structure: `wav-root/Letter/Title (Year) [tmdb-NNN]/lfe-1000hz.wav`
+- Movies: `wav-root/Movies/B/Blade Runner (1982) [tmdb-78]/Blade Runner (1982) [tmdb-78].lfe-1000hz.wav`
+- TV: `wav-root/TV/B/BLUE EYE SAMURAI (2023) [tmdb-225180]/Season 01/BLUE EYE SAMURAI S01E01 [tmdb-225180].lfe-1000hz.wav`
 - Keyed by TMDb ID — required in filename, no fuzzy matching
 - Standalone script: scp to NAS, run locally, no project deps
 - Atomic writes: `.tmp` → rename on success, prevents corruption
