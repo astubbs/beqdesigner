@@ -20,6 +20,33 @@ Infrastructure changes that aren't algorithm experiments (new scripts,
 cache dir, parallelism, etc) get a grouped entry under
 "Infrastructure improvements" with the date range.
 
+### Preserving experiment code
+
+**Never delete experimental code paths.** Each experiment (E1, E2,
+etc) should be preserved as a selectable alternative, not overwritten
+by the next attempt.
+
+In practice this means:
+- New algorithms go in new classes/functions (e.g.
+  `MeasurementAdvisor`, `HeuristicAdvisor`, `OllamaAdvisor` are all
+  kept — not replaced one-for-one).
+- The `Advisor` protocol + `get_advisor(name)` factory lets us select
+  between approaches at runtime via `AUTO_BEQ_ADVISOR` env var.
+- When iterating on a formula within an advisor, keep the old formula
+  accessible (e.g. as a flag, a subclass, or a clearly-named private
+  method) rather than editing it in place.
+- Tests should be written so they can run against ANY advisor
+  implementation by changing the env var, not hardcoded to one.
+
+The goal: at any point we can re-run any prior experiment's code
+path to compare results. The experiment log says what happened; the
+code lets us reproduce it.
+
+Keep experimental code DRY and modular. Shared logic (fitter,
+feature extraction, smoothing, caching) lives in common modules.
+Only the decision-making (gain formula, knee detection, topology
+classification) differs between experiments.
+
 ### Documentation
 
 **README and design docs must be updated alongside code changes.**
