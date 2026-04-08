@@ -84,24 +84,26 @@ def save_cache(cache: dict[str, dict]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _fetch_tmdb_details(tmdb_id: str) -> dict | None:
-    """Fetch movie details + credits from TMDb for a single ID.
+def _fetch_tmdb_details(tmdb_id: str, is_tv: bool = False) -> dict | None:
+    """Fetch movie or TV details + credits from TMDb for a single ID.
 
-    No artificial throttling — fires requests as fast as possible and
-    respects 429 Retry-After headers when TMDb tells us to slow down.
+    Uses ``/movie/`` or ``/tv/`` endpoint based on ``is_tv``. The BEQ
+    catalogue's ``content_type`` field ("film" vs "TV") determines which
+    to use — no guessing or fallback needed.
 
     Returns a dict with extracted fields, or None on failure.
     """
-    url = f"{_TMDB_BASE}/movie/{tmdb_id}"
+    media_type = "tv" if is_tv else "movie"
+    url = f"{_TMDB_BASE}/{media_type}/{tmdb_id}"
     params = {
         "api_key": _TMDB_API_KEY,
-        "append_to_response": "credits",
+        "append_to_response": "credits" if not is_tv else "aggregate_credits",
     }
     for attempt in range(_MAX_RETRIES):
         try:
             r = requests.get(url, params=params, timeout=_REQUEST_TIMEOUT_S)
         except requests.RequestException as exc:
-            log.warning("TMDb request failed for ID %s: %s", tmdb_id, exc)
+            log.warning("TMDb request failed for %s ID %s: %s", media_type, tmdb_id, exc)
             return None
 
         if r.status_code == 429:
@@ -112,40 +114,46 @@ def _fetch_tmdb_details(tmdb_id: str) -> dict | None:
             continue
 
         if r.status_code != 200:
-            log.warning("TMDb returned %d for ID %s", r.status_code, tmdb_id)
+            log.warning("TMDb returned %d for %s ID %s", r.status_code, media_type, tmdb_id)
             return None
 
-        return _extract_fields(r.json())
+        return _extract_fields(r.json(), is_tv=is_tv)
 
-    log.warning("TMDb rate-limited %d times for ID %s, giving up", _MAX_RETRIES, tmdb_id)
+    log.warning("TMDb rate-limited %d times for %s ID %s, giving up",
+                _MAX_RETRIES, media_type, tmdb_id)
     return None
 
 
-def _extract_fields(data: dict) -> dict:
-    """Extract the ML-relevant fields from a TMDb movie+credits response."""
-    # Studio: first production company (typically the primary studio).
+def _extract_fields(data: dict, is_tv: bool = False) -> dict:
+    """Extract the ML-relevant fields from a TMDb movie or TV response."""
+    # Studio / network: movies have production_companies, TV has networks + production_companies.
     studios = data.get("production_companies", [])
+    if is_tv and not studios:
+        studios = data.get("networks", [])
     studio = studios[0]["name"] if studios else None
-
-    # All production company names (for richer embedding later).
     all_studios = [c["name"] for c in studios]
 
-    # Production country ISO codes.
+    # Production country / origin country.
     countries = [c["iso_3166_1"] for c in data.get("production_countries", [])]
+    if not countries and is_tv:
+        countries = data.get("origin_country", [])
     country = countries[0] if countries else None
 
-    # Crew extraction.
-    crew = data.get("credits", {}).get("crew", [])
+    # Crew extraction — TV uses aggregate_credits with different structure.
+    if is_tv:
+        crew = data.get("aggregate_credits", {}).get("crew", [])
+        # aggregate_credits nests jobs: {"jobs": [{"job": "..."}]}
+        def _has_job(member: dict, job: str) -> bool:
+            return any(j.get("job") == job for j in member.get("jobs", []))
+    else:
+        crew = data.get("credits", {}).get("crew", [])
+        def _has_job(member: dict, job: str) -> bool:
+            return member.get("job") == job
 
-    # Sound re-recording mixer(s) — the people who set the bass rolloff.
-    mixers = [c["name"] for c in crew if c.get("job") == "Sound Re-Recording Mixer"]
-    # Supervising sound editor as a fallback signal.
-    sound_editors = [c["name"] for c in crew if c.get("job") == "Supervising Sound Editor"]
-    # Sound designers.
-    sound_designers = [c["name"] for c in crew if c.get("job") == "Sound Designer"]
-
-    # Director.
-    directors = [c["name"] for c in crew if c.get("job") == "Director"]
+    mixers = [c["name"] for c in crew if _has_job(c, "Sound Re-Recording Mixer")]
+    sound_editors = [c["name"] for c in crew if _has_job(c, "Supervising Sound Editor")]
+    sound_designers = [c["name"] for c in crew if _has_job(c, "Sound Designer")]
+    directors = [c["name"] for c in crew if _has_job(c, "Director")]
 
     return {
         "studio": studio,
@@ -186,13 +194,18 @@ def fetch_metadata_batch(
     if cache is None:
         cache = load_cache()
 
-    # Collect unique TMDb IDs not yet in cache.
-    to_fetch: list[str] = []
+    # Collect unique TMDb IDs not yet in cache, along with content_type.
+    to_fetch: list[tuple[str, bool]] = []  # (tmdb_id, is_tv)
     seen: set[str] = set()
+    # Index entries by TMDb ID for content_type lookup.
+    type_by_id: dict[str, str] = {}
     for e in entries:
         tmdb_id = str(e.get("theMovieDB", "") or "").strip()
+        if tmdb_id:
+            type_by_id[tmdb_id] = e.get("content_type", "film")
         if tmdb_id and tmdb_id not in cache and tmdb_id not in seen:
-            to_fetch.append(tmdb_id)
+            is_tv = e.get("content_type", "film").upper() == "TV"
+            to_fetch.append((tmdb_id, is_tv))
             seen.add(tmdb_id)
 
     if not to_fetch:
@@ -204,12 +217,14 @@ def fetch_metadata_batch(
 
     fetched = 0
     errors = 0
-    for i, tmdb_id in enumerate(to_fetch):
-        result = _fetch_tmdb_details(tmdb_id)
+    for i, (tmdb_id, is_tv) in enumerate(to_fetch):
+        result = _fetch_tmdb_details(tmdb_id, is_tv=is_tv)
         if result is not None:
             cache[tmdb_id] = result
             fetched += 1
         else:
+            # Cache the miss so we don't re-fetch on every run.
+            cache[tmdb_id] = {"_not_found": True}
             errors += 1
 
         if (i + 1) % progress_every == 0:
