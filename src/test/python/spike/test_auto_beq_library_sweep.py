@@ -40,6 +40,7 @@ from spike._auto_beq_helpers import (
     _extract_lfe_wav,
     _have_tool,
     load_and_smooth,
+    load_and_smooth_chunked,
 )
 from spike.sweep_discover import bucket_rating, load_catalogue_by_digest, load_config
 
@@ -308,3 +309,153 @@ def test_library_sweep_parallel():
         f"{n_workers} workers)"
     )
     OllamaAdvisor.print_host_stats()
+
+
+# ---------------------------------------------------------------------------
+# E18: Chunked percentile sweep — compare chunked spectrum extraction
+# against the Welch baseline across the full library.
+# ---------------------------------------------------------------------------
+
+_CHUNKED_REPORT_PATH = Path(os.environ.get(
+    "AUTO_BEQ_CHUNKED_REPORT", ".pytest_cache/auto_beq_sweep_chunked.csv",
+))
+
+
+def _run_one_film_chunked(
+    film: SweepFilm, chunk_s: float,
+) -> tuple[SweepFilm, MatchMetrics, MatchMetrics, str, float] | None:
+    """Run both Welch and chunked pipelines for one film.
+
+    Returns (film, baseline_metrics, chunked_metrics, advisor_name, chunk_s)
+    or None if skipped.
+    """
+    import numpy as np
+
+    from model.auto_beq import propose_filters_from_measured
+
+    if not film.path.exists():
+        log.warning("media file not accessible: %s", film.path)
+        return None
+
+    fs = 1000
+    freqs = DEFAULT_GRID
+    wav_path = _extract_lfe_wav(film.path, target_fs=fs)
+
+    # Baseline: whole-film Welch.
+    baseline_curve = load_and_smooth(wav_path, fs=fs, freqs=freqs)
+    # Chunked: STFT peak per chunk → P90.
+    chunked_curve = load_and_smooth_chunked(
+        wav_path, fs=fs, freqs=freqs, chunk_s=chunk_s,
+    )
+
+    # Log delta at 10 Hz and 20 Hz.
+    idx_10 = int(np.argmin(np.abs(freqs - 10.0)))
+    idx_20 = int(np.argmin(np.abs(freqs - 20.0)))
+    log.info(
+        "%s chunk_s=%.0f | 10Hz delta=%+.1f dB, 20Hz delta=%+.1f dB",
+        film.title, chunk_s,
+        chunked_curve[idx_10] - baseline_curve[idx_10],
+        chunked_curve[idx_20] - baseline_curve[idx_20],
+    )
+
+    advisor = get_advisor()
+    metadata = MediaMetadata(title=film.title, year=film.year)
+
+    ground_resp = evaluate_filter_chain(
+        film.catalogue_entry["filters"], freqs, fs=fs,
+    )
+
+    # Baseline metrics.
+    baseline_proposed = propose_filters_from_measured(
+        baseline_curve, freqs, fs=fs, advisor=advisor, metadata=metadata,
+    )
+    baseline_metrics = compute_match_metrics(
+        -ground_resp, baseline_proposed, freqs, fs=fs,
+    )
+
+    # Chunked metrics.
+    chunked_proposed = propose_filters_from_measured(
+        chunked_curve, freqs, fs=fs, advisor=advisor, metadata=metadata,
+    )
+    chunked_metrics = compute_match_metrics(
+        -ground_resp, chunked_proposed, freqs, fs=fs,
+    )
+
+    log.info(
+        "%s chunk_s=%.0f | baseline=%s(%.2f/%.2f) chunked=%s(%.2f/%.2f)",
+        film.title, chunk_s,
+        baseline_metrics.verdict, baseline_metrics.mean_abs_err_db,
+        baseline_metrics.max_abs_err_db,
+        chunked_metrics.verdict, chunked_metrics.mean_abs_err_db,
+        chunked_metrics.max_abs_err_db,
+    )
+    return film, baseline_metrics, chunked_metrics, advisor.name, chunk_s
+
+
+def _append_chunked_report(
+    film: SweepFilm,
+    advisor_name: str,
+    baseline_metrics: MatchMetrics,
+    chunked_metrics: MatchMetrics,
+    chunk_s: float,
+    catalogue_filter_count: int,
+) -> None:
+    is_new = not _CHUNKED_REPORT_PATH.exists()
+    _CHUNKED_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _CHUNKED_REPORT_PATH.open("a", newline="") as f:
+        w = csv.writer(f)
+        if is_new:
+            w.writerow([
+                "title", "year", "chunk_s", "advisor",
+                "baseline_verdict", "baseline_mean", "baseline_max",
+                "chunked_verdict", "chunked_mean", "chunked_max",
+                "mean_delta", "catalogue_filters", "summed_gain",
+            ])
+        mean_delta = chunked_metrics.mean_abs_err_db - baseline_metrics.mean_abs_err_db
+        w.writerow([
+            film.title,
+            film.year if film.year is not None else "",
+            f"{chunk_s:.0f}",
+            advisor_name,
+            baseline_metrics.verdict,
+            f"{baseline_metrics.mean_abs_err_db:.2f}",
+            f"{baseline_metrics.max_abs_err_db:.2f}",
+            chunked_metrics.verdict,
+            f"{chunked_metrics.mean_abs_err_db:.2f}",
+            f"{chunked_metrics.max_abs_err_db:.2f}",
+            f"{mean_delta:+.2f}",
+            catalogue_filter_count,
+            f"{_summed_low_shelf_gain(film.catalogue_entry):.1f}",
+        ])
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
+@pytest.mark.parametrize("chunk_s", [30.0, 60.0, 90.0])
+@pytest.mark.parametrize(
+    "film",
+    _SWEEP_FILMS,
+    ids=[_sweep_film_id(f) for f in _SWEEP_FILMS] or None,
+)
+def test_library_sweep_chunked(film: SweepFilm, chunk_s: float, caplog):
+    """E18: chunked-percentile sweep — compare vs Welch baseline per film.
+
+    No assertions. Both Welch and chunked results are logged side-by-side
+    and appended to the chunked sweep CSV report. Run with:
+
+        SPIKE_TEST=...::test_library_sweep_chunked bash scripts/run-spike-tests.sh
+    """
+    caplog.set_level(logging.INFO, logger="auto_beq_sweep")
+    result = _run_one_film_chunked(film, chunk_s)
+    if result is None:
+        pytest.skip(f"media file not accessible: {film.path}")
+    film, baseline_metrics, chunked_metrics, advisor_name, chunk_s = result
+    _append_chunked_report(
+        film=film,
+        advisor_name=advisor_name,
+        baseline_metrics=baseline_metrics,
+        chunked_metrics=chunked_metrics,
+        chunk_s=chunk_s,
+        catalogue_filter_count=len(film.catalogue_entry["filters"]),
+    )
