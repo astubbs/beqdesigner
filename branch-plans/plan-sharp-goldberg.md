@@ -30,20 +30,18 @@ technical spike for the magic-wand vision (Tier 1 of feats/magic-wand).
 
 ## Next steps (prioritised)
 
-### ML model path (E18-E19) — active
-1. ✅ Design document: `docs/design/auto_beq_ml_experiments.md`
-2. **In progress**: Build `auto_beq_nn.py` + `TrainedModelAdvisor` (E18 code path)
-   - Synthetic training data from catalogue filter chains
-   - XGBoost multi-output regressor
-   - 60-dim feature vector: 9 audio (Option A) + 51 metadata
-   - `MediaMetadata` extended with studio/genres/source/mixer fields
-   - New tests: `src/test/python/spike/test_auto_beq_nn.py`
-3. ✅ TMDb metadata fetcher — batch fetch studio/mixer, local user cache
-4. Run ablation: audio-only vs audio+metadata (XGBoost feature importances)
-5. Escalate to 1D CNN on RTX 3090
-6. E19 hybrid (model warm-start + scipy) — after E18 validated
-7. **TODO:** Persist TMDb-enriched catalogue into git DB catalogue output
-   (include metadata alongside filter params in produced profiles)
+### ML model path (E25-E31) — active
+1. ✅ E25: XGBoost trained model + TMDb metadata enrichment
+2. ✅ E25a-e: Studio vocab/grouping, ablation, full-catalogue validation
+3. ✅ E27: Late fusion (best combined approach: 4.03 dB at α=0.7)
+4. ✅ E28: CNN dual-branch (overfits on synthetic, needs real audio)
+5. ✅ E29: BEQ author feature (metadata-only hits 3.09 dB — best ever)
+6. ✅ E30: Expanded validation (20 titles, Mindhunter 0.83 dB)
+7. ✅ WAV integrity system (found+deleted 5 corrupt WAVs, atomic writes)
+8. ✅ Standalone LFE extraction script (portable cache, NAS-ready)
+9. **In progress**: E31 — extract 50 titles from library, validate
+10. **TODO:** Persist TMDb-enriched catalogue into git DB catalogue output
+11. **TODO:** Train on real audio features (not synthetic)
 
 ### Immediate (pre-ML)
 1. Run library sweep against user's library.

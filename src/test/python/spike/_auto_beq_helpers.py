@@ -196,6 +196,12 @@ def extract_lfe_wav(
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_path = cache_dir / f"{stem}.lfe-{target_fs}hz{trim_suffix}.wav"
 
+    # Clean up orphaned .tmp from interrupted previous extractions.
+    tmp_orphan = cache_path.with_suffix(".tmp")
+    if tmp_orphan.exists():
+        log.info("cleaning up interrupted extraction: %s", tmp_orphan)
+        tmp_orphan.unlink()
+
     if cache_path.exists() and cache_path.stat().st_size > 0:
         log.info("cached LFE WAV found, skipping extraction: %s (%d bytes)",
                  cache_path, cache_path.stat().st_size)
@@ -228,6 +234,10 @@ def extract_lfe_wav(
     log.info("extracting %s -> %s (fs=%d)",
              "LFE" if has_lfe else "mono-mix", cache_path, target_fs)
     log.info("this may take 1-3 minutes for a feature-length movie...")
+
+    # Atomic write: extract to .tmp, rename only on success.
+    # Prevents corrupt WAVs from interrupted extractions polluting the cache.
+    tmp_path = cache_path.with_suffix(".tmp")
     start = time.time()
     ff_args: list[str] = [
         "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "warning",
@@ -241,13 +251,23 @@ def extract_lfe_wav(
         "-af", af_filter,
         "-ar", str(target_fs),
         "-ac", "1",
-        str(cache_path),
+        str(tmp_path),
     ]
     proc = subprocess.run(ff_args, capture_output=True, text=True)
     elapsed = time.time() - start
     if proc.returncode != 0:
+        tmp_path.unlink(missing_ok=True)
         log.error("ffmpeg stderr:\n%s", proc.stderr)
         raise RuntimeError(f"ffmpeg failed (exit {proc.returncode})")
+
+    # Validate before committing to cache.
+    from model.wav_integrity import validate_wav_header
+    ok, reason = validate_wav_header(tmp_path)
+    if not ok:
+        tmp_path.unlink(missing_ok=True)
+        raise RuntimeError(f"extracted WAV failed integrity check: {reason}")
+
+    tmp_path.rename(cache_path)
     size = cache_path.stat().st_size
     log.info("extracted %d bytes in %.1fs -> %s", size, elapsed, cache_path)
     return cache_path

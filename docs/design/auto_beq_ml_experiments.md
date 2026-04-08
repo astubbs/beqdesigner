@@ -309,9 +309,32 @@ and new users get the metadata for free without hitting TMDb independently.
 
 ## Infrastructure
 
-- `xgboost`, `scikit-learn` (joblib): dev deps — `poetry add --group dev xgboost scikit-learn`
-- `torch`: add when CNN stage begins
-- `cinemagoer`: IMDB metadata batch lookup — `poetry add --group dev cinemagoer` (if TMDb insufficient)
+### Dependencies
+- `xgboost`, `scikit-learn` (joblib): dev deps
+- `torch`: installed for CNN experiments (E28)
+- TMDb API: studio/mixer metadata (key in `model/postbuilder.py`)
+
+### WAV audio cache
+
+**Portable cache** (`scripts/extract_lfe.py`):
+- Structure: `wav-root/Letter/Title (Year) [tmdb-NNN]/lfe-1000hz.wav`
+- Keyed by TMDb ID — required in filename, no fuzzy matching
+- Standalone script: scp to NAS, run locally, no project deps
+- Atomic writes: `.tmp` → rename on success, prevents corruption
+- Sample rate 1000 Hz hardcoded (coupled to BEQ analysis algorithm)
+
+**Legacy cache** (`_auto_beq_helpers.py`):
+- Structure: mirrors source media path under `~/Downloads/beqdesigner/audio-cache/`
+- Now has atomic writes + integrity validation on extract
+
+**Integrity** (`model/wav_integrity.py`, `scripts/verify_wav_cache.py`):
+- Header check: declared frames vs actual file size (detects truncation)
+- Duration check: WAV duration vs catalogue runtime (detects samples/trailers)
+- Validated on every load (load_and_smooth, load_and_smooth_chunked)
+- `--verify` flag on extract_lfe.py, standalone verify_wav_cache.py script
+- Found and deleted 5 corrupt WAVs from existing cache (0x7FFFFFFF header bug)
+
+### Compute
 - RTX 3090 machine: SSH access, CUDA 11+, pytorch with CUDA support
 - Full catalogue audio corpus (when available)
 
