@@ -1,4 +1,4 @@
-"""Real-audio training spike for Experiment 18.
+"""Real-audio training spike for ML experiments (E25-E30).
 
 Trains on the full BEQ catalogue (synthetic features) with TMDb metadata,
 then validates on titles where we have real extracted LFE WAV files. This
@@ -10,9 +10,7 @@ Skipped if no WAV files are available in the audio cache.
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from pathlib import Path
 
 import numpy as np
@@ -31,58 +29,12 @@ from model.auto_beq_nn import (
     train_late_fusion,
     train_xgboost,
 )
-from model.signal import read_wav_data
 
-from spike._auto_beq_helpers import audio_cache_dir
+from spike._auto_beq_helpers import discover_wav_catalogue_pairs
 
 log = logging.getLogger("auto_beq_nn_real")
 
 _DEFAULT_FS = 1000
-_TMDB_RE = re.compile(r"\[tmdb-(\d+)\]")
-
-
-# ---------------------------------------------------------------------------
-# Discovery: find WAV files and match to catalogue
-# ---------------------------------------------------------------------------
-
-
-def _discover_wav_catalogue_pairs() -> list[dict]:
-    """Find all cached LFE WAVs that match a BEQ catalogue entry.
-
-    Returns list of dicts with keys: wav_path, catalogue_entry, tmdb_id.
-    """
-    try:
-        cache_root = audio_cache_dir()
-    except RuntimeError:
-        return []
-
-    # Load full catalogue.
-    from model.auto_beq_catalogue import _fetch_or_cache
-    catalogue = _fetch_or_cache()
-
-    # Index by TMDb ID.
-    by_tmdb: dict[str, list[dict]] = {}
-    for e in catalogue:
-        tid = str(e.get("theMovieDB", "")).strip()
-        if tid:
-            by_tmdb.setdefault(tid, []).append(e)
-
-    # Scan for WAV files.
-    wav_files = sorted(cache_root.rglob("*.lfe-1000hz.wav"))
-    pairs = []
-    for wav in wav_files:
-        m = _TMDB_RE.search(str(wav))
-        if not m:
-            continue
-        tid = m.group(1)
-        entries = by_tmdb.get(tid)
-        if entries:
-            pairs.append({
-                "wav_path": wav,
-                "catalogue_entry": entries[0],
-                "tmdb_id": tid,
-            })
-    return pairs
 
 
 def _extract_real_audio_features(wav_path: Path, freqs_hz: np.ndarray, fs: int):
@@ -90,11 +42,12 @@ def _extract_real_audio_features(wav_path: Path, freqs_hz: np.ndarray, fs: int):
 
     Same pipeline as test_auto_beq.py::test_real_media_roundtrip.
     """
+    from model.signal import Signal, read_wav_data
+
     samples, read_fs, _ = read_wav_data(str(wav_path))
     assert read_fs == fs, f"expected fs={fs}, got {read_fs}"
     mono = samples[:, 0] if samples.ndim > 1 else samples
 
-    from model.signal import Signal
     sig = Signal(str(wav_path.stem), mono, fs=fs)
     measured_freqs, measured_db = sig.avg_spectrum()
 
@@ -126,7 +79,7 @@ def _synthetic_features(entry: dict, freqs_hz: np.ndarray):
 # ---------------------------------------------------------------------------
 
 
-_PAIRS = _discover_wav_catalogue_pairs()
+_PAIRS = discover_wav_catalogue_pairs()
 
 
 @pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")

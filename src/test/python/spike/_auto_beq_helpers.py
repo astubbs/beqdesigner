@@ -451,12 +451,19 @@ def load_measured(
 # ---------------------------------------------------------------------------
 
 _TMDB_RE = __import__("re").compile(r"\[tmdb-(\d+)\]")
+_TITLE_YEAR_RE = __import__("re").compile(r"(?:^|/)([^/]+?)\s*\((\d{4})\)")
 
 
 def discover_wav_catalogue_pairs() -> list[dict]:
     """Find all cached LFE WAVs that match a BEQ catalogue entry.
 
+    Matching strategy (in order):
+    1. TMDb ID from ``[tmdb-NNN]`` in filename/path
+    2. Title + year from ``Title (YYYY)`` in parent directory name or filename
+
     Returns list of dicts with keys: wav_path, catalogue_entry, tmdb_id.
+    Deduplicates by title so multiple episodes of the same show produce
+    one pair (first WAV found).
     """
     try:
         cache_root = audio_cache_dir()
@@ -466,26 +473,67 @@ def discover_wav_catalogue_pairs() -> list[dict]:
     from model.auto_beq_catalogue import _fetch_or_cache
     catalogue = _fetch_or_cache()
 
+    # Index by TMDb ID.
     by_tmdb: dict[str, list[dict]] = {}
     for e in catalogue:
         tid = str(e.get("theMovieDB", "")).strip()
         if tid:
             by_tmdb.setdefault(tid, []).append(e)
 
+    # Index by normalised title + year for fallback matching.
+    by_title_year: dict[tuple[str, str], list[dict]] = {}
+    for e in catalogue:
+        key = (e.get("title", "").lower().strip(), str(e.get("year", "")))
+        by_title_year.setdefault(key, []).append(e)
+
     wav_files = sorted(cache_root.rglob("*.lfe-1000hz.wav"))
     pairs = []
+    seen_titles: set[str] = set()
+
     for wav in wav_files:
-        m = _TMDB_RE.search(str(wav))
-        if not m:
+        path_str = str(wav)
+        entry = None
+        tmdb_id = ""
+
+        # Strategy 1: TMDb ID in path.
+        m = _TMDB_RE.search(path_str)
+        if m:
+            tid = m.group(1)
+            entries = by_tmdb.get(tid)
+            if entries:
+                entry = entries[0]
+                tmdb_id = tid
+
+        # Strategy 2: Title + year from directory or filename.
+        if entry is None:
+            for source in (wav.parent.name, wav.stem):
+                m2 = _TITLE_YEAR_RE.search(source)
+                if m2:
+                    title_key = m2.group(1).strip().lower()
+                    year_key = m2.group(2)
+                    entries = by_title_year.get((title_key, year_key))
+                    if entries:
+                        entry = entries[0]
+                        tmdb_id = str(entry.get("theMovieDB", ""))
+                        break
+
+        if entry is None:
             continue
-        tid = m.group(1)
-        entries = by_tmdb.get(tid)
-        if entries:
-            pairs.append({
-                "wav_path": wav,
-                "catalogue_entry": entries[0],
-                "tmdb_id": tid,
-            })
+
+        # Deduplicate by title (multiple episodes → one pair).
+        title = entry.get("title", "")
+        if title in seen_titles:
+            continue
+        seen_titles.add(title)
+
+        pairs.append({
+            "wav_path": wav,
+            "catalogue_entry": entry,
+            "tmdb_id": tmdb_id,
+        })
+
+    log.info("discovered %d WAV-catalogue pairs (%d unique titles)",
+             len(pairs), len(seen_titles))
     return pairs
 
 
