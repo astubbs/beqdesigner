@@ -708,3 +708,32 @@ def test_chunked_nn_training(tmp_path):
         ) / len(val_entries)
 
         print(f"  {name:35s} {real_loss:10.2f} dB {synth_loss:10.2f} dB {real_loss - synth_loss:+6.2f} dB  ({extract_time:.0f}s)")
+
+    # Also test late fusion + blended (the combination of our two best approaches).
+    log.info("extracting blended features for late fusion test...")
+    blended_pairs = _extract_features_parallel(
+        _PAIRS, DEFAULT_GRID, _DEFAULT_FS, strategy=STRATEGY_BLENDED_07,
+    )
+    X_val_blended, Y_val_b, val_entries_b = [], [], []
+    for p, features in blended_pairs:
+        entry = p["catalogue_entry"]
+        if not entry.get("filters"):
+            continue
+        metadata = enrich_media_metadata(entry, tmdb_cache)
+        X_val_blended.append(build_feature_vector(features, metadata))
+        Y_val_b.append(catalogue_entry_to_labels(entry))
+        val_entries_b.append(entry)
+    if val_entries_b:
+        X_val_blended = np.array(X_val_blended, dtype=np.float32)
+
+        log.info("training late fusion (α=0.3) for blended comparison...")
+        model_late = train_late_fusion(X_train, Y_train, alpha=0.3)
+
+        Y_pred = model_late.predict(X_val_blended)
+        late_blended_loss = sum(
+            downstream_loss(labels_to_filters(Y_pred[i]), e["filters"], DEFAULT_GRID)
+            for i, e in enumerate(val_entries_b)
+        ) / len(val_entries_b)
+
+        print(f"\n  {'Late fusion α=0.3 + Blended':35s} {late_blended_loss:10.2f} dB")
+        print(f"  (compare: late fusion α=0.3 Welch-only was 3.27 dB on 171 titles)")
