@@ -180,12 +180,26 @@ def _country_onehot(language: str | None) -> np.ndarray:
     return v
 
 
+def _hash_embed(name: str | None, dims: int) -> np.ndarray:
+    """Feature-hash a categorical string into a fixed-dim vector.
+
+    For tree-based models (XGBoost), this is equivalent to a sparse one-hot
+    with hash collisions. For CNN stage, this gets replaced by nn.Embedding.
+    All zeros when name is None (unknown).
+    """
+    v = np.zeros(dims, dtype=np.float32)
+    if name:
+        idx = hash(name.lower().strip()) % dims
+        v[idx] = 1.0
+    return v
+
+
 def build_metadata_features(metadata: MediaMetadata) -> np.ndarray:
     """Encode MediaMetadata into a 51-dim float32 vector.
 
-    Studio and mixer embedding slots are zero-padded until external lookup
-    (TMDb/IMDB) is implemented. When those fields are populated they slot
-    directly into the existing vector positions — no architecture change needed.
+    When ``metadata.studio`` or ``metadata.supervising_mixer`` are populated
+    (via TMDb lookup), their slots are feature-hashed into their respective
+    embedding dimensions. When absent (None), slots are all zeros.
     """
     parts: list[np.ndarray] = []
 
@@ -200,14 +214,15 @@ def build_metadata_features(metadata: MediaMetadata) -> np.ndarray:
     # Source one-hot (Tier 1)
     parts.append(_source_onehot(getattr(metadata, "source", None)))
 
-    # Studio embedding stub — 16 zeros until TMDb lookup (Tier 1)
-    # When metadata.studio is populated, replace with a looked-up embedding vector.
-    # For XGBoost stage: studio identity would be encoded by the caller as a
-    # pre-computed lookup; for now all-zeros means "unknown studio".
-    parts.append(np.zeros(N_STUDIO_EMBED, dtype=np.float32))
+    # Studio — feature-hashed into 16 dims (Tier 1, most predictive field).
+    # Populated from TMDb via auto_beq_metadata.enrich_media_metadata().
+    studio = getattr(metadata, "studio", None)
+    parts.append(_hash_embed(studio, N_STUDIO_EMBED))
 
-    # Mixer embedding stub — 8 zeros until IMDB lookup (Tier 2)
-    parts.append(np.zeros(N_MIXER_EMBED, dtype=np.float32))
+    # Mixer — feature-hashed into 8 dims (Tier 2).
+    # "Sound Re-Recording Mixer" from TMDb credits.
+    mixer = getattr(metadata, "supervising_mixer", None)
+    parts.append(_hash_embed(mixer, N_MIXER_EMBED))
 
     # Genre multi-hot (Tier 2)
     genres = getattr(metadata, "genres", ())
