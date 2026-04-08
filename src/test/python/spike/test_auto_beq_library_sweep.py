@@ -1036,3 +1036,127 @@ def test_library_sweep_e21(film: SweepFilm, config: FeedbackConfig, caplog):
         config=config,
         catalogue_filter_count=len(film.catalogue_entry["filters"]),
     )
+
+
+# ---------------------------------------------------------------------------
+# Cross-advisor comparison — run all viable advisors across the library.
+#
+# This is the "run everything and compare" test. Each advisor represents
+# a different experiment lineage:
+#   - heuristic:       E3 (rolloff-depth classifier)
+#   - measurement:     E17d/E19/E20 (current default, deficit formula)
+#   - topology:        E17c (gentle/moderate/cliff classification)
+#   - slope_extension: E14 (deficit + slope projection)
+#
+# Ollama and Mock are excluded (network-dependent / fixture-dependent).
+# All advisors use the current default extraction (blend-a0.7-P90).
+# ---------------------------------------------------------------------------
+
+_ADVISOR_NAMES = ["heuristic", "measurement", "topology", "slope_extension"]
+
+_ADVISOR_REPORT_PATH = Path(os.environ.get(
+    "AUTO_BEQ_ADVISOR_REPORT", ".pytest_cache/auto_beq_sweep_advisors.csv",
+))
+
+
+def _run_one_film_advisor(
+    film: SweepFilm, advisor_name: str,
+) -> tuple[SweepFilm, MatchMetrics, str] | None:
+    """Run one advisor for one film."""
+    from model.auto_beq import propose_filters_from_measured
+
+    if not film.path.exists():
+        return None
+
+    fs = 1000
+    freqs = DEFAULT_GRID
+    wav_path = _extract_lfe_wav(film.path, target_fs=fs)
+    measured = load_measured(wav_path, fs=fs, freqs=freqs)
+
+    try:
+        advisor = get_advisor(advisor_name)
+    except Exception as exc:
+        log.warning("advisor %s failed to construct: %s", advisor_name, exc)
+        return None
+
+    metadata = MediaMetadata(title=film.title, year=film.year)
+
+    try:
+        proposed = propose_filters_from_measured(
+            measured, freqs, fs=fs, advisor=advisor, metadata=metadata,
+        )
+    except Exception as exc:
+        log.warning("%s advisor failed on %s: %s", advisor_name, film.title, exc)
+        return None
+
+    ground_resp = evaluate_filter_chain(
+        film.catalogue_entry["filters"], freqs, fs=fs,
+    )
+    metrics = compute_match_metrics(-ground_resp, proposed, freqs, fs=fs)
+
+    log.info(
+        "%s [%s]: verdict=%s mean=%.2f max=%.2f",
+        film.title, advisor_name, metrics.verdict,
+        metrics.mean_abs_err_db, metrics.max_abs_err_db,
+    )
+    return film, metrics, advisor_name
+
+
+def _append_advisor_report(
+    film: SweepFilm,
+    advisor_name: str,
+    metrics: MatchMetrics,
+    catalogue_filter_count: int,
+) -> None:
+    is_new = not _ADVISOR_REPORT_PATH.exists()
+    _ADVISOR_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with _ADVISOR_REPORT_PATH.open("a", newline="") as f:
+        w = csv.writer(f)
+        if is_new:
+            w.writerow([
+                "title", "year", "advisor", "verdict",
+                "mean_err_db", "max_err_db",
+                "catalogue_filters", "summed_gain",
+            ])
+        w.writerow([
+            film.title,
+            film.year if film.year is not None else "",
+            advisor_name,
+            metrics.verdict,
+            f"{metrics.mean_abs_err_db:.2f}",
+            f"{metrics.max_abs_err_db:.2f}",
+            catalogue_filter_count,
+            f"{_summed_low_shelf_gain(film.catalogue_entry):.1f}",
+        ])
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
+@pytest.mark.parametrize("advisor_name", _ADVISOR_NAMES)
+@pytest.mark.parametrize(
+    "film",
+    _SWEEP_FILMS,
+    ids=[_sweep_film_id(f) for f in _SWEEP_FILMS] or None,
+)
+def test_library_sweep_advisors(film: SweepFilm, advisor_name: str, caplog):
+    """Cross-advisor comparison: run all advisors across the library.
+
+    No assertions. Produces a unified CSV for comparative analysis.
+    Run with:
+        SPIKE_TEST=...::test_library_sweep_advisors bash scripts/run-spike-tests.sh
+
+    Or run all sweep tests together:
+        SPIKE_TEST=src/test/python/spike/test_auto_beq_library_sweep.py bash scripts/run-spike-tests.sh
+    """
+    caplog.set_level(logging.INFO, logger="auto_beq_sweep")
+    result = _run_one_film_advisor(film, advisor_name)
+    if result is None:
+        pytest.skip(f"media file not accessible or advisor failed: {film.path}")
+    film, metrics, advisor_name = result
+    _append_advisor_report(
+        film=film,
+        advisor_name=advisor_name,
+        metrics=metrics,
+        catalogue_filter_count=len(film.catalogue_entry["filters"]),
+    )

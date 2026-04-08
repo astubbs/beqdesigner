@@ -185,6 +185,29 @@ def load_all_results(csv_dir: Path) -> list[ExperimentResult]:
         config_col="config",
     ))
 
+    # Cross-advisor comparison
+    advisor_path = csv_dir / "auto_beq_sweep_advisors.csv"
+    if advisor_path.exists():
+        by_advisor: dict[str, ExperimentResult] = {}
+        with advisor_path.open() as f:
+            for row in csv.DictReader(f):
+                adv = row["advisor"]
+                if adv not in by_advisor:
+                    by_advisor[adv] = ExperimentResult(
+                        experiment="advisor", config=adv,
+                    )
+                r = by_advisor[adv]
+                v = row["verdict"]
+                r.verdicts[v] = r.verdicts.get(v, 0) + 1
+                r.baseline_verdicts[v] = r.baseline_verdicts.get(v, 0) + 1
+                r.count += 1
+                r.per_title[row["title"]] = {
+                    "verdict": v,
+                    "mean": float(row["mean_err_db"]),
+                    "max": float(row["max_err_db"]),
+                }
+        results.extend(by_advisor.values())
+
     return results
 
 
