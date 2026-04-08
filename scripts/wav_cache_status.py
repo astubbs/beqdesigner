@@ -31,6 +31,16 @@ from spike._auto_beq_helpers import discover_wav_catalogue_pairs, wav_cache_dir
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Summarise WAV cache training set status.")
+    parser.add_argument("cache_dir", nargs="?", type=Path, default=None,
+                        help="WAV cache directory. Defaults to BEQ_WAV_CACHE env var or settings.json.")
+    args = parser.parse_args()
+
+    if args.cache_dir:
+        # Override the env var so discover_wav_catalogue_pairs() uses it too.
+        import os
+        os.environ["BEQ_WAV_CACHE"] = str(args.cache_dir.resolve())
     cache = wav_cache_dir()
     print(f"WAV cache: {cache}")
     print()
