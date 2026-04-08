@@ -536,12 +536,17 @@ def discover_wav_catalogue_pairs() -> list[dict]:
     from model.auto_beq_catalogue import _fetch_or_cache
     catalogue = _fetch_or_cache()
 
-    # Index by tmdb ID (primary).
+    # Index by tmdb ID (primary) and title+year (fallback for tvdb/imdb).
     by_tmdb: dict[str, list[dict]] = {}
+    by_title_year: dict[tuple[str, str], list[dict]] = {}
     for e in catalogue:
         tid = str(e.get("theMovieDB", "")).strip()
         if tid:
             by_tmdb.setdefault(tid, []).append(e)
+        key = (e.get("title", "").lower().strip(), str(e.get("year", "")))
+        by_title_year.setdefault(key, []).append(e)
+
+    _title_year_re = __import__("re").compile(r"^(.+?)\s*\((\d{4})\)")
 
     wav_files = sorted(cache_root.rglob("*.lfe-1000hz.wav"))
     pairs = []
@@ -553,16 +558,30 @@ def discover_wav_catalogue_pairs() -> list[dict]:
 
         id_type, id_value = m.group(1), m.group(2)
 
-        # Look up catalogue entry. For tmdb IDs, direct lookup.
-        # For tvdb/imdb, we'd need a reverse index — for now, store
-        # the ID as-is and let downstream handle catalogue matching.
-        entries = by_tmdb.get(id_value) if id_type == "tmdb" else None
-        entry = entries[0] if entries else {"_id_type": id_type, "_id_value": id_value}
+        # Look up catalogue entry: tmdb direct, tvdb/imdb via title+year.
+        entry = None
+        if id_type == "tmdb":
+            entries = by_tmdb.get(id_value)
+            if entries:
+                entry = entries[0]
+        if entry is None:
+            # Fallback: title+year from directory name.
+            for dirname in (wav.parent.name, wav.parent.parent.name, wav.parent.parent.parent.name):
+                m2 = _title_year_re.match(dirname)
+                if m2:
+                    key = (m2.group(1).strip().lower(), m2.group(2))
+                    entries = by_title_year.get(key)
+                    if entries:
+                        entry = entries[0]
+                        break
+
+        if entry is None:
+            continue  # no catalogue match — skip
 
         pairs.append({
             "wav_path": wav,
             "catalogue_entry": entry,
-            "tmdb_id": id_value if id_type == "tmdb" else "",
+            "tmdb_id": str(entry.get("theMovieDB", "")),
             "media_id": f"{id_type}-{id_value}",
         })
 
