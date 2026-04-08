@@ -13,7 +13,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 export PATH="/opt/homebrew/bin:$PATH"
-export PYTHONPATH="./src/main/python"
+export PYTHONPATH="./src/main/python:./src/test/python"
 export QT_QPA_PLATFORM="offscreen"
 export AUTO_BEQ_ADVISOR="${AUTO_BEQ_ADVISOR:-measurement}"
 
@@ -23,5 +23,9 @@ if [[ "${SPIKE_VERBOSE:-0}" == "1" ]]; then
   verbose_flag="-s"
 fi
 
+LOG_FILE=".pytest_cache/spike_tests.log"
+mkdir -p .pytest_cache
+
 echo "[run-spike-tests] advisor=$AUTO_BEQ_ADVISOR target=$target"
-poetry run pytest "$target" -v $verbose_flag
+echo "[run-spike-tests] log file: $LOG_FILE"
+poetry run pytest "$target" -v $verbose_flag 2>&1 | tee "$LOG_FILE"

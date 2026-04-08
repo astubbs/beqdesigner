@@ -15,6 +15,33 @@ alongside code — these are gold for resuming work across sessions.
 
 Current branch plan: [`branch-plans/plan-sharp-goldberg.md`](branch-plans/plan-sharp-goldberg.md)
 
+## Ollama model usage
+
+**Use small fast models for integration tests, proper models for
+accuracy tests.**
+
+- **Integration tests** (testing plumbing works, multi-host round-
+  robin, JSON parsing, etc): use `llama3.2:latest` or any small
+  model that responds in <5s. Set `OLLAMA_MODEL=llama3.2:latest`.
+- **Accuracy/profile-quality tests** (sweep, real-media roundtrip):
+  use `qwen:14b` or larger. Set `OLLAMA_MODEL=qwen:14b`.
+- **MeasurementAdvisor** (default advisor, no LLM): no Ollama needed.
+  Set `AUTO_BEQ_ADVISOR=measurement`.
+
+When running accuracy tests, process **one media file at a time**
+so the user can see results incrementally: `AUTO_BEQ_SWEEP_LIMIT=1`.
+
+## Scripts
+
+| Script | Purpose | Executable |
+|---|---|---|
+| `scripts/run-sweep-discover.sh` | Discover media + match catalogue | yes |
+| `scripts/run-sweep-tests.sh` | Run auto-BEQ pipeline on discovered media | yes |
+| `scripts/run-spike-tests.sh` | Full spike test suite (unit + integration) | yes |
+| `scripts/spike_auto_beq.py` | Interactive single-title CLI playground | no (run via poetry) |
+
+All `.sh` scripts must have the executable flag set (`chmod +x`).
+
 ## Running spike tests
 
 **Always use `bash scripts/run-spike-tests.sh` to run spike tests.** Never

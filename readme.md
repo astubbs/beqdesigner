@@ -153,38 +153,64 @@ their `.ui` sources.
   git SHA into this file at build time; running from source without it falls
   back to `0.0.0-alpha.1`.
 
-## Active spike: auto-BEQ "magic wand" (feats/magic-wand branch)
+## Auto-BEQ spike (research)
 
-This branch contains an **in-flight research spike** exploring whether
-BEQ filter chains can be proposed automatically from a measured LFE
-curve — "take the human out of BEQ-making". It is NOT production code
-and will be cleaned up/removed before any merge to main. The spike
-lives alongside the regular codebase in its own subtree
-(`src/main/python/model/auto_beq*.py`,
-`src/test/python/spike/`, `scripts/spike_auto_beq.py`,
-`scripts/run-spike-tests.sh`).
+Research spike exploring automated BEQ filter generation from measured
+LFE audio — "take the human out of BEQ-making".
 
-Read in this order if you're picking up the spike mid-flight:
+### Quick start: generate profiles for your media
 
-1. **Vision** — [`docs/design/auto_beq.md`](docs/design/auto_beq.md):
-   what the feature is for, the three-tier roadmap (magic-wand button
-   → ezBEQ send → HA zero-touch), pipeline architecture, validation
-   methodology, known limitations.
-2. **Plan for this iteration** —
-   [`docs/design/auto_beq_plan.md`](docs/design/auto_beq_plan.md):
-   the LLM-assisted Advisor abstraction currently being built
-   (heuristic / mock / Ollama backends, library-sweep benchmark).
-3. **Running log** —
-   [`docs/design/auto_beq_experiments.md`](docs/design/auto_beq_experiments.md):
-   append-only record of every experiment tried, what worked, what
-   failed, and why. Source of truth for "did we already try X".
-
-Run the spike test suite:
+**Prerequisites:** Python 3.13, Poetry, ffmpeg + ffprobe on PATH.
 
 ```sh
-AUTO_BEQ_ADVISOR=mock bash scripts/run-spike-tests.sh     # deterministic
-AUTO_BEQ_ADVISOR=ollama bash scripts/run-spike-tests.sh   # needs ollama serve
+# 1. Install deps
+poetry install
+
+# 2. Configure your audio cache dir + library roots
+#    Edit ~/.config/beqdesigner/settings.json:
+#    {
+#      "audio_cache_dir": "~/Downloads/beqdesigner/audio-cache",
+#      "library_roots": ["/path/to/your/Movies", "/path/to/your/TV"]
+#    }
+
+# 3. Discover your media and match against the BEQ catalogue
+bash scripts/run-sweep-discover.sh
+
+# 4. Run the auto-BEQ pipeline across discovered media
+#    (extracts LFE audio, proposes filters, grades against catalogue)
+bash scripts/run-sweep-tests.sh
 ```
+
+Step 3 walks your library roots, finds media files, matches titles
+against the BEQ catalogue (~14,700 entries), and saves the results.
+Step 4 runs the auto-generation algorithm on each matched file and
+compares the output to the catalogue's expert-authored filters.
+
+### Scripts
+
+| Script | Purpose |
+|---|---|
+| `scripts/run-sweep-discover.sh` | Discover media in your library, match against BEQ catalogue. Interactive: prompts for library paths on first run, remembers them after. |
+| `scripts/run-sweep-tests.sh` | Run the auto-BEQ pipeline on discovered media. Wraps pytest with correct env. Supports `AUTO_BEQ_SWEEP_LIMIT=N` to cap how many files to process. |
+| `scripts/run-spike-tests.sh` | Run the full spike test suite (unit + integration + sweep). Use `SPIKE_TEST=...` to select specific tests, `SPIKE_VERBOSE=1` for full output. |
+| `scripts/spike_auto_beq.py` | Interactive CLI playground for testing auto-BEQ on a single title. |
+
+### Environment variables
+
+| Var | Purpose | Default |
+|---|---|---|
+| `AUTO_BEQ_ADVISOR` | Which advisor: `measurement` (signal-only), `ollama` (LLM), `mock`, `heuristic` | `measurement` |
+| `AUTO_BEQ_SWEEP_LIMIT` | Max media files to process in sweep | `10` |
+| `OLLAMA_MODEL` | Ollama model name | `qwen:14b` |
+| `SPIKE_TEST` | Pytest selector for run-spike-tests.sh | all spike tests |
+| `SPIKE_VERBOSE` | `1` to show stdout from tests | `0` |
+
+### Design docs
+
+- [`docs/design/auto_beq.md`](docs/design/auto_beq.md) — vision + architecture
+- [`docs/design/auto_beq_experiments.md`](docs/design/auto_beq_experiments.md) — experiment log (E1–E17)
+- [`docs/design/auto_beq_library_sweep_plan.md`](docs/design/auto_beq_library_sweep_plan.md) — sweep quick-start
+- [`branch-plans/plan-sharp-goldberg.md`](branch-plans/plan-sharp-goldberg.md) — current branch plan
 
 ## Further reading
 

@@ -267,7 +267,7 @@ def test_library_sweep_parallel():
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    from model.auto_beq_advisor import _load_ollama_hosts
+    from model.auto_beq_advisor import OllamaAdvisor, _load_ollama_hosts
 
     if not _SWEEP_FILMS:
         pytest.skip("no films to test")
@@ -307,3 +307,4 @@ def test_library_sweep_parallel():
         f"{skipped} skipped (out of {total + skipped} media files, "
         f"{n_workers} workers)"
     )
+    OllamaAdvisor.print_host_stats()

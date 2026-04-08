@@ -28,10 +28,13 @@ Selection is via ``get_advisor(name)`` with env-var fallback
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import os
 import re
+import threading
+import time as _time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -48,9 +51,14 @@ MAX_GAIN_DB_RANGE = (0.0, 35.0)
 KNEE_HZ_RANGE = (5.0, 80.0)
 
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
-DEFAULT_OLLAMA_MODEL = "llama3.1:8b"
-OLLAMA_TIMEOUT_SECONDS = 60
+DEFAULT_OLLAMA_MODEL = "qwen:14b"
+OLLAMA_TIMEOUT_SECONDS = 120
 MAX_REFINE_PASSES = 3
+
+# Shared round-robin counter for multi-host load balancing.
+_OLLAMA_CALL_COUNTER = itertools.count()
+_OLLAMA_HOST_STATS_LOCK = threading.Lock()
+_OLLAMA_HOST_STATS: dict[str, dict] = {}  # host -> {calls, total_s, errors}
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _MOCK_RESPONSES_DIR = _REPO_ROOT / "src" / "test" / "resources" / "auto_beq" / "advisor_responses"
@@ -1029,16 +1037,46 @@ class OllamaAdvisor:
             self.hosts = _load_ollama_hosts()
         self.model = model or os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
         self.timeout_s = timeout_s
-        self._call_count = 0
         if len(self.hosts) > 1:
             log.info("Ollama load balancing across %d hosts: %s",
                      len(self.hosts), ", ".join(self.hosts))
 
     def _next_host(self) -> str:
-        """Round-robin host selection."""
-        host = self.hosts[self._call_count % len(self.hosts)]
-        self._call_count += 1
-        return host
+        """Round-robin host selection, shared across all instances."""
+        idx = next(_OLLAMA_CALL_COUNTER)
+        return self.hosts[idx % len(self.hosts)]
+
+    @staticmethod
+    def _record_host_stat(host: str, elapsed_s: float, error: bool = False) -> None:
+        with _OLLAMA_HOST_STATS_LOCK:
+            if host not in _OLLAMA_HOST_STATS:
+                _OLLAMA_HOST_STATS[host] = {"calls": 0, "total_s": 0.0, "errors": 0}
+            stats = _OLLAMA_HOST_STATS[host]
+            stats["calls"] += 1
+            stats["total_s"] += elapsed_s
+            if error:
+                stats["errors"] += 1
+
+    @staticmethod
+    def print_host_stats() -> None:
+        """Print per-host timing summary. Call after a batch of advise() calls."""
+        with _OLLAMA_HOST_STATS_LOCK:
+            if not _OLLAMA_HOST_STATS:
+                return
+            print("\n── Ollama host stats ──")
+            for host, s in sorted(_OLLAMA_HOST_STATS.items()):
+                avg = s["total_s"] / s["calls"] if s["calls"] else 0
+                print(
+                    f"  {host}: {s['calls']} calls, "
+                    f"{s['total_s']:.1f}s total, "
+                    f"{avg:.1f}s avg, "
+                    f"{s['errors']} errors"
+                )
+
+    @staticmethod
+    def reset_host_stats() -> None:
+        with _OLLAMA_HOST_STATS_LOCK:
+            _OLLAMA_HOST_STATS.clear()
 
     def _call_json(self, system_prompt: str, user_prompt: str) -> dict:
         """Single Ollama call returning parsed JSON.
@@ -1064,9 +1102,12 @@ class OllamaAdvisor:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
+            t0 = _time.monotonic()
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
                     body = json.loads(resp.read().decode("utf-8"))
+                elapsed = _time.monotonic() - t0
+                self._record_host_stat(host, elapsed)
                 raw_text = body.get("response", "").strip()
                 if not raw_text:
                     raise RuntimeError(f"Ollama returned empty response from {host}")
@@ -1077,7 +1118,9 @@ class OllamaAdvisor:
                         f"Ollama returned non-JSON from {host}: {raw_text[:200]!r}"
                     ) from exc
             except (urllib.error.URLError, TimeoutError, RuntimeError) as exc:
-                log.warning("Ollama host %s failed: %s", host, exc)
+                elapsed = _time.monotonic() - t0
+                self._record_host_stat(host, elapsed, error=True)
+                log.warning("Ollama host %s failed (%.1fs): %s", host, elapsed, exc)
                 last_exc = exc
                 continue
         raise RuntimeError(
