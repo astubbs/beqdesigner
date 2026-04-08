@@ -92,52 +92,59 @@ _CATALOGUE_URL = (
 )
 
 
+def _human_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(n) < 1024:
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
 def fetch_catalogue(beq_dir: Path) -> list[dict]:
     """Fetch the BEQ catalogue, caching at {beq_dir}/beq_catalogue.json.
 
-    Does an HTTP HEAD to check Last-Modified against local file mtime.
-    Only re-downloads if the remote is newer. Uses stdlib only.
+    Uses If-Modified-Since on the GET request. If the server returns 304
+    Not Modified, we skip the download. Uses stdlib only.
     """
     import email.utils
+    import urllib.error
     import urllib.request
 
     cache_path = beq_dir / "beq_catalogue.json"
 
-    # Check if remote is newer than our cache.
-    need_download = True
+    # Build request with If-Modified-Since if we have a cached copy.
+    req = urllib.request.Request(_CATALOGUE_URL)
     if cache_path.exists():
         local_mtime = cache_path.stat().st_mtime
-        try:
-            req = urllib.request.Request(_CATALOGUE_URL, method="HEAD")
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                remote_modified = resp.headers.get("Last-Modified")
-                if remote_modified:
-                    remote_ts = email.utils.parsedate_to_datetime(remote_modified).timestamp()
-                    if remote_ts <= local_mtime:
-                        need_download = False
-                        log.info("catalogue cache is up to date: %s", cache_path)
-        except Exception as exc:
-            log.warning("HEAD check failed (%s) — using cached catalogue", exc)
-            need_download = False
+        mtime_str = email.utils.formatdate(local_mtime, usegmt=True)
+        req.add_header("If-Modified-Since", mtime_str)
+        log.info("checking catalogue freshness (cached: %s)...", mtime_str)
 
-    if need_download:
-        log.info("downloading BEQ catalogue from %s ...", _CATALOGUE_URL)
-        try:
-            req = urllib.request.Request(_CATALOGUE_URL)
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data = resp.read()
-            tmp = cache_path.with_suffix(".tmp")
-            tmp.write_bytes(data)
-            tmp.rename(cache_path)
-            log.info("catalogue saved: %s (%d bytes)", cache_path, len(data))
-        except Exception as exc:
-            if cache_path.exists():
-                log.warning("download failed (%s) — using stale cache", exc)
-            else:
-                raise RuntimeError(f"cannot fetch catalogue and no cache exists: {exc}")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = resp.read()
+        tmp = cache_path.with_suffix(".tmp")
+        tmp.write_bytes(data)
+        tmp.rename(cache_path)
+        log.info("catalogue updated: %s (%s, %d entries)",
+                 cache_path, _human_size(len(data)),
+                 data.count(b'"title"'))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 304:
+            log.info("catalogue is up to date (304 Not Modified)")
+        elif cache_path.exists():
+            log.warning("catalogue fetch failed (HTTP %d) — using cached copy", exc.code)
+        else:
+            raise RuntimeError(f"cannot fetch catalogue (HTTP {exc.code}) and no cache exists")
+    except Exception as exc:
+        if cache_path.exists():
+            log.warning("catalogue fetch failed (%s) — using cached copy", exc)
+        else:
+            raise RuntimeError(f"cannot fetch catalogue and no cache exists: {exc}")
 
     catalogue = json.loads(cache_path.read_text())
-    log.info("catalogue loaded: %d entries", len(catalogue))
+    size = cache_path.stat().st_size
+    log.info("catalogue loaded: %d entries (%s)", len(catalogue), _human_size(size))
     return catalogue
 
 
