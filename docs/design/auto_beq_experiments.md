@@ -1903,3 +1903,26 @@ transfers better when evaluated on a diverse, representative set.
 
 Feature importances unchanged: authors dominate (aron7awol 13.9%,
 mobe1969 6.6%), audio bins and year/source in the middle tier.
+
+**E27 late fusion on 111 titles**:
+
+| Strategy | Real audio | Synthetic | Gap |
+|---|---|---|---|
+| E25 early fusion | 4.07 dB | 2.88 dB | +1.19 dB |
+| **E27 late fusion (α=0.3)** | **3.36 dB** | **2.67 dB** | **+0.69 dB** |
+| E27 late fusion (α=0.5) | 4.12 dB | 2.68 dB | +1.44 dB |
+| E27 late fusion (α=0.7) | 4.55 dB | 2.87 dB | +1.68 dB |
+
+**3.36 dB on 111 real-audio titles** — best combined model result ever.
+α=0.3 (metadata-heavy) is optimal, consistent with E29's finding that
+author makes metadata the dominant signal.
+
+**Progression summary**:
+
+| Milestone | Real audio | Titles | Key change |
+|---|---|---|---|
+| E25b (hash encoding) | 7.43 dB | 7 | Initial baseline |
+| E25c (vocab encoding) | 5.82 dB | 14 | Studio one-hot |
+| E27 (late fusion, no author) | 4.03 dB | 14 | Separate audio+meta models |
+| E30 (expanded set) | 6.42 dB | 20 | TV content harder |
+| **E31 (NAS extraction)** | **3.36 dB** | **111** | **5× more data + late fusion** |
