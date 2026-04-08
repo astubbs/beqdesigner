@@ -1872,3 +1872,8 @@ Feature importances: audio 13.3% vs metadata 86.7%. Authors still dominate
    distinctive sound design. The model may be leveraging the combination
    of author (mobe1969) + studio (Netflix) + year (2017) + genre (drama)
    to closely match the catalogue entry.
+
+**E28 CNN with 20 titles**: 6.17 dB real, 2.65 dB synthetic (gap +3.53).
+CNN continues to achieve the best synthetic loss but still overfits vs
+XGBoost on real audio. The dual-branch architecture doesn't compensate
+for the synthetic-to-real distribution mismatch.
