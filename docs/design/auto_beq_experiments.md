@@ -1009,6 +1009,73 @@ Zero degradations, one grade improvement.
 
 ---
 
+### E21 - Self-feedback loop (iterative gain adjustment)
+
+**Hypothesis**: The single-pass pipeline faithfully reproduces a wrong
+target if the advisor's gain is off. An iterative loop that evaluates
+corrected-curve flatness and adjusts gain should improve results.
+
+**Method**: `propose_filters_with_feedback()` wraps
+`propose_filters_from_measured()` in a loop. After each pass, it
+computes `corrected = measured + chain_response` and checks flatness
+in-band. If residual deficit or overshoot exceeds the threshold, it
+adjusts gain by half the error via `GainAdjustedAdvisor` and re-runs.
+
+**Configs tested** (155 tests, 5 configs × 31 films):
+
+| Config | P/M/F | Imp | Deg | Avg Δ |
+|---|---|---|---|---|
+| single-pass (baseline) | 10/5/16 | 0 | 0 | +0.00 |
+| iter=3, thr=3 | 8/3/20 | 3 | 8 | +0.94 |
+| iter=3, thr=2 | 8/3/20 | 3 | 8 | +0.94 |
+| iter=3, thr=1 | 8/3/20 | 3 | 8 | +0.94 |
+| iter=5, thr=2 | 8/3/20 | 3 | 8 | +0.94 |
+
+**Key findings**:
+
+1. **All feedback configs produce identical results** regardless of
+   threshold (1/2/3 dB) or iteration count (3/5). This means the
+   loop converges in exactly one adjustment — the first iteration's
+   gain offset is the same regardless of threshold, and subsequent
+   iterations don't improve further.
+
+2. **The feedback loop is net negative**: 3 improvements but 8
+   degradations. It improves under-corrected titles (Garfield, two
+   Scavengers Reign episodes) by boosting gain, but ALSO boosts
+   gain on already-correct titles, pushing them into over-correction
+   (Pantheon +4.59 dB, Flow +5.45 dB, X-Men +3.92 dB).
+
+3. **Root cause**: the flatness metric evaluates "how flat is the
+   corrected curve" — but the BEQ goal is NOT a flat curve. It's to
+   match the catalogue's intended correction, which often leaves
+   deliberate rolloff below 10 Hz. The feedback loop sees residual
+   rolloff at 5-10 Hz as "under-correction" and boosts gain, but
+   that rolloff was CORRECT. The metric is fundamentally wrong for
+   BEQ.
+
+4. **The existing single-pass pipeline is better because** the
+   advisor's gain estimate (deficit at 10 Hz) is inherently
+   conservative — it doesn't try to flatten below 10 Hz. The
+   feedback loop breaks this conservatism.
+
+**Verdict**: E21 feedback loop is **not adopted**. The flatness
+metric needs to evaluate against the INTENDED correction shape
+(which we don't have at inference time), not against "perfectly
+flat." Without ground truth, the loop has no way to know when to
+stop adding gain.
+
+**Possible future direction**: if we ever have a "correction shape
+template" (e.g., typical BEQ rolloff profile learned from catalogue
+entries), the feedback loop could evaluate residual against that
+template instead of flat. But that's essentially supervised learning,
+which is a different approach.
+
+**Kept**: `GainAdjustedAdvisor` and `propose_filters_with_feedback()`
+remain in the codebase for future experimentation.
+`test_library_sweep_e21` in sweep file.
+
+---
+
 ## Next to try
 
 - [ ] **E12: Self-feedback loop**. Generate initial chain, compute
