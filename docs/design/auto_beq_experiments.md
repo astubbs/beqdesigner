@@ -706,6 +706,193 @@ failover) but qwen:14b is too slow for batch sweeps. Need either:
 for accuracy testing (one at a time), or (b) use MeasurementAdvisor
 (no LLM) for sweeps and Ollama only for specific titles.
 
+## 2026-04-08: Spectrum extraction experiments
+
+### E18 - Chunked percentile spectrum (STFT peak per chunk → P90)
+
+**Hypothesis**: Chunking the audio and taking the 90th percentile of
+STFT peak levels across chunks produces a more robust rolloff ceiling
+estimate than whole-film Welch average — resistant to outlier scenes
+(E15c: EoT showcase scenes inflate 10 Hz by 16-19 dB) and sparse bass
+content in short TV episodes.
+
+**Method**: Split LFE WAV into fixed-length chunks (30/60/90 s
+sub-experiment). For each chunk, compute STFT and take max amplitude
+at each frequency across all time frames (peak curve). Stack all chunk
+peaks into a matrix and take the 90th percentile across chunks at each
+frequency bin. Then normalise + smooth identically to `load_and_smooth()`.
+Feed resulting curve into `propose_filters_from_measured()` with
+MeasurementAdvisor (same pipeline as E17d baseline).
+
+**Implementation**: `load_and_smooth_chunked()` in `_auto_beq_helpers.py`,
+`test_chunked_percentile_roundtrip()` in `test_auto_beq.py`.
+
+**Results (2 titles from media manifest, MeasurementAdvisor)**:
+
+| Title | chunk_s | 10Hz delta | 20Hz delta | Mean err | Max err | Verdict |
+|---|---|---|---|---|---|---|
+| Mad Max: Fury Road | 30 | +8.9 dB | +0.2 dB | 8.80 | 20.21 | FAIL |
+| Mad Max: Fury Road | 60 | +7.9 dB | -0.1 dB | 8.68 | 20.11 | FAIL |
+| Mad Max: Fury Road | 90 | +7.4 dB | +0.1 dB | 8.53 | 19.91 | FAIL |
+| John Wick | 30 | +6.0 dB | +5.3 dB | 3.39 | 7.99 | FAIL |
+| John Wick | 60 | +4.9 dB | +5.0 dB | 2.32 | 6.57 | MARGINAL |
+| John Wick | 90 | +5.0 dB | +4.2 dB | 1.92 | 6.91 | MARGINAL |
+
+(Delta = chunked curve minus Welch baseline at that frequency, positive
+means chunked sees MORE energy.)
+
+**E17d baseline comparison** (same titles, MeasurementAdvisor):
+- Mad Max: FAIL in both (multi-knee catalogue, not a spectrum issue)
+- John Wick: E17d was FAIL with Welch; E18 improves to MARGINAL at
+  60s/90s chunks
+
+**Key observations**:
+1. **Chunking consistently lifts 10 Hz by 5-9 dB** vs Welch average.
+   The STFT peak captures transient bass events that Welch averages out.
+   This is expected — peak ≠ average.
+2. **20 Hz delta is small for Mad Max** (~0 dB) but **large for John
+   Wick** (+4-5 dB). JW has sparser bass content; chunked peak captures
+   its intermittent bass events that Welch dilutes.
+3. **Mad Max still fails** because the failure mode is catalogue shape
+   (multi-knee at 10+18 Hz), not spectrum extraction. The chunked curve
+   is "better" (higher 10 Hz) but MeasurementAdvisor over-estimates gain
+   from the larger deficit, leading to worse overshooting.
+4. **Chunk length sensitivity**: 90s slightly better than 30s for both
+   titles (less noisy per-chunk estimates). Sweet spot appears to be
+   60-90s.
+5. **The chunked curve fundamentally changes the MeasurementAdvisor's
+   input**: it sees a larger deficit (because peak > average), which
+   pushes gain higher. For titles where the catalogue wants aggressive
+   correction (like JW: +13 dB), this helps. For titles where the
+   catalogue is moderate, it overshoots.
+
+**Lesson**: chunked-percentile spectrum extraction IS a different
+signal than Welch average — it captures transient bass events that
+averaging dilutes. But feeding this higher-energy curve into the
+existing MeasurementAdvisor produces mixed results because the advisor's
+deficit formula was tuned to Welch input. The chunked curve needs
+either (a) a recalibrated gain formula, or (b) a different advisor
+that accounts for the peak-vs-average gap.
+
+**Kept**: yes, as a selectable spectrum extraction path. Run with
+`test_chunked_percentile_roundtrip` in `test_auto_beq.py`.
+
+#### E18 library sweep (11 titles, 54 tests, MeasurementAdvisor)
+
+Extended E18 to the full library sweep via
+`test_library_sweep_chunked` in `test_auto_beq_library_sweep.py`.
+Both Welch baseline and chunked curves tested side-by-side.
+
+**Verdict summary by chunk length**:
+
+| chunk_s | Baseline P/M/F | Chunked P/M/F | Improved | Degraded | Same |
+|---------|----------------|---------------|----------|----------|------|
+| 30s     | 3/4/10         | 3/1/13        | 0        | 3        | 14   |
+| 60s     | 3/4/11         | 5/1/12        | 2        | 1        | 15   |
+| 90s     | 4/4/11         | 4/4/11        | 2        | 2        | 15   |
+
+**Mean delta (chunked − baseline) across all titles**:
+- 30s: +0.74 dB (worse on average)
+- 60s: +0.25 dB (slightly worse)
+- 90s: +0.20 dB (neutral)
+
+**Per-title highlights** (best chunk_s per title):
+
+| Title | Best chunk_s | Baseline avg | Chunked avg | Delta | Verdict change |
+|---|---|---|---|---|---|
+| Blue Eye Samurai | 90s | 3.8 dB (0P) | 3.7 dB (1P) | -0.2 dB | MARGINAL→PASS (2 eps) |
+| Splinter Cell | 90s | 4.5 dB (0P) | 3.8 dB (0P) | -0.7 dB | FAIL→MARGINAL (1 ep) |
+| Flow | 60s | 5.0 dB (0P) | 4.2 dB (0P) | -0.8 dB | no grade change |
+| KPop Demon Hunters | 90s | 6.9 dB (0P) | 6.6 dB (0P) | -0.3 dB | no grade change |
+| Pantheon | 90s | 0.9 dB (3P) | 1.2 dB (3P) | +0.3 dB | stays PASS |
+| X-Men '97 | 60s | 1.1 dB (1P) | 2.7 dB (1P) | +1.6 dB | MARGINAL→FAIL (1 ep) |
+| Elio | 30s | 6.0 dB (0P) | 7.1 dB (0P) | +1.1 dB | no change (low-gain catalogue) |
+
+**Key findings from sweep**:
+1. **60s chunks are the sweet spot**: only chunk length with net
+   positive grade changes (2 improved, 1 degraded). 30s is too noisy;
+   90s trades sensitivity for stability.
+2. **Blue Eye Samurai benefits most**: 2 episodes flip from MARGINAL
+   to PASS at 60s chunks. BES has sparse, punchy bass events that
+   Welch dilutes — exactly the failure mode chunking was designed for.
+3. **Titles with sustained bass (Pantheon, X-Men '97) slightly degrade**:
+   chunked peak > Welch average → advisor over-estimates gain →
+   overshooting. The +1.6 dB regression on X-Men '97 shows the
+   MeasurementAdvisor's deficit formula is calibrated to Welch input.
+4. **Low-gain catalogues (Elio: 5 dB summed gain) always degrade**:
+   chunked curve sees "more" bass → larger deficit → advisor applies
+   too much gain. The opposite of what a modest catalogue entry needs.
+5. **Net effect is neutral to slightly negative** on the current
+   advisor. The chunked curve IS a better signal but the
+   MeasurementAdvisor wasn't tuned for it. A recalibrated formula
+   (or a separate advisor) is needed to exploit the chunked signal.
+
+**Lesson**: chunked-percentile extraction reveals real signal
+improvements (Blue Eye Samurai PASS flips prove it), but feeding the
+higher-energy curve into an advisor tuned for Welch averages produces
+mixed results. Next step: either recalibrate MeasurementAdvisor's
+deficit formula for chunked input, or build a ChunkedAdvisor that
+accounts for the peak-vs-average gap.
+
+### E18b - Strategy sweep: percentile and blending variations
+
+**Hypothesis**: The E18 sweep showed chunked-P90 is too aggressive for
+some content. Two mitigation strategies: (a) lower percentile (P75/P80)
+to reduce peak bias, (b) blend Welch + chunked in dB domain.
+
+**Method**: 6 strategies tested at 60s chunk length across 31 film/episode
+tests (11 unique titles):
+- `chunked-P75`, `chunked-P80`, `chunked-P90` (percentile sweep)
+- `blend-a0.3-P90`, `blend-a0.5-P90`, `blend-a0.7-P90` (alpha=Welch weight)
+
+**Implementation**: `load_and_smooth_blended()` in `_auto_beq_helpers.py`,
+`test_library_sweep_strategies` in `test_auto_beq_library_sweep.py`.
+
+**Results (186 tests, MeasurementAdvisor)**:
+
+| Strategy | Baseline P/M/F | Test P/M/F | Improved | Degraded | Avg Δ |
+|---|---|---|---|---|---|
+| chunked-P75 | 7/6/18 | 7/1/23 | 1 | 5 | +0.39 dB |
+| chunked-P80 | 7/6/18 | 7/2/22 | 1 | 5 | +0.37 dB |
+| chunked-P90 | 7/6/18 | 9/5/17 | 5 | 2 | -0.10 dB |
+| blend-a0.3 | 7/6/18 | 9/4/18 | 3 | 1 | -0.06 dB |
+| blend-a0.5 | 7/6/18 | 8/4/19 | 2 | 2 | -0.03 dB |
+| **blend-a0.7** | **7/6/18** | **9/4/18** | **2** | **0** | **+0.01 dB** |
+
+**Key findings**:
+
+1. **`blend-a0.7-P90` is the safest strategy**: 2 grade improvements
+   (Blue Eye Samurai MARGINAL→PASS, Scavengers Reign MARGINAL→PASS),
+   **zero degradations**. Average delta is +0.01 dB — essentially
+   neutral on error while strictly improving grades.
+
+2. **Lower percentiles (P75/P80) backfire**: they produce *more*
+   degradations (5 each) than P90 (2). The lower percentile apparently
+   pushes the curve into a range that confuses the MeasurementAdvisor's
+   deficit formula. The P90 peak provides more signal, not less.
+
+3. **`chunked-P90` has the most raw improvements (5)** but also 2
+   degradations. The risk-reward is +3 net grade changes, best on that
+   metric but with X-Men '97 MARGINAL→FAIL as collateral.
+
+4. **`blend-a0.3-P90` is the aggressive blend**: 3 improvements, 1
+   degradation (X-Men '97). Adds Super Mario Bros FAIL→MARGINAL flip
+   vs blend-a0.7. More power but not zero-risk.
+
+5. **Blending works because it preserves Welch's calibrated level**
+   while incorporating the chunked curve's transient-event sensitivity.
+   Higher alpha (more Welch) = safer. α=0.7 is the conservative
+   sweet spot; α=0.3 is the aggressive option.
+
+**Recommendation**: default to `blend-a0.7-P90` for production —
+strictly non-regressing with meaningful improvements. Offer
+`blend-a0.3-P90` as a "more aggressive" option for power users.
+
+**Kept**: `load_and_smooth_blended()` added to `_auto_beq_helpers.py`.
+Strategy sweep CSV: `.pytest_cache/auto_beq_sweep_strategies.csv`.
+
+---
+
 ## Next to try
 
 - [ ] **E12: Self-feedback loop**. Generate initial chain, compute

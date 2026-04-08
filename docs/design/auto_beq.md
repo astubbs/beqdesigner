@@ -55,7 +55,9 @@ flowchart LR
     A[Media file<br/>.mkv / .wav] -->|ffmpeg extract<br/>pan=c{LFE}, ar=1000| B[mono WAV @ 1 kHz]
     B -->|read_wav_data<br/>soundfile| C[numpy samples]
     C -->|Signal + avg_spectrum<br/>scipy.welch| D[magnitude curve<br/>dB vs Hz]
+    C -->|load_and_smooth_chunked<br/>STFT peak per chunk → P90| D2[chunked-percentile curve<br/>dB vs Hz]
     D -->|interp + anchor normalise| E[target curve on log grid]
+    D2 -->|interp + anchor normalise| E
     E -->|propose_filters| F[filter chain<br/>list of dicts]
     F -->|CompleteFilter.get_sos| G[DSP / ezBEQ]
 
@@ -230,7 +232,10 @@ total shape.
    real media without GUI bootstrapping.
 2. **Measurement pipeline**: `Signal.avg_spectrum()` (Welch average)
    interpolated to a log grid, normalised to the 80 Hz anchor, and
-   smoothed to 1/6-octave.
+   smoothed to 1/6-octave. An alternative chunked-percentile path
+   (`load_and_smooth_chunked()`) splits audio into fixed-length chunks,
+   computes STFT peak per chunk, and takes the 90th percentile across
+   chunks — more robust for short content with sparse bass (E18).
 3. **Dynamic-range sanity check**: the measured curve must have
    ≥5 dB of in-band range, catching "extracted silence" or
    "wrong channel" bugs.
@@ -287,7 +292,9 @@ iteration:
   streaming-only content support.
 - **Single extraction.** Welch averages 100+ minutes into one curve,
   so loud scenes dominate. Catalogue experts often work from
-  specific reference scenes instead.
+  specific reference scenes instead. E18 adds a chunked-percentile
+  alternative (`load_and_smooth_chunked`) that mitigates this by
+  taking STFT peaks per chunk and aggregating via 90th percentile.
 
 ---
 

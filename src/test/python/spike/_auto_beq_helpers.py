@@ -14,11 +14,93 @@ import os
 import shutil
 import subprocess
 import time
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 import numpy as np
 
 log = logging.getLogger("auto_beq_spike")
+
+
+# ---------------------------------------------------------------------------
+# Extraction strategy — selects how the measured LFE curve is computed.
+# ---------------------------------------------------------------------------
+
+class ExtractionMethod(Enum):
+    """How raw LFE samples are turned into a magnitude-vs-frequency curve."""
+    WELCH = "welch"
+    CHUNKED = "chunked"
+    BLENDED = "blended"
+
+
+@dataclass(frozen=True)
+class ExtractionStrategy:
+    """Full specification of an extraction approach.
+
+    Attributes
+    ----------
+    method : ExtractionMethod
+        Core algorithm (Welch average, chunked-percentile, or blended).
+    chunk_s : float
+        Chunk length in seconds (ignored for WELCH).
+    percentile : float
+        Percentile across chunks (ignored for WELCH).
+    alpha : float
+        Welch weight in blended mode (0=pure chunked, 1=pure Welch).
+        Ignored for non-BLENDED methods.
+    """
+    method: ExtractionMethod
+    chunk_s: float = 60.0
+    percentile: float = 90.0
+    alpha: float = 0.7
+
+    @property
+    def label(self) -> str:
+        if self.method == ExtractionMethod.WELCH:
+            return "welch"
+        if self.method == ExtractionMethod.BLENDED:
+            return f"blend-a{self.alpha:.1f}-P{self.percentile:.0f}-{self.chunk_s:.0f}s"
+        return f"chunked-P{self.percentile:.0f}-{self.chunk_s:.0f}s"
+
+    def __str__(self) -> str:
+        return self.label
+
+
+# Pre-defined strategies.
+STRATEGY_WELCH = ExtractionStrategy(ExtractionMethod.WELCH)
+STRATEGY_BLENDED_07 = ExtractionStrategy(
+    ExtractionMethod.BLENDED, chunk_s=60.0, percentile=90.0, alpha=0.7,
+)
+STRATEGY_BLENDED_03 = ExtractionStrategy(
+    ExtractionMethod.BLENDED, chunk_s=60.0, percentile=90.0, alpha=0.3,
+)
+STRATEGY_CHUNKED_P90 = ExtractionStrategy(
+    ExtractionMethod.CHUNKED, chunk_s=60.0, percentile=90.0,
+)
+
+# Default for production use — E18b showed blend-a0.7-P90 is the safest
+# (2 grade improvements, 0 degradations across 31 test cases).
+DEFAULT_STRATEGY = STRATEGY_BLENDED_07
+
+
+def _strategy_from_env() -> ExtractionStrategy:
+    """Read extraction strategy from AUTO_BEQ_EXTRACTION env var.
+
+    Values: "welch", "blended" (default), "blended-0.3", "chunked".
+    Falls back to DEFAULT_STRATEGY.
+    """
+    raw = os.environ.get("AUTO_BEQ_EXTRACTION", "").strip().lower()
+    if not raw or raw == "blended":
+        return DEFAULT_STRATEGY
+    if raw == "welch":
+        return STRATEGY_WELCH
+    if raw == "blended-0.3":
+        return STRATEGY_BLENDED_03
+    if raw == "chunked":
+        return STRATEGY_CHUNKED_P90
+    log.warning("unknown AUTO_BEQ_EXTRACTION=%r, using default", raw)
+    return DEFAULT_STRATEGY
 
 def audio_cache_dir() -> Path:
     """Return the audio cache directory, creating it if needed.
@@ -201,8 +283,172 @@ def load_and_smooth(wav_path: Path, fs: int, freqs: np.ndarray) -> np.ndarray:
     return measured_on_grid
 
 
+def load_and_smooth_chunked(
+    wav_path: Path,
+    fs: int,
+    freqs: np.ndarray,
+    chunk_s: float = 60.0,
+    percentile: float = 90.0,
+) -> np.ndarray:
+    """Chunked-percentile spectrum: chunks → STFT peak per chunk → Nth-percentile.
+
+    Pipeline: WAV → split into fixed-length chunks → STFT peak curve
+    per chunk → stack [n_chunks × n_freq_bins] → Nth-percentile across
+    chunks → interp to log grid → normalise to 80 Hz anchor → 1/6-oct
+    smooth → re-anchor.
+
+    The percentile across chunk peaks is a more robust rolloff ceiling
+    estimate than a whole-film Welch average, especially for short
+    content where a single outlier scene can dominate the whole-film
+    statistic (see E15c: EoT showcase scenes inflate 10 Hz by 16-19 dB).
+
+    Parameters
+    ----------
+    wav_path : Path
+        Extracted LFE WAV (mono, resampled to *fs*).
+    fs : int
+        Sample rate of the WAV (typically 1000 Hz).
+    freqs : np.ndarray
+        Target log-frequency grid (e.g. ``DEFAULT_GRID``).
+    chunk_s : float
+        Chunk length in seconds (sub-experiment: 30/60/90).
+    percentile : float
+        Percentile across chunks (default 90th).
+    """
+    import scipy.signal as ss
+
+    from model.auto_beq import smooth_fractional_octave
+    from model.signal import read_wav_data
+
+    samples, read_fs, _ = read_wav_data(str(wav_path))
+    assert read_fs == fs, f"expected fs={fs}, got {read_fs}"
+    mono = samples[:, 0] if samples.ndim > 1 else samples
+    duration_s = len(mono) / fs
+    log.info(
+        "loaded %d samples (%.1f s = %.1f min) for chunked analysis",
+        len(mono), duration_s, duration_s / 60,
+    )
+
+    chunk_samples = int(chunk_s * fs)
+    min_chunk_samples = chunk_samples // 2  # drop trailing runt < 50% full
+    chunks = [
+        mono[i : i + chunk_samples]
+        for i in range(0, len(mono), chunk_samples)
+        if len(mono[i : i + chunk_samples]) >= min_chunk_samples
+    ]
+    log.info(
+        "chunked into %d chunks of %.0f s (fs=%d, percentile=%.0f)",
+        len(chunks), chunk_s, fs, percentile,
+    )
+
+    # STFT parameters: nperseg=1024 at 1000 Hz → ~1 Hz resolution,
+    # consistent with the Welch resolution in load_and_smooth().
+    nperseg = min(1024, chunk_samples)
+    noverlap = nperseg // 2
+
+    chunk_peaks = []
+    for idx, chunk in enumerate(chunks):
+        f_stft, _t, Zxx = ss.stft(
+            chunk, fs=fs, nperseg=nperseg, noverlap=noverlap, window="hann",
+        )
+        # Peak amplitude at each frequency across all time frames in this chunk.
+        peak_mag = np.max(np.abs(Zxx), axis=-1)
+        peak_db = 20.0 * np.log10(peak_mag + 1e-12)
+        # Interpolate to our standard log grid immediately.
+        peak_on_grid = np.interp(freqs, f_stft, peak_db)
+        chunk_peaks.append(peak_on_grid)
+        if idx < 3 or idx == len(chunks) - 1:
+            log.debug(
+                "chunk %d/%d: peak 20Hz=%.1f 80Hz=%.1f dB",
+                idx + 1, len(chunks),
+                peak_on_grid[int(np.argmin(np.abs(freqs - 20.0)))],
+                peak_on_grid[int(np.argmin(np.abs(freqs - 80.0)))],
+            )
+
+    # [n_chunks × n_freq_bins] → percentile across chunks at each freq bin.
+    matrix = np.stack(chunk_peaks, axis=0)
+    aggregated = np.percentile(matrix, percentile, axis=0)
+
+    # Same normalisation pipeline as load_and_smooth().
+    anchor_idx = int(np.argmin(np.abs(freqs - 80.0)))
+    aggregated -= aggregated[anchor_idx]
+    aggregated = smooth_fractional_octave(aggregated, freqs, octaves=1.0 / 6.0)
+    aggregated -= aggregated[anchor_idx]
+    log.info(
+        "chunked-percentile curve: 10Hz=%.1f 20Hz=%.1f 80Hz=%.1f dB",
+        aggregated[0],
+        aggregated[int(np.argmin(np.abs(freqs - 20.0)))],
+        aggregated[anchor_idx],
+    )
+    return aggregated
+
+
+def load_and_smooth_blended(
+    wav_path: Path,
+    fs: int,
+    freqs: np.ndarray,
+    chunk_s: float = 60.0,
+    percentile: float = 90.0,
+    alpha: float = 0.5,
+) -> np.ndarray:
+    """Blend Welch average and chunked-percentile curves.
+
+    ``alpha`` controls the blend: 0.0 = pure chunked, 1.0 = pure Welch.
+    Default 0.5 = equal weight.
+
+    Both curves are computed independently (each normalised to 80 Hz
+    anchor and 1/6-oct smoothed), then blended in dB domain.
+    """
+    welch = load_and_smooth(wav_path, fs, freqs)
+    chunked = load_and_smooth_chunked(
+        wav_path, fs, freqs, chunk_s=chunk_s, percentile=percentile,
+    )
+    blended = alpha * welch + (1.0 - alpha) * chunked
+    log.info(
+        "blended curve (alpha=%.2f): 10Hz=%.1f 20Hz=%.1f 80Hz=%.1f dB",
+        alpha, blended[0],
+        blended[int(np.argmin(np.abs(freqs - 20.0)))],
+        blended[int(np.argmin(np.abs(freqs - 80.0)))],
+    )
+    return blended
+
+
+def load_measured(
+    wav_path: Path,
+    fs: int,
+    freqs: np.ndarray,
+    strategy: ExtractionStrategy | None = None,
+) -> np.ndarray:
+    """Dispatch to the appropriate extraction function based on strategy.
+
+    If *strategy* is None, uses ``_strategy_from_env()`` (which defaults
+    to ``DEFAULT_STRATEGY`` = blend-a0.7-P90).
+    """
+    if strategy is None:
+        strategy = _strategy_from_env()
+    log.info("extraction strategy: %s", strategy.label)
+
+    if strategy.method == ExtractionMethod.WELCH:
+        return load_and_smooth(wav_path, fs, freqs)
+    if strategy.method == ExtractionMethod.CHUNKED:
+        return load_and_smooth_chunked(
+            wav_path, fs, freqs,
+            chunk_s=strategy.chunk_s,
+            percentile=strategy.percentile,
+        )
+    if strategy.method == ExtractionMethod.BLENDED:
+        return load_and_smooth_blended(
+            wav_path, fs, freqs,
+            chunk_s=strategy.chunk_s,
+            percentile=strategy.percentile,
+            alpha=strategy.alpha,
+        )
+    raise ValueError(f"unknown extraction method: {strategy.method}")
+
+
 # Backwards-compatible aliases (the existing test_auto_beq.py uses
 # underscore-prefixed names).
 _have_tool = have_tool
 _probe_audio_stream = probe_audio_stream
 _extract_lfe_wav = extract_lfe_wav
+_load_and_smooth_chunked = load_and_smooth_chunked
