@@ -265,15 +265,25 @@ def extract_one(media_path: Path, wav_path: Path) -> bool:
         str(tmp_path),
     ]
 
+    log.debug("  cmd: %s", " ".join(cmd))
+    log.debug("  tmp: %s", tmp_path)
+    log.debug("  out: %s", wav_path)
+
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
         log.error("  ffmpeg timed out after 10 minutes")
+        log.error("  source: %s", media_path)
+        log.error("  target: %s", tmp_path)
         tmp_path.unlink(missing_ok=True)
         return False
 
     if result.returncode != 0:
-        log.error("  ffmpeg failed (code %d): %s", result.returncode, result.stderr[:200])
+        log.error("  ffmpeg failed (code %d)", result.returncode)
+        log.error("  stderr: %s", result.stderr.strip())
+        log.error("  source: %s", media_path)
+        log.error("  target: %s", tmp_path)
+        log.error("  cmd: %s", " ".join(cmd))
         tmp_path.unlink(missing_ok=True)
         return False
 
