@@ -327,10 +327,15 @@ class SweepFilm:
     season: int | None = None
     episode: int | None = None
     catalogue_entry: dict = field(default_factory=dict, repr=False)
+    size_bytes: int = 0
 
     @property
     def rating_bucket(self) -> float:
         return bucket_rating(self.rating)
+
+    @property
+    def size_mb(self) -> float:
+        return self.size_bytes / 1e6
 
 
 @dataclass
@@ -463,6 +468,10 @@ def match_media_files(
         cat_episode = entry.get("episode", "")
         cat_label = f" (catalogue: season={cat_season} episode={cat_episode})" if cat_season else ""
         print(f"    → MATCHED: {entry.get('title')!r} ({parsed.year}){cat_label}")
+        try:
+            file_size = media_path.stat().st_size
+        except OSError:
+            file_size = 0
         matches.append(SweepFilm(
             path=str(media_path),
             library_root=str(library_root),
@@ -472,6 +481,7 @@ def match_media_files(
             season=parsed.season,
             episode=parsed.episode,
             catalogue_entry=entry,
+            size_bytes=file_size,
         ))
 
     print()  # newline after progress
