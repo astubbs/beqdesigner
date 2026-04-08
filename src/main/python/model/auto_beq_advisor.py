@@ -493,6 +493,140 @@ class MeasurementAdvisor:
 
 
 # ---------------------------------------------------------------------------
+# TopologyAdvisor - E17c: classify rolloff shape, per-class gain formula
+# ---------------------------------------------------------------------------
+
+
+class TopologyAdvisor:
+    """Classify rolloff shape FIRST, pick gain formula per class.
+
+    Restored from experiment E17c. The theory: different rolloff shapes
+    need different gain formulas. A gentle slope benefits from slope
+    extension; a moderate slope overshoots with extension; a cliff
+    needs a multi-knee chain.
+
+    Results on 34-episode corpus (E17c):
+      10 PASS + 2 MARGINAL (35%), 8/8 Pantheon PASS.
+      Regressed South Park (moderate class undershoots).
+
+    Preserved as an alternate code path per AGENTS.md rule.
+    """
+
+    name = "topology"
+
+    _MULTI_KNEE_SLOPE_THRESHOLD = 15.0
+    _MIN_SHOULDER_PEAK_DB = 2.0
+
+    def advise(self, metadata: MediaMetadata, features: CurveFeatures) -> Advice:
+        if (
+            features.shoulder_peak_db < self._MIN_SHOULDER_PEAK_DB
+            and features.dynamic_range_db < 15.0
+        ):
+            return _clamp_advice(
+                Advice(max_gain_db=0.0, knee_hz=None,
+                       reasoning="no LFE shoulder", confidence=0.8),
+                source="topology",
+            )
+
+        slope = features.rolloff_slope_db_per_oct
+        knee_hz = _find_rolloff_start(features)
+        deficit = features.shoulder_peak_db - features.level_at_10hz_db
+
+        is_cliff = (
+            slope > self._MULTI_KNEE_SLOPE_THRESHOLD
+            or looks_multi_knee(features)[0]
+        )
+
+        chain: tuple[dict, ...] | None = None
+        if is_cliff:
+            chain = _measurement_chain(features)
+            max_gain_db = deficit + max(0.0, slope)
+            topo = "cliff"
+        elif slope > 5.0:
+            max_gain_db = deficit
+            topo = "moderate"
+        else:
+            max_gain_db = deficit + max(0.0, slope)
+            topo = "gentle"
+
+        return _clamp_advice(
+            Advice(
+                max_gain_db=max_gain_db, knee_hz=knee_hz, filters=chain,
+                reasoning=(
+                    f"topo={topo}, deficit={deficit:.1f}dB, "
+                    f"slope={slope:+.1f}dB/oct, knee={knee_hz:.0f}Hz"
+                ),
+                confidence=0.7,
+            ),
+            source="topology",
+        )
+
+
+# ---------------------------------------------------------------------------
+# SlopeExtensionAdvisor - E14: deficit + slope projection
+# ---------------------------------------------------------------------------
+
+
+class SlopeExtensionAdvisor:
+    """Gain = deficit + slope extension (project rolloff one more octave).
+
+    Restored from experiment E14. The theory: BEQ must lift the deep-
+    bass deficit at 10 Hz up to the shoulder peak, THEN continue the
+    measured rolloff slope one more octave down to 5 Hz.
+
+    Hand-predictions on the original 3 films were excellent (within
+    1 dB of catalogue for EoT and JW). The E14 implementation failed
+    because feature extraction was noisy and the knee was at the peak
+    instead of the rolloff-start. This restoration uses the improved
+    _find_rolloff_start() from E17a and robust octave-window averaging.
+
+    Preserved as an alternate code path per AGENTS.md rule.
+    """
+
+    name = "slope_extension"
+
+    _MULTI_KNEE_SLOPE_THRESHOLD = 15.0
+    _MIN_SHOULDER_PEAK_DB = 2.0
+
+    def advise(self, metadata: MediaMetadata, features: CurveFeatures) -> Advice:
+        if (
+            features.shoulder_peak_db < self._MIN_SHOULDER_PEAK_DB
+            and features.dynamic_range_db < 15.0
+        ):
+            return _clamp_advice(
+                Advice(max_gain_db=0.0, knee_hz=None,
+                       reasoning="no LFE shoulder", confidence=0.8),
+                source="slope_extension",
+            )
+
+        slope = features.rolloff_slope_db_per_oct
+        knee_hz = _find_rolloff_start(features)
+        deficit = features.shoulder_peak_db - features.level_at_10hz_db
+        extension = max(0.0, slope)
+        max_gain_db = deficit + extension
+
+        is_cliff = (
+            slope > self._MULTI_KNEE_SLOPE_THRESHOLD
+            or looks_multi_knee(features)[0]
+        )
+        chain: tuple[dict, ...] | None = None
+        if is_cliff:
+            chain = _measurement_chain(features)
+
+        return _clamp_advice(
+            Advice(
+                max_gain_db=max_gain_db, knee_hz=knee_hz, filters=chain,
+                reasoning=(
+                    f"deficit={deficit:.1f}dB + slope={extension:.1f}dB/oct "
+                    f"= {max_gain_db:.1f}dB, knee={knee_hz:.0f}Hz"
+                ),
+                confidence=0.7,
+            ),
+            source="slope_extension",
+        )
+
+
+# ---------------------------------------------------------------------------
 # MockAdvisor - canned JSON per title, for deterministic tests
 # ---------------------------------------------------------------------------
 
@@ -1303,13 +1437,18 @@ def get_advisor(name: str | None = None) -> Advisor:
     """Return an Advisor by name. Falls back to AUTO_BEQ_ADVISOR env var,
     then to HeuristicAdvisor.
 
-    Supported names: ``heuristic``, ``measurement``, ``mock``, ``ollama``.
+    Supported names: ``heuristic``, ``measurement``, ``topology``,
+    ``slope_extension``, ``mock``, ``ollama``.
     """
     resolved = (name or os.environ.get("AUTO_BEQ_ADVISOR") or "heuristic").lower()
     if resolved == "heuristic":
         return HeuristicAdvisor()
     if resolved == "measurement":
         return MeasurementAdvisor()
+    if resolved == "topology":
+        return TopologyAdvisor()
+    if resolved == "slope_extension":
+        return SlopeExtensionAdvisor()
     if resolved == "mock":
         return MockAdvisor()
     if resolved == "ollama":

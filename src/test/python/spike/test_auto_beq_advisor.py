@@ -17,6 +17,8 @@ from model.auto_beq_advisor import (
     MeasurementAdvisor,
     MediaMetadata,
     MockAdvisor,
+    SlopeExtensionAdvisor,
+    TopologyAdvisor,
     _clamp_advice,
     _render_ollama_user_prompt,
     _slugify,
@@ -283,6 +285,93 @@ def test_measurement_advisor_ignores_metadata():
 
 def test_get_advisor_returns_measurement_advisor():
     assert isinstance(get_advisor("measurement"), MeasurementAdvisor)
+
+
+# ---------------------------------------------------------------------------
+# TopologyAdvisor (E17c restored)
+# ---------------------------------------------------------------------------
+
+
+def test_topology_advisor_gentle_uses_deficit_plus_slope():
+    """Gentle slope (<=5 dB/oct): deficit + full slope extension."""
+    features = CurveFeatures(
+        shoulder_peak_db=6.0, shoulder_peak_hz=25.0,
+        level_at_5hz_db=-8.0, level_at_10hz_db=-2.0, level_at_20hz_db=2.0,
+        rolloff_depth_db=14.0, rolloff_slope_db_per_oct=4.0,
+        dynamic_range_db=14.0, curve_sample_points=(),
+    )
+    advice = TopologyAdvisor().advise(MediaMetadata(title="x"), features)
+    assert advice.source == "topology"
+    # deficit=8, slope=4 -> 12
+    assert advice.max_gain_db == pytest.approx(12.0, abs=0.1)
+    assert "gentle" in advice.reasoning
+
+
+def test_topology_advisor_moderate_uses_deficit_only():
+    """Moderate slope (5-15 dB/oct): deficit only, no extension."""
+    features = CurveFeatures(
+        shoulder_peak_db=6.0, shoulder_peak_hz=25.0,
+        level_at_5hz_db=-15.0, level_at_10hz_db=-4.0, level_at_20hz_db=3.0,
+        rolloff_depth_db=21.0, rolloff_slope_db_per_oct=7.0,
+        dynamic_range_db=21.0, curve_sample_points=(),
+    )
+    advice = TopologyAdvisor().advise(MediaMetadata(title="x"), features)
+    # deficit=10, slope=7 but moderate -> deficit only = 10
+    assert advice.max_gain_db == pytest.approx(10.0, abs=0.1)
+    assert "moderate" in advice.reasoning
+
+
+def test_topology_advisor_cliff_emits_chain():
+    """Cliff slope (>15 dB/oct): multi-knee chain."""
+    features = CurveFeatures(
+        shoulder_peak_db=2.0, shoulder_peak_hz=20.0,
+        level_at_5hz_db=-45.0, level_at_10hz_db=-28.0, level_at_20hz_db=1.0,
+        rolloff_depth_db=47.0, rolloff_slope_db_per_oct=29.0,
+        dynamic_range_db=47.0, curve_sample_points=(),
+    )
+    advice = TopologyAdvisor().advise(MediaMetadata(title="x"), features)
+    assert advice.filters is not None
+    assert "cliff" in advice.reasoning
+
+
+def test_get_advisor_returns_topology_advisor():
+    assert isinstance(get_advisor("topology"), TopologyAdvisor)
+
+
+# ---------------------------------------------------------------------------
+# SlopeExtensionAdvisor (E14 restored)
+# ---------------------------------------------------------------------------
+
+
+def test_slope_extension_advisor_formula():
+    """Gain = deficit + max(0, slope)."""
+    features = CurveFeatures(
+        shoulder_peak_db=6.0, shoulder_peak_hz=25.0,
+        level_at_5hz_db=-8.0, level_at_10hz_db=-2.0, level_at_20hz_db=4.0,
+        rolloff_depth_db=14.0, rolloff_slope_db_per_oct=6.0,
+        dynamic_range_db=14.0, curve_sample_points=(),
+    )
+    advice = SlopeExtensionAdvisor().advise(MediaMetadata(title="x"), features)
+    assert advice.source == "slope_extension"
+    # deficit=8, slope=6 -> 14
+    assert advice.max_gain_db == pytest.approx(14.0, abs=0.1)
+
+
+def test_slope_extension_negative_slope_no_extension():
+    """Negative slope contributes 0, not negative."""
+    features = CurveFeatures(
+        shoulder_peak_db=5.0, shoulder_peak_hz=25.0,
+        level_at_5hz_db=-5.0, level_at_10hz_db=-2.0, level_at_20hz_db=-4.0,
+        rolloff_depth_db=9.0, rolloff_slope_db_per_oct=-2.0,
+        dynamic_range_db=9.0, curve_sample_points=(),
+    )
+    advice = SlopeExtensionAdvisor().advise(MediaMetadata(title="x"), features)
+    # deficit=7, slope=-2 -> extension=0 -> 7
+    assert advice.max_gain_db == pytest.approx(7.0, abs=0.1)
+
+
+def test_get_advisor_returns_slope_extension_advisor():
+    assert isinstance(get_advisor("slope_extension"), SlopeExtensionAdvisor)
 
 
 # ---------------------------------------------------------------------------
