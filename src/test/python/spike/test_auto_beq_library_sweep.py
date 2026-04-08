@@ -39,9 +39,11 @@ from model.auto_beq_advisor import MediaMetadata, get_advisor
 from spike._auto_beq_helpers import (
     _extract_lfe_wav,
     _have_tool,
+    _strategy_from_env,
     load_and_smooth,
     load_and_smooth_blended,
     load_and_smooth_chunked,
+    load_measured,
 )
 from spike.sweep_discover import bucket_rating, load_catalogue_by_digest, load_config
 
@@ -161,6 +163,7 @@ def _append_sweep_report(
     advisor_name: str,
     metrics: Any,
     catalogue_filter_count: int,
+    extraction_strategy: str = "",
 ) -> None:
     is_new = not _SWEEP_REPORT_PATH.exists()
     _SWEEP_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -169,8 +172,9 @@ def _append_sweep_report(
         if is_new:
             w.writerow([
                 "rating_bucket", "rating", "release_year", "title",
-                "catalogue_filter_count", "advisor", "verdict",
-                "mean_err_db", "max_err_db", "summed_catalogue_gain_db",
+                "catalogue_filter_count", "advisor", "extraction",
+                "verdict", "mean_err_db", "max_err_db",
+                "summed_catalogue_gain_db",
             ])
         w.writerow([
             f"{bucket_rating(film.rating):.1f}",
@@ -179,6 +183,7 @@ def _append_sweep_report(
             film.title,
             catalogue_filter_count,
             advisor_name,
+            extraction_strategy,
             metrics.verdict,
             f"{metrics.mean_abs_err_db:.2f}",
             f"{metrics.max_abs_err_db:.2f}",
@@ -190,6 +195,7 @@ def _run_one_film(film: SweepFilm) -> tuple[SweepFilm, MatchMetrics, str] | None
     """Run the auto-BEQ pipeline for one media file. Thread-safe.
 
     Returns (film, metrics, advisor_name) or None if skipped.
+    Uses the configured extraction strategy (default: blend-a0.7-P90).
     """
     from model.auto_beq import propose_filters_from_measured
 
@@ -198,8 +204,9 @@ def _run_one_film(film: SweepFilm) -> tuple[SweepFilm, MatchMetrics, str] | None
         return None
 
     fs = 1000
+    strategy = _strategy_from_env()
     wav_path = _extract_lfe_wav(film.path, target_fs=fs)
-    measured = load_and_smooth(wav_path, fs=fs, freqs=DEFAULT_GRID)
+    measured = load_measured(wav_path, fs=fs, freqs=DEFAULT_GRID, strategy=strategy)
 
     advisor = get_advisor()
     metadata = MediaMetadata(title=film.title, year=film.year)
@@ -247,6 +254,7 @@ def test_library_sweep(film: SweepFilm, caplog):
         advisor_name=advisor_name,
         metrics=metrics,
         catalogue_filter_count=len(film.catalogue_entry["filters"]),
+        extraction_strategy=_strategy_from_env().label,
     )
 
 
@@ -296,6 +304,7 @@ def test_library_sweep_parallel():
                 advisor_name=advisor_name,
                 metrics=metrics,
                 catalogue_filter_count=len(film.catalogue_entry["filters"]),
+                extraction_strategy=_strategy_from_env().label,
             )
 
     total = sum(verdicts.values())

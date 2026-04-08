@@ -49,11 +49,16 @@ from model.auto_beq import (
     format_match_report,
     propose_filters,
     propose_filters_from_measured,
-    smooth_fractional_octave,
 )
 from model.auto_beq_advisor import MediaMetadata, get_advisor
 
-from spike._auto_beq_helpers import _extract_lfe_wav, _have_tool, _probe_audio_stream
+from spike._auto_beq_helpers import (
+    _extract_lfe_wav,
+    _have_tool,
+    _probe_audio_stream,
+    _strategy_from_env,
+    load_measured,
+)
 
 log = logging.getLogger("auto_beq_spike")
 
@@ -257,45 +262,14 @@ def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
 
     wav_path = _extract_lfe_wav(media_path, fs)
 
-    # Load via the app's signal pipeline.
-    log.info("loading WAV into Signal pipeline")
-    from model.signal import Signal, read_wav_data
-    samples, read_fs, _ = read_wav_data(str(wav_path))
-    assert read_fs == fs, f"expected fs={fs}, got {read_fs}"
-    mono = samples[:, 0] if samples.ndim > 1 else samples
-    duration_s = len(mono) / fs
-    log.info("loaded %d samples (%.1f s = %.1f min)", len(mono), duration_s, duration_s / 60)
-    sig = Signal(title, mono, fs=fs)
-
-    log.info("computing average spectrum (Welch)")
-    measured_freqs, measured_db = sig.avg_spectrum()
-    log.info("raw spectrum: %d bins from %.1f to %.1f Hz",
-             len(measured_freqs), measured_freqs[0], measured_freqs[-1])
-
-    # Absolute (un-normalised) dBFS at diagnostic frequencies. The
-    # pipeline normalises to 0 dB at 80 Hz next, which throws away
-    # mastering-level information. Log it first so we can see whether
-    # films differ in absolute mid-bass energy (hypothesis: louder
-    # absolute mid-bass correlates with mastering aggressiveness).
-    abs_dbfs = [
-        measured_db[int(np.argmin(np.abs(measured_freqs - f)))]
-        for f in (5.0, 10.0, 20.0, 40.0, 60.0, 80.0, 120.0)
-    ]
-    log.info(
-        "absolute dBFS: 5Hz=%.1f 10Hz=%.1f 20Hz=%.1f 40Hz=%.1f "
-        "60Hz=%.1f 80Hz=%.1f 120Hz=%.1f",
-        *abs_dbfs,
-    )
-
-    measured_on_grid = np.interp(freqs, measured_freqs, measured_db)
+    # Compute measured curve using the configured extraction strategy.
+    # Default: blend-a0.7-P90 (70% Welch + 30% chunked P90 at 60s).
+    # Override via AUTO_BEQ_EXTRACTION env var (welch, blended, chunked).
+    strategy = _strategy_from_env()
+    measured_on_grid = load_measured(wav_path, fs, freqs, strategy=strategy)
     anchor_idx = int(np.argmin(np.abs(freqs - 80.0)))
-    measured_on_grid -= measured_on_grid[anchor_idx]
-    # Smooth to 1/6-octave - standard for BEQ-style analysis. Narrow
-    # resonances in the raw spectrum are mastering artefacts, not
-    # features an IIR filter should chase.
-    measured_on_grid = smooth_fractional_octave(measured_on_grid, freqs, octaves=1.0 / 6.0)
-    measured_on_grid -= measured_on_grid[anchor_idx]
-    log.info("smoothed curve on grid: 10Hz=%.1f 20Hz=%.1f 80Hz=%.1f 200Hz=%.1f dB",
+    log.info("measured curve (%s): 10Hz=%.1f 20Hz=%.1f 80Hz=%.1f 200Hz=%.1f dB",
+             strategy.label,
              measured_on_grid[0],
              measured_on_grid[int(np.argmin(np.abs(freqs - 20.0)))],
              measured_on_grid[anchor_idx],

@@ -14,11 +14,93 @@ import os
 import shutil
 import subprocess
 import time
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 import numpy as np
 
 log = logging.getLogger("auto_beq_spike")
+
+
+# ---------------------------------------------------------------------------
+# Extraction strategy — selects how the measured LFE curve is computed.
+# ---------------------------------------------------------------------------
+
+class ExtractionMethod(Enum):
+    """How raw LFE samples are turned into a magnitude-vs-frequency curve."""
+    WELCH = "welch"
+    CHUNKED = "chunked"
+    BLENDED = "blended"
+
+
+@dataclass(frozen=True)
+class ExtractionStrategy:
+    """Full specification of an extraction approach.
+
+    Attributes
+    ----------
+    method : ExtractionMethod
+        Core algorithm (Welch average, chunked-percentile, or blended).
+    chunk_s : float
+        Chunk length in seconds (ignored for WELCH).
+    percentile : float
+        Percentile across chunks (ignored for WELCH).
+    alpha : float
+        Welch weight in blended mode (0=pure chunked, 1=pure Welch).
+        Ignored for non-BLENDED methods.
+    """
+    method: ExtractionMethod
+    chunk_s: float = 60.0
+    percentile: float = 90.0
+    alpha: float = 0.7
+
+    @property
+    def label(self) -> str:
+        if self.method == ExtractionMethod.WELCH:
+            return "welch"
+        if self.method == ExtractionMethod.BLENDED:
+            return f"blend-a{self.alpha:.1f}-P{self.percentile:.0f}-{self.chunk_s:.0f}s"
+        return f"chunked-P{self.percentile:.0f}-{self.chunk_s:.0f}s"
+
+    def __str__(self) -> str:
+        return self.label
+
+
+# Pre-defined strategies.
+STRATEGY_WELCH = ExtractionStrategy(ExtractionMethod.WELCH)
+STRATEGY_BLENDED_07 = ExtractionStrategy(
+    ExtractionMethod.BLENDED, chunk_s=60.0, percentile=90.0, alpha=0.7,
+)
+STRATEGY_BLENDED_03 = ExtractionStrategy(
+    ExtractionMethod.BLENDED, chunk_s=60.0, percentile=90.0, alpha=0.3,
+)
+STRATEGY_CHUNKED_P90 = ExtractionStrategy(
+    ExtractionMethod.CHUNKED, chunk_s=60.0, percentile=90.0,
+)
+
+# Default for production use — E18b showed blend-a0.7-P90 is the safest
+# (2 grade improvements, 0 degradations across 31 test cases).
+DEFAULT_STRATEGY = STRATEGY_BLENDED_07
+
+
+def _strategy_from_env() -> ExtractionStrategy:
+    """Read extraction strategy from AUTO_BEQ_EXTRACTION env var.
+
+    Values: "welch", "blended" (default), "blended-0.3", "chunked".
+    Falls back to DEFAULT_STRATEGY.
+    """
+    raw = os.environ.get("AUTO_BEQ_EXTRACTION", "").strip().lower()
+    if not raw or raw == "blended":
+        return DEFAULT_STRATEGY
+    if raw == "welch":
+        return STRATEGY_WELCH
+    if raw == "blended-0.3":
+        return STRATEGY_BLENDED_03
+    if raw == "chunked":
+        return STRATEGY_CHUNKED_P90
+    log.warning("unknown AUTO_BEQ_EXTRACTION=%r, using default", raw)
+    return DEFAULT_STRATEGY
 
 def audio_cache_dir() -> Path:
     """Return the audio cache directory, creating it if needed.
@@ -329,6 +411,39 @@ def load_and_smooth_blended(
         blended[int(np.argmin(np.abs(freqs - 80.0)))],
     )
     return blended
+
+
+def load_measured(
+    wav_path: Path,
+    fs: int,
+    freqs: np.ndarray,
+    strategy: ExtractionStrategy | None = None,
+) -> np.ndarray:
+    """Dispatch to the appropriate extraction function based on strategy.
+
+    If *strategy* is None, uses ``_strategy_from_env()`` (which defaults
+    to ``DEFAULT_STRATEGY`` = blend-a0.7-P90).
+    """
+    if strategy is None:
+        strategy = _strategy_from_env()
+    log.info("extraction strategy: %s", strategy.label)
+
+    if strategy.method == ExtractionMethod.WELCH:
+        return load_and_smooth(wav_path, fs, freqs)
+    if strategy.method == ExtractionMethod.CHUNKED:
+        return load_and_smooth_chunked(
+            wav_path, fs, freqs,
+            chunk_s=strategy.chunk_s,
+            percentile=strategy.percentile,
+        )
+    if strategy.method == ExtractionMethod.BLENDED:
+        return load_and_smooth_blended(
+            wav_path, fs, freqs,
+            chunk_s=strategy.chunk_s,
+            percentile=strategy.percentile,
+            alpha=strategy.alpha,
+        )
+    raise ValueError(f"unknown extraction method: {strategy.method}")
 
 
 # Backwards-compatible aliases (the existing test_auto_beq.py uses
