@@ -318,6 +318,80 @@ def cleanup_tmp(wav_root: Path) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Config persistence
+# ---------------------------------------------------------------------------
+
+_CONFIG_NAME = ".extract_config.json"
+
+
+def _load_or_prompt_config(
+    wav_root_arg: Path | None,
+    media_roots_arg: list[Path] | None,
+) -> dict:
+    """Load saved config, merge with CLI args, prompt if missing, save.
+
+    Config is stored at ``{wav_root}/.extract_config.json`` so it lives
+    alongside the cache. First run prompts interactively; subsequent runs
+    reuse saved paths. CLI args override saved config.
+
+    Returns dict with keys: wav_root (Path), media_roots (list[Path]).
+    """
+    # Step 1: determine wav_root.
+    wav_root = wav_root_arg
+    if wav_root is None:
+        # Try to find an existing config in common locations.
+        for candidate in [Path.cwd(), Path.home() / "beq-wav-cache"]:
+            cfg = candidate / _CONFIG_NAME
+            if cfg.exists():
+                wav_root = candidate
+                break
+    if wav_root is None:
+        wav_root = Path(input("WAV cache directory (will be created if needed): ").strip())
+
+    wav_root = wav_root.expanduser().resolve()
+    wav_root.mkdir(parents=True, exist_ok=True)
+
+    # Step 2: load existing config.
+    config_path = wav_root / _CONFIG_NAME
+    saved: dict = {}
+    if config_path.exists():
+        try:
+            saved = json.loads(config_path.read_text())
+            log.info("loaded config from %s", config_path)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Step 3: determine media_roots (CLI args override saved).
+    media_roots: list[Path] = []
+    if media_roots_arg:
+        media_roots = [p.expanduser().resolve() for p in media_roots_arg]
+    elif saved.get("media_roots"):
+        media_roots = [Path(p) for p in saved["media_roots"]]
+        log.info("using %d saved media root(s)", len(media_roots))
+    else:
+        # Interactive prompt.
+        print("Enter media library root paths (one per line, empty line to finish):")
+        while True:
+            line = input("  media root: ").strip()
+            if not line:
+                break
+            p = Path(line).expanduser().resolve()
+            if p.exists():
+                media_roots.append(p)
+            else:
+                print(f"    WARNING: {p} does not exist, skipping")
+
+    # Step 4: save config for next run.
+    config_data = {
+        "media_roots": [str(p) for p in media_roots],
+    }
+    config_path.write_text(json.dumps(config_data, indent=2) + "\n")
+    log.info("config saved to %s (%d media roots)", config_path, len(media_roots))
+
+    return {"wav_root": wav_root, "media_roots": media_roots}
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -333,8 +407,8 @@ def main(argv: list[str] | None = None):
         help="Media library root(s) to scan. Can be specified multiple times.",
     )
     parser.add_argument(
-        "--wav-root", type=Path, required=True,
-        help="Root directory for the portable WAV cache.",
+        "--wav-root", type=Path, default=None,
+        help="Root directory for the portable WAV cache. Saved to config on first use.",
     )
     parser.add_argument(
         "--limit", type=int, default=0,
@@ -360,32 +434,37 @@ def main(argv: list[str] | None = None):
         datefmt="%H:%M:%S",
     )
 
-    args.wav_root.mkdir(parents=True, exist_ok=True)
+    # --- Config: load saved paths, prompt if missing, save for next run ---
+    config = _load_or_prompt_config(args.wav_root, args.media_roots)
+    wav_root = config["wav_root"]
+    media_roots = config["media_roots"]
+
+    wav_root.mkdir(parents=True, exist_ok=True)
 
     # Clean up any .tmp files from interrupted runs.
-    cleaned = cleanup_tmp(args.wav_root)
+    cleaned = cleanup_tmp(wav_root)
     if cleaned:
         log.info("cleaned up %d interrupted extraction(s)", cleaned)
 
     # Verify mode.
     if args.verify:
-        log.info("verifying cache at %s ...", args.wav_root)
-        deleted = verify_cache(args.wav_root)
-        existing = len(list(args.wav_root.rglob("lfe-1000hz.wav")))
+        log.info("verifying cache at %s ...", wav_root)
+        deleted = verify_cache(wav_root)
+        existing = len(list(wav_root.rglob("*.lfe-1000hz.wav")))
         log.info("verification complete: %d valid, %d corrupt (deleted)", existing, deleted)
         return
 
     # Extraction mode.
-    if not args.media_roots:
-        parser.error("--media-root is required for extraction")
+    if not media_roots:
+        parser.error("no media roots configured — use --media-root or run interactively")
 
     # Discover media.
-    media, missing_ids = discover_media(args.media_roots)
+    media, missing_ids = discover_media(media_roots)
     log.info("found %d extractable titles (sorted by size, smallest first)", len(media))
 
     # Save missing IDs list.
     if missing_ids:
-        missing_file = args.wav_root / "missing_ids.txt"
+        missing_file = wav_root / "missing_ids.txt"
         missing_file.write_text("\n".join(sorted(set(missing_ids))) + "\n")
         log.info("missing TMDb IDs written to %s", missing_file)
 
@@ -412,7 +491,7 @@ def main(argv: list[str] | None = None):
         episode = m.get("episode")
         ep_label = f" S{season:02d}E{episode:02d}" if season is not None else ""
 
-        wav = cache_path(args.wav_root, title, year, tmdb_id,
+        wav = cache_path(wav_root, title, year, tmdb_id,
                          content_type=content_type, season=season, episode=episode)
 
         pct = (i + 1) * 100 // total
@@ -451,7 +530,7 @@ def main(argv: list[str] | None = None):
     log.info("  Errors:         %d", errors)
     log.info("  Missing IDs:    %d", len(missing_ids))
     log.info("  Time:           %.0fs (%.1f min)", total_time, total_time / 60)
-    log.info("  WAV cache:      %s", args.wav_root)
+    log.info("  WAV cache:      %s", wav_root)
     log.info("=" * 60)
 
 
