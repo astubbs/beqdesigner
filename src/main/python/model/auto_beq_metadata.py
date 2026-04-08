@@ -34,10 +34,10 @@ log = logging.getLogger("auto_beq_metadata")
 _TMDB_API_KEY = "5e23b4412adb55e7cca19cfb9d0196b6"
 _TMDB_BASE = "https://api.themoviedb.org/3"
 
-# Rate limit: TMDb allows ~40 requests per 10 seconds. We stay well under
-# with a 0.3s delay between requests.
-_REQUEST_DELAY_S = 0.3
+# TMDb rate limit: ~40 requests per 10 seconds. We don't artificially
+# throttle — just respect 429 Retry-After headers when they come.
 _REQUEST_TIMEOUT_S = 15
+_MAX_RETRIES = 3
 
 # Local cache file — never expires (TMDb metadata doesn't change).
 _CACHE_DIR = Path.home() / ".config" / "beqdesigner"
@@ -80,6 +80,9 @@ def save_cache(cache: dict[str, dict]) -> None:
 def _fetch_tmdb_details(tmdb_id: str) -> dict | None:
     """Fetch movie details + credits from TMDb for a single ID.
 
+    No artificial throttling — fires requests as fast as possible and
+    respects 429 Retry-After headers when TMDb tells us to slow down.
+
     Returns a dict with extracted fields, or None on failure.
     """
     url = f"{_TMDB_BASE}/movie/{tmdb_id}"
@@ -87,28 +90,28 @@ def _fetch_tmdb_details(tmdb_id: str) -> dict | None:
         "api_key": _TMDB_API_KEY,
         "append_to_response": "credits",
     }
-    try:
-        r = requests.get(url, params=params, timeout=_REQUEST_TIMEOUT_S)
-    except requests.RequestException as exc:
-        log.warning("TMDb request failed for ID %s: %s", tmdb_id, exc)
-        return None
-
-    if r.status_code == 429:
-        # Rate-limited — back off and retry once.
-        retry_after = int(r.headers.get("Retry-After", "5"))
-        log.info("TMDb rate-limited, sleeping %ds", retry_after)
-        time.sleep(retry_after)
+    for attempt in range(_MAX_RETRIES):
         try:
             r = requests.get(url, params=params, timeout=_REQUEST_TIMEOUT_S)
-        except requests.RequestException:
+        except requests.RequestException as exc:
+            log.warning("TMDb request failed for ID %s: %s", tmdb_id, exc)
             return None
 
-    if r.status_code != 200:
-        log.warning("TMDb returned %d for ID %s", r.status_code, tmdb_id)
-        return None
+        if r.status_code == 429:
+            retry_after = int(r.headers.get("Retry-After", "2"))
+            log.info("TMDb rate-limited (attempt %d/%d), sleeping %ds",
+                     attempt + 1, _MAX_RETRIES, retry_after)
+            time.sleep(retry_after)
+            continue
 
-    data = r.json()
-    return _extract_fields(data)
+        if r.status_code != 200:
+            log.warning("TMDb returned %d for ID %s", r.status_code, tmdb_id)
+            return None
+
+        return _extract_fields(r.json())
+
+    log.warning("TMDb rate-limited %d times for ID %s, giving up", _MAX_RETRIES, tmdb_id)
+    return None
 
 
 def _extract_fields(data: dict) -> dict:
@@ -195,9 +198,6 @@ def fetch_metadata_batch(
     fetched = 0
     errors = 0
     for i, tmdb_id in enumerate(to_fetch):
-        if i > 0:
-            time.sleep(_REQUEST_DELAY_S)
-
         result = _fetch_tmdb_details(tmdb_id)
         if result is not None:
             cache[tmdb_id] = result
