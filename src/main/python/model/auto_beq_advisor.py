@@ -90,6 +90,8 @@ class MediaMetadata:
     # Tier 3 — from catalogue, low marginal value but cost-free
     rating: str | None = None           # "PG-13", "R", etc.
     runtime_min: int | None = None
+    # BEQ profile author — different authors have different calibration styles
+    author: str | None = None           # "mobe1969", "aron7awol", etc.
 
 
 @dataclass(frozen=True)
@@ -1568,7 +1570,24 @@ def get_advisor(name: str | None = None) -> Advisor:
                 "set it to the path of a model saved by auto_beq_nn.save_model()"
             )
         return TrainedModelAdvisor.load(path)
+    if resolved == "late_fusion":
+        from model.auto_beq_nn import LateFusionAdvisor
+        path = os.environ.get("AUTO_BEQ_MODEL_PATH")
+        if not path:
+            raise ValueError(
+                "AUTO_BEQ_MODEL_PATH env var required for 'late_fusion' advisor"
+            )
+        return LateFusionAdvisor.load(path)
+    if resolved == "cnn_dual_branch":
+        from model.auto_beq_nn_cnn import CNNAdvisor
+        path = os.environ.get("AUTO_BEQ_MODEL_PATH")
+        if not path:
+            raise ValueError(
+                "AUTO_BEQ_MODEL_PATH env var required for 'cnn_dual_branch' advisor"
+            )
+        return CNNAdvisor.load(path)
     raise ValueError(
         f"unknown advisor name: {resolved!r} "
-        "(supported: heuristic, measurement, topology, slope_extension, mock, ollama, trained_model)"
+        "(supported: heuristic, measurement, topology, slope_extension, mock, ollama, "
+        "trained_model, late_fusion, cnn_dual_branch)"
     )

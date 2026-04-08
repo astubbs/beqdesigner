@@ -28,6 +28,7 @@ from model.auto_beq_nn import (
     downstream_loss,
     labels_to_filters,
     save_model,
+    train_late_fusion,
     train_xgboost,
 )
 from model.signal import read_wav_data
@@ -214,7 +215,7 @@ def test_train_full_catalogue_validate_real_audio(tmp_path):
     log.info("feature importances: audio=%.3f metadata=%.3f", audio_imp, meta_imp)
 
     # Top features.
-    from model.auto_beq_nn import _STUDIO_VOCAB, _MIXER_VOCAB
+    from model.auto_beq_nn import _AUTHOR_VOCAB, _MIXER_VOCAB, _STUDIO_VOCAB
     feature_names = (
         [f"audio_{hz}Hz" for hz in [20, 25, 30, 35, 40, 50, 60, 70, 80]]
         + ["year", "fmt_atmos", "fmt_truehd", "fmt_dtshd", "fmt_ddatmos", "fmt_dd", "fmt_other"]
@@ -224,6 +225,7 @@ def test_train_full_catalogue_validate_real_audio(tmp_path):
         + [f"genre_{i}" for i in range(10)]
         + [f"country_{i}" for i in range(5)]
         + ["runtime", "rating"]
+        + [f"author_{a}" for a in _AUTHOR_VOCAB]
     )
     top_idx = np.argsort(importances)[::-1][:15]
     print("\n=== Top 15 features by importance ===")
@@ -399,3 +401,213 @@ def test_ablation_audio_vs_metadata(tmp_path):
     print(f"  - If full < audio-only: metadata is helping")
     print(f"  - If metadata-only < audio-only: production context outweighs measured curve")
     print(f"  - Gap column: how much harder real audio is vs synthetic")
+
+
+@pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")
+def test_late_fusion_vs_early(tmp_path):
+    """E22: Late fusion (separate audio + metadata models, blended) vs E18 early fusion.
+
+    Late fusion prevents the cross-feature overfitting observed in E18e by
+    training independent sub-models on audio-only and metadata-only features,
+    then blending their Y predictions.
+
+    Permanent regression test for continuous assessment.
+    """
+    from model.auto_beq_catalogue import _fetch_or_cache
+    from model.auto_beq_nn import LateFusionAdvisor
+
+    log.info("=== E22 late fusion vs E18 early fusion ===")
+
+    catalogue = _fetch_or_cache()
+    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
+
+    tmdb_cache = load_cache()
+    tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
+
+    X_all, Y_all, entries_all = [], [], []
+    for e in deduped:
+        features = _synthetic_features(e, DEFAULT_GRID)
+        metadata = enrich_media_metadata(e, tmdb_cache)
+        X_all.append(build_feature_vector(features, metadata))
+        Y_all.append(catalogue_entry_to_labels(e))
+        entries_all.append(e)
+    X_all = np.array(X_all, dtype=np.float32)
+    Y_all = np.array(Y_all, dtype=np.float32)
+
+    # Hold out real-audio titles.
+    real_tmdb_ids = {p["tmdb_id"] for p in _PAIRS}
+    train_mask = np.array([
+        str(e.get("theMovieDB", "")).strip() not in real_tmdb_ids
+        for e in entries_all
+    ])
+    X_train = X_all[train_mask]
+    Y_train = Y_all[train_mask]
+
+    # Build real-audio + synthetic validation features.
+    X_val_real, X_val_synth, Y_val, val_entries = [], [], [], []
+    for p in _PAIRS:
+        entry = p["catalogue_entry"]
+        real_feats = _extract_real_audio_features(p["wav_path"], DEFAULT_GRID, _DEFAULT_FS)
+        synth_feats = _synthetic_features(entry, DEFAULT_GRID)
+        metadata = enrich_media_metadata(entry, tmdb_cache)
+        X_val_real.append(build_feature_vector(real_feats, metadata))
+        X_val_synth.append(build_feature_vector(synth_feats, metadata))
+        Y_val.append(catalogue_entry_to_labels(entry))
+        val_entries.append(entry)
+    X_val_real = np.array(X_val_real, dtype=np.float32)
+    X_val_synth = np.array(X_val_synth, dtype=np.float32)
+    Y_val = np.array(Y_val, dtype=np.float32)
+
+    def _mean_loss(model, X_val):
+        Y_pred = model.predict(X_val)
+        total = 0.0
+        for i, entry in enumerate(val_entries):
+            total += downstream_loss(labels_to_filters(Y_pred[i]), entry["filters"], DEFAULT_GRID)
+        return total / len(val_entries)
+
+    # Train E18 early fusion (baseline).
+    log.info("training E18 early fusion...")
+    model_early = train_xgboost(X_train, Y_train)
+
+    # Train E22 late fusion at several alpha values.
+    alphas = [0.3, 0.5, 0.7]
+    late_models = {}
+    for alpha in alphas:
+        log.info("training E22 late fusion (alpha=%.1f)...", alpha)
+        late_models[alpha] = train_late_fusion(X_train, Y_train, alpha=alpha)
+
+    # Evaluate all.
+    print(f"\n{'='*70}")
+    print(f"  E22 LATE FUSION vs E18 EARLY FUSION")
+    print(f"  Training: {len(X_train)} synthetic | Validation: {len(val_entries)} real-audio")
+    print(f"{'='*70}\n")
+    print(f"  {'Strategy':30s} {'Real audio':>12s} {'Synthetic':>12s} {'Gap':>8s}")
+    print(f"  {'-'*65}")
+
+    early_real = _mean_loss(model_early, X_val_real)
+    early_synth = _mean_loss(model_early, X_val_synth)
+    print(f"  {'E18 early fusion':30s} {early_real:10.2f} dB {early_synth:10.2f} dB {early_real - early_synth:+6.2f} dB")
+
+    for alpha in alphas:
+        m = late_models[alpha]
+        real = _mean_loss(m, X_val_real)
+        synth = _mean_loss(m, X_val_synth)
+        print(f"  {f'E22 late fusion (α={alpha:.1f})':30s} {real:10.2f} dB {synth:10.2f} dB {real - synth:+6.2f} dB")
+
+    # Save best late fusion model for advisor integration test.
+    best_alpha = min(alphas, key=lambda a: _mean_loss(late_models[a], X_val_real))
+    best_model = late_models[best_alpha]
+    model_path = str(tmp_path / "e22_late_fusion.joblib")
+    save_model(best_model, model_path)
+
+    # Verify LateFusionAdvisor works end-to-end.
+    advisor = LateFusionAdvisor.load(model_path)
+    entry = val_entries[0]
+    feats = _synthetic_features(entry, DEFAULT_GRID)
+    meta = enrich_media_metadata(entry, tmdb_cache)
+    advice = advisor.advise(meta, feats)
+    assert advice.source == "late_fusion"
+    print(f"\n  Best alpha: {best_alpha}")
+    print(f"  LateFusionAdvisor test: {advice.reasoning}")
+
+
+@pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")
+def test_cnn_dual_branch(tmp_path):
+    """E23: CNN dual-branch vs E18 early fusion vs E22 late fusion.
+
+    Trains a PyTorch CNN with separate audio (1D conv) and metadata (dense)
+    branches. The architecture naturally provides late fusion via separate
+    processing before merging at the penultimate layer.
+
+    Permanent regression test for continuous assessment.
+    """
+    try:
+        from model.auto_beq_nn_cnn import CNNAdvisor, CNNPredictor, train_cnn
+    except ImportError:
+        pytest.skip("PyTorch not available")
+
+    from model.auto_beq_catalogue import _fetch_or_cache
+    from model.auto_beq_nn import N_AUDIO_FEATURES
+
+    log.info("=== E23 CNN dual-branch ===")
+
+    catalogue = _fetch_or_cache()
+    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
+
+    tmdb_cache = load_cache()
+    tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
+
+    X_all, Y_all, entries_all = [], [], []
+    for e in deduped:
+        features = _synthetic_features(e, DEFAULT_GRID)
+        metadata = enrich_media_metadata(e, tmdb_cache)
+        X_all.append(build_feature_vector(features, metadata))
+        Y_all.append(catalogue_entry_to_labels(e))
+        entries_all.append(e)
+    X_all = np.array(X_all, dtype=np.float32)
+    Y_all = np.array(Y_all, dtype=np.float32)
+
+    # Hold out real-audio titles.
+    real_tmdb_ids = {p["tmdb_id"] for p in _PAIRS}
+    train_mask = np.array([
+        str(e.get("theMovieDB", "")).strip() not in real_tmdb_ids
+        for e in entries_all
+    ])
+    X_train = X_all[train_mask]
+    Y_train = Y_all[train_mask]
+
+    # Build validation features.
+    X_val_real, X_val_synth, Y_val, val_entries = [], [], [], []
+    for p in _PAIRS:
+        entry = p["catalogue_entry"]
+        real_feats = _extract_real_audio_features(p["wav_path"], DEFAULT_GRID, _DEFAULT_FS)
+        synth_feats = _synthetic_features(entry, DEFAULT_GRID)
+        metadata = enrich_media_metadata(entry, tmdb_cache)
+        X_val_real.append(build_feature_vector(real_feats, metadata))
+        X_val_synth.append(build_feature_vector(synth_feats, metadata))
+        Y_val.append(catalogue_entry_to_labels(entry))
+        val_entries.append(entry)
+    X_val_real = np.array(X_val_real, dtype=np.float32)
+    X_val_synth = np.array(X_val_synth, dtype=np.float32)
+    Y_val = np.array(Y_val, dtype=np.float32)
+
+    def _mean_loss(predictor, X_val):
+        Y_pred = predictor.predict(X_val)
+        total = 0.0
+        for i, entry in enumerate(val_entries):
+            total += downstream_loss(labels_to_filters(Y_pred[i]), entry["filters"], DEFAULT_GRID)
+        return total / len(val_entries)
+
+    # Train CNN only — don't mix torch and XGBoost in the same test
+    # to avoid segfaults from library conflicts on macOS.
+    log.info("training E23 CNN dual-branch...")
+    cnn_model = train_cnn(
+        X_train, Y_train, X_val_synth, Y_val,
+        n_audio=N_AUDIO_FEATURES, epochs=200, patience=20,
+    )
+    cnn_predictor = CNNPredictor(cnn_model)
+
+    cnn_real = _mean_loss(cnn_predictor, X_val_real)
+    cnn_synth = _mean_loss(cnn_predictor, X_val_synth)
+
+    # Print results with E18/E22 baselines from previous runs for reference.
+    print(f"\n{'='*70}")
+    print(f"  E23 CNN DUAL-BRANCH")
+    print(f"  Training: {len(X_train)} synthetic | Validation: {len(val_entries)} real-audio")
+    print(f"{'='*70}\n")
+    print(f"  {'Strategy':30s} {'Real audio':>12s} {'Synthetic':>12s} {'Gap':>8s}")
+    print(f"  {'-'*65}")
+    print(f"  {'E18 early fusion (ref)':30s} {'6.34':>10s} dB {'3.45':>10s} dB {'2.90':>6s} dB")
+    print(f"  {'E22 late fusion α=0.7 (ref)':30s} {'4.03':>10s} dB {'3.68':>10s} dB {'0.35':>6s} dB")
+    print(f"  {'E23 CNN dual-branch':30s} {cnn_real:10.2f} dB {cnn_synth:10.2f} dB {cnn_real - cnn_synth:+6.2f} dB")
+
+    # Save + verify advisor round-trip.
+    model_path = str(tmp_path / "e23_cnn.joblib")
+    save_model(cnn_predictor, model_path)
+    advisor = CNNAdvisor.load(model_path)
+    entry = val_entries[0]
+    feats = _synthetic_features(entry, DEFAULT_GRID)
+    meta = enrich_media_metadata(entry, tmdb_cache)
+    advice = advisor.advise(meta, feats)
+    assert advice.source == "cnn_dual_branch"
+    print(f"\n  CNNAdvisor test: {advice.reasoning}")

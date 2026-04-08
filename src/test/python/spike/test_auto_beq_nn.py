@@ -81,6 +81,7 @@ def _metadata_for_entry(entry: dict) -> MediaMetadata:
         language=entry.get("language") or None,
         rating=entry.get("rating") or None,
         runtime_min=int(entry.get("runtime", 0) or 0) or None,
+        author=entry.get("author") or None,
     )
 
 

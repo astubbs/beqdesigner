@@ -270,6 +270,7 @@ def enrich_media_metadata(entry: dict, cache: dict[str, dict]):
         supervising_mixer=primary_mixer,
         rating=entry.get("rating") or None,
         runtime_min=int(entry.get("runtime", 0) or 0) or None,
+        author=entry.get("author") or None,
     )
 
 

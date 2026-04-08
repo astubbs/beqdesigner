@@ -154,20 +154,29 @@ N_COUNTRY = len(_COUNTRY_BUCKETS)  # 5
 # Rating label encoding (Tier 3)
 _RATING_MAP = {"G": 0.0, "PG": 1.0, "PG-13": 2.0, "R": 3.0}
 
+# BEQ profile author — different authors have different calibration styles.
+# 100% coverage (every catalogue entry has an author), only 8 unique.
+_AUTHOR_VOCAB = [
+    "mobe1969", "aron7awol", "mikejl", "kaelaria", "remixmark",
+    "t1g8rsfan", "halcyon888", "bombaycat007", "unknown",
+]
+N_AUTHOR = len(_AUTHOR_VOCAB)  # 9
+
 # Metadata vector size
 N_METADATA_FEATURES = (
     1                # year normalised
     + N_AUDIO_FORMAT  # 6
     + N_SOURCE        # 3
-    + N_STUDIO        # 31
+    + N_STUDIO        # 32
     + N_MIXER         # 22
     + N_GENRE         # 10
     + N_COUNTRY       # 5
     + 1               # runtime normalised
     + 1               # rating normalised
-)  # = 81
+    + N_AUTHOR        # 9
+)  # = 90
 
-N_FEATURES = N_AUDIO_FEATURES + N_METADATA_FEATURES  # 90
+N_FEATURES = N_AUDIO_FEATURES + N_METADATA_FEATURES  # 99
 
 # ---------------------------------------------------------------------------
 # Label constants (filter parameter output vector)
@@ -336,6 +345,10 @@ def build_metadata_features(metadata: MediaMetadata) -> np.ndarray:
     rating = getattr(metadata, "rating", None)
     rating_val = _RATING_MAP.get(rating or "", 2.0) / 4.0  # default PG-13
     parts.append(np.array([rating_val], dtype=np.float32))
+
+    # BEQ profile author — one-hot (E24). 100% coverage, 8 unique authors.
+    author = getattr(metadata, "author", None)
+    parts.append(_vocab_onehot(author, _AUTHOR_VOCAB))
 
     result = np.concatenate(parts)
     assert result.shape == (N_METADATA_FEATURES,), (
@@ -572,6 +585,74 @@ def train_xgboost(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Late fusion (E22) — separate audio + metadata models, blended predictions
+# ---------------------------------------------------------------------------
+
+
+class LateFusionModel:
+    """Wraps two independent XGBoost sub-models (audio-only + metadata-only).
+
+    Predictions are blended: ``alpha * Y_audio + (1 - alpha) * Y_meta``.
+    Prevents cross-feature overfitting that occurs with early fusion on
+    synthetic training data (see E18e ablation).
+
+    Compatible with ``TrainedModelAdvisor`` — has ``.predict(X)``.
+    """
+
+    def __init__(
+        self, model_audio: object, model_meta: object, alpha: float = 0.5,
+    ) -> None:
+        self.model_audio = model_audio
+        self.model_meta = model_meta
+        self.alpha = alpha
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        n_audio = N_AUDIO_FEATURES
+        X_audio = np.zeros_like(X)
+        X_audio[:, :n_audio] = X[:, :n_audio]
+        X_meta = np.zeros_like(X)
+        X_meta[:, n_audio:] = X[:, n_audio:]
+
+        Y_audio = self.model_audio.predict(X_audio)
+        Y_meta = self.model_meta.predict(X_meta)
+        return self.alpha * Y_audio + (1.0 - self.alpha) * Y_meta
+
+
+def train_late_fusion(
+    X_train: np.ndarray,
+    Y_train: np.ndarray,
+    alpha: float = 0.5,
+) -> LateFusionModel:
+    """Train a late-fusion model: separate audio and metadata XGBoost models.
+
+    Each sub-model sees only its own feature subset (audio dims zeroed for
+    the metadata model and vice versa). Their predictions are blended with
+    weight ``alpha`` (audio) vs ``1 - alpha`` (metadata).
+    """
+    n_audio = N_AUDIO_FEATURES
+
+    X_audio = np.zeros_like(X_train)
+    X_audio[:, :n_audio] = X_train[:, :n_audio]
+    X_meta = np.zeros_like(X_train)
+    X_meta[:, n_audio:] = X_train[:, n_audio:]
+
+    log.info("training audio-only sub-model (%d features active)...", n_audio)
+    model_audio = train_xgboost(X_audio, Y_train)
+
+    log.info("training metadata-only sub-model (%d features active)...",
+             X_train.shape[1] - n_audio)
+    model_meta = train_xgboost(X_meta, Y_train)
+
+    log.info("late fusion complete, alpha=%.2f", alpha)
+    return LateFusionModel(model_audio, model_meta, alpha=alpha)
+
+
+# ---------------------------------------------------------------------------
+# Model persistence
+# ---------------------------------------------------------------------------
+
+
 def save_model(model: object, path: str) -> None:
     """Serialise a trained model to disk via joblib."""
     import joblib
@@ -650,4 +731,48 @@ class TrainedModelAdvisor:
                 source="trained_model",
             ),
             source="trained_model",
+        )
+
+
+class LateFusionAdvisor:
+    """Advisor backed by a late-fusion model (E22).
+
+    Two independent XGBoost sub-models (audio-only + metadata-only) with
+    blended predictions. Prevents the cross-feature overfitting observed
+    in E18e when early-fusing audio and metadata on synthetic data.
+    """
+
+    name = "late_fusion"
+
+    def __init__(self, model: LateFusionModel) -> None:
+        self._model = model
+
+    @classmethod
+    def load(cls, path: str) -> "LateFusionAdvisor":
+        return cls(load_model(path))
+
+    def advise(self, metadata: MediaMetadata, features: CurveFeatures) -> Advice:
+        from model.auto_beq_advisor import Advice, _clamp_advice
+
+        x = build_feature_vector(features, metadata)
+        y_pred = self._model.predict(x.reshape(1, -1))[0]
+        filters = labels_to_filters(y_pred)
+
+        if not filters:
+            return _clamp_advice(
+                Advice(max_gain_db=10.0, reasoning="late_fusion: no filters predicted",
+                       confidence=0.2, source="late_fusion"),
+                source="late_fusion",
+            )
+
+        total_gain = sum(abs(f["gain"]) for f in filters)
+        primary_knee = filters[0]["freq"]
+        return _clamp_advice(
+            Advice(
+                max_gain_db=total_gain, knee_hz=primary_knee,
+                filters=tuple(filters),
+                reasoning=f"late_fusion(α={self._model.alpha:.2f}): {len(filters)} filter(s)",
+                confidence=0.5, source="late_fusion",
+            ),
+            source="late_fusion",
         )
