@@ -1076,6 +1076,36 @@ remain in the codebase for future experimentation.
 
 ---
 
+## Session summary: E18–E21 (2026-04-08)
+
+Starting baseline (E17d Welch + MeasurementAdvisor defaults):
+**9 PASS / 4 MARGINAL / 18 FAIL** across 31 test cases.
+
+| Experiment | What changed | Grade Δ | Adopted? | New baseline |
+|---|---|---|---|---|
+| **E18** | Chunked-percentile extraction (STFT peak per chunk → P90) | mixed | Partial | — |
+| **E18b** | Blended extraction (70% Welch + 30% chunked P90 @ 60s) | +2 / 0 | **Yes** (default) | 9 P / 4 M / 18 F (via E18b sweep; grade changes vs Welch) |
+| **E19** | MeasurementAdvisor: slope threshold 15→10, multi-knee Q 0.8→0.9 | +2 / 0 | **Yes** | 10 P / 4 M / 17 F |
+| **E20** | Multi-knee gain cap 30→35 dB; 3-shelf tested but rejected | +1 / 0 | **Cap 35 yes** | 10 P / 5 M / 16 F |
+| **E21** | Self-feedback loop (iterative gain adjustment) | +3 / −8 | **No** | unchanged |
+
+**Final baseline: 10 PASS / 5 MARGINAL / 16 FAIL.**
+
+Key architectural additions:
+- `ExtractionStrategy` enum + `load_measured()` dispatcher (default: blend-a0.7-P90)
+- `AdvisorConfig` dataclass for parameterised advisor sweeps
+- `GainAdjustedAdvisor` wrapper for future feedback experiments
+- Unified test infrastructure: `test_library_sweep_e19`, `_e20`, `_e21`,
+  `_strategies`, `_chunked` — all share `_SWEEP_FILMS` and grading thresholds
+- CSV reports per experiment for comparative analysis
+
+Remaining bottleneck: the advisor's deficit formula (`peak - L10`) is a
+good first approximation but can't capture catalogue entries with
+aesthetic choices divorced from the measured curve. Supervised learning
+or catalogue-pattern templates are the next frontier.
+
+---
+
 ## Next to try
 
 - [ ] **E12: Self-feedback loop**. Generate initial chain, compute
