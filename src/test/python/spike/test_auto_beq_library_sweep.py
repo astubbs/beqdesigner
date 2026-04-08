@@ -655,9 +655,10 @@ class AdvisorConfig:
     """One MeasurementAdvisor configuration to test."""
     cascade_gain_ratio: float = 7.0
     cascade_q: float = 0.9
-    multi_knee_slope_threshold: float = 15.0
-    multi_knee_q: float = 0.8
+    multi_knee_slope_threshold: float = 10.0   # E19 default
+    multi_knee_q: float = 0.9                  # E19 default
     max_total_chain_gain_db: float = 30.0
+    max_shelves: int = 2
 
     @property
     def label(self) -> str:
@@ -667,10 +668,11 @@ class AdvisorConfig:
             f"-s{self.multi_knee_slope_threshold:.0f}"
             f"-mQ{self.multi_knee_q:.1f}"
             f"-cap{self.max_total_chain_gain_db:.0f}"
+            f"-sh{self.max_shelves}"
         )
 
 
-_BASELINE_CONFIG = AdvisorConfig()
+_BASELINE_CONFIG = AdvisorConfig()  # E19 defaults: s10, mQ0.9
 
 _E19_CONFIGS = [
     _BASELINE_CONFIG,
@@ -684,19 +686,16 @@ _E19_CONFIGS = [
     AdvisorConfig(cascade_q=0.8),
     AdvisorConfig(cascade_q=1.0),
     AdvisorConfig(cascade_q=1.2),
-    # Vary multi_knee_slope_threshold
-    AdvisorConfig(multi_knee_slope_threshold=10.0),
+    # Vary multi_knee_slope_threshold (from pre-E19 baseline 15.0)
     AdvisorConfig(multi_knee_slope_threshold=12.0),
+    AdvisorConfig(multi_knee_slope_threshold=15.0),
     AdvisorConfig(multi_knee_slope_threshold=18.0),
     AdvisorConfig(multi_knee_slope_threshold=20.0),
-    # Vary multi_knee_q
+    # Vary multi_knee_q (from pre-E19 baseline 0.8)
     AdvisorConfig(multi_knee_q=0.6),
     AdvisorConfig(multi_knee_q=0.7),
-    AdvisorConfig(multi_knee_q=0.9),
+    AdvisorConfig(multi_knee_q=0.8),
     AdvisorConfig(multi_knee_q=1.0),
-    # Combined winners from one-at-a-time sweep:
-    # s10 (BES MARGINAL→PASS) + mQ0.9 (Super Mario FAIL→MARGINAL)
-    AdvisorConfig(multi_knee_slope_threshold=10.0, multi_knee_q=0.9),
 ]
 
 _E19_REPORT_PATH = Path(os.environ.get(
@@ -740,6 +739,7 @@ def _run_one_film_e19(
         multi_knee_slope_threshold=config.multi_knee_slope_threshold,
         multi_knee_q=config.multi_knee_q,
         max_total_chain_gain_db=config.max_total_chain_gain_db,
+        max_shelves=config.max_shelves,
     )
     test_proposed = propose_filters_from_measured(
         measured, freqs, fs=fs, advisor=test_advisor, metadata=metadata,
@@ -820,6 +820,57 @@ def test_library_sweep_e19(film: SweepFilm, config: AdvisorConfig, caplog):
     """
     caplog.set_level(logging.INFO, logger="auto_beq_sweep")
     result = _run_one_film_e19(film, config)
+    if result is None:
+        pytest.skip(f"media file not accessible: {film.path}")
+    film, baseline_metrics, test_metrics, advisor_name, config = result
+    _append_e19_report(
+        film=film,
+        baseline_metrics=baseline_metrics,
+        test_metrics=test_metrics,
+        config=config,
+        catalogue_filter_count=len(film.catalogue_entry["filters"]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# E20: Multi-knee advisor improvements — 3-shelf cascade + gain cap sweep.
+#
+# Tests whether a 3-shelf chain (splitting the deficit across 5→10→20→peak
+# instead of just 10→20→peak) improves high-gain catalogue entries.
+# Also tests raising the gain cap from 30 to 35/40 dB.
+# ---------------------------------------------------------------------------
+
+_E20_CONFIGS = [
+    AdvisorConfig(),                                                    # baseline: 2-shelf, 30 dB
+    AdvisorConfig(max_shelves=3),                                       # 3-shelf, 30 dB
+    AdvisorConfig(max_shelves=3, max_total_chain_gain_db=35.0),         # 3-shelf, 35 dB
+    AdvisorConfig(max_shelves=3, max_total_chain_gain_db=40.0),         # 3-shelf, 40 dB
+    AdvisorConfig(max_total_chain_gain_db=35.0),                        # 2-shelf, 35 dB
+    AdvisorConfig(max_total_chain_gain_db=40.0),                        # 2-shelf, 40 dB
+]
+
+
+@pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
+@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
+@pytest.mark.parametrize(
+    "config",
+    _E20_CONFIGS,
+    ids=[c.label for c in _E20_CONFIGS],
+)
+@pytest.mark.parametrize(
+    "film",
+    _SWEEP_FILMS,
+    ids=[_sweep_film_id(f) for f in _SWEEP_FILMS] or None,
+)
+def test_library_sweep_e20(film: SweepFilm, config: AdvisorConfig, caplog):
+    """E20: multi-knee improvements — 3-shelf cascade + gain cap sweep.
+
+    No assertions. Run with:
+        SPIKE_TEST=...::test_library_sweep_e20 bash scripts/run-spike-tests.sh
+    """
+    caplog.set_level(logging.INFO, logger="auto_beq_sweep")
+    result = _run_one_film_e19(film, config)  # reuses same runner
     if result is None:
         pytest.skip(f"media file not accessible: {film.path}")
     film, baseline_metrics, test_metrics, advisor_name, config = result

@@ -285,49 +285,73 @@ class HeuristicAdvisor:
 # ---------------------------------------------------------------------------
 
 
-_MAX_TOTAL_CHAIN_GAIN_DB = 30.0
+_MAX_TOTAL_CHAIN_GAIN_DB = 35.0  # E20: raised from 30.0
 
 
 def _measurement_chain(
     features: CurveFeatures,
     q: float = 0.8,
     max_total_gain_db: float = _MAX_TOTAL_CHAIN_GAIN_DB,
+    max_shelves: int = 2,
 ) -> tuple[dict, ...] | None:
-    """Build an explicit 2-knee LowShelf chain for multi-knee cases.
+    """Build an explicit multi-knee LowShelf chain.
 
-    Split by measured deficits (no magic ratio):
+    **2-shelf mode** (default, ``max_shelves=2``):
       outer_gain = shoulder_peak - level_at_20hz  (lift 20 Hz to peak)
       inner_gain = level_at_20hz - level_at_10hz  (lift 10 Hz to L20)
 
-    Then scale the total chain gain down if it exceeds
-    *max_total_gain_db*. Cliff-class measurements (e.g. Mad Max with
-    30 dB deficit between 10 Hz and 20 Hz) produce deficits much
-    larger than any realistic BEQ needs, so we preserve the deficit
-    RATIO between inner and outer knees but cap the total summed DC
-    gain.
+    **3-shelf mode** (``max_shelves=3``): adds a third shelf below
+    10 Hz when the deficit between 10 Hz and 5 Hz is significant:
+      outer_gain = shoulder_peak - level_at_20hz
+      middle_gain = level_at_20hz - level_at_10hz
+      inner_gain = level_at_10hz - level_at_5hz
 
-    Returns None when no meaningful multi-knee chain is warranted
-    (both deficits < 1 dB).
+    Total chain gain is scaled proportionally to stay within
+    *max_total_gain_db*.
+
+    Returns None when no meaningful chain is warranted (total < 1 dB).
     """
     outer_knee_hz = float(np.clip(features.shoulder_peak_hz, 12.0, 40.0))
-    inner_knee_hz = float(np.clip(features.shoulder_peak_hz / 2.0, 8.0, 14.0))
+
+    # Gains from measured deficits at reference frequencies.
     outer_gain = max(0.0, features.shoulder_peak_db - features.level_at_20hz_db)
-    inner_gain = max(0.0, features.level_at_20hz_db - features.level_at_10hz_db)
-    total = outer_gain + inner_gain
+    mid_gain = max(0.0, features.level_at_20hz_db - features.level_at_10hz_db)
+
+    # 3-shelf: add inner deficit (10→5 Hz) if enabled and significant.
+    inner_gain = 0.0
+    if max_shelves >= 3:
+        inner_gain = max(0.0, features.level_at_10hz_db - features.level_at_5hz_db)
+
+    gains = [g for g in [inner_gain, mid_gain, outer_gain] if g > 1.0]
+    total = sum(gains)
     if total < 1.0:
         return None
+
     # Cliff scaling: preserve the ratio, cap the sum.
     if total > max_total_gain_db:
         scale = max_total_gain_db / total
         inner_gain *= scale
+        mid_gain *= scale
         outer_gain *= scale
+
+    # Knee frequencies: spread across the rolloff range.
+    mid_knee_hz = float(np.clip(features.shoulder_peak_hz / 2.0, 8.0, 14.0))
+    inner_knee_hz = float(np.clip(features.shoulder_peak_hz / 3.0, 5.0, 10.0))
+
     chain: list[dict] = []
-    if inner_gain > 1.0:
+    if max_shelves >= 3 and inner_gain > 1.0:
         chain.append({
             "type": "LowShelf",
             "freq": inner_knee_hz,
             "q": q,
             "gain": float(inner_gain),
+        })
+    if mid_gain > 1.0:
+        chain.append({
+            "type": "LowShelf",
+            "freq": mid_knee_hz,
+            "q": q,
+            "gain": float(mid_gain),
         })
     if outer_gain > 1.0:
         chain.append({
@@ -427,12 +451,14 @@ class MeasurementAdvisor:
         multi_knee_slope_threshold: float = 10.0,  # E19: lowered from 15.0
         multi_knee_q: float = 0.9,                 # E19: raised from 0.8
         max_total_chain_gain_db: float = _MAX_TOTAL_CHAIN_GAIN_DB,
+        max_shelves: int = 2,                       # E20: 2 or 3
         cascade_gain_ratio: float = 7.0,
         cascade_q: float = 0.9,
     ):
         self._multi_knee_slope_threshold = multi_knee_slope_threshold
         self._multi_knee_q = multi_knee_q
         self._max_total_chain_gain_db = max_total_chain_gain_db
+        self._max_shelves = max_shelves
         self._cascade_gain_ratio = cascade_gain_ratio
         self._cascade_q = cascade_q
 
@@ -488,6 +514,7 @@ class MeasurementAdvisor:
                 features,
                 q=self._multi_knee_q,
                 max_total_gain_db=self._max_total_chain_gain_db,
+                max_shelves=self._max_shelves,
             )
 
         reasoning = (

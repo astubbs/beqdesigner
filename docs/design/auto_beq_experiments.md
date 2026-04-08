@@ -961,6 +961,52 @@ are strictly non-regressing with meaningful improvements.
 `test_library_sweep_e19` in sweep file.
 CSV: `.pytest_cache/auto_beq_sweep_e19.csv`.
 
+### E20 - Multi-knee improvements: 3-shelf cascade + gain cap
+
+**Hypothesis**: High-gain catalogue entries (Splinter Cell 37-42 dB,
+KPop 36 dB) fail because the 2-shelf chain with 30 dB cap can't
+reach them. A 3-shelf cascade (splitting deficit across 5→10→20→peak)
+and/or a higher gain cap should improve these titles.
+
+**Method**: Extended `_measurement_chain()` to support 3-shelf mode
+(adds inner shelf at shoulder/3 for the 10→5 Hz deficit). Swept 6
+configs across 31 tests:
+
+| Config | P/M/F | Imp | Deg | Avg Δ |
+|---|---|---|---|---|
+| baseline (2-shelf, 30 dB) | 10/4/17 | 0 | 0 | +0.00 |
+| 3-shelf, 30 dB | 9/3/19 | 0 | 2 | +0.30 |
+| **2-shelf, 35 dB** | **10/5/16** | **1** | **0** | **-0.27** |
+| 3-shelf, 35 dB | 10/4/17 | 2 | 1 | -0.01 |
+| 2-shelf, 40 dB | 11/4/16 | 2 | 1 | -0.43 |
+| 3-shelf, 40 dB | 11/3/17 | 3 | 2 | -0.20 |
+
+**Key findings**:
+
+1. **3-shelf HURTS**: Blue Eye Samurai regresses PASS→FAIL in every
+   3-shelf config (+2.34 dB). The 3rd shelf at 5-10 Hz produces a
+   target shape the fitter can't match — the added degree of freedom
+   in the target makes the greedy shelf+PEQ fitter less effective.
+   Verdict: keep `max_shelves=2`.
+
+2. **Raising gain cap to 35 is safe**: Flow flips FAIL→MARGINAL
+   (-2.38 dB), 0 degradations. The higher cap lets the multi-knee
+   chain reach deeper without cliff-scaling down the gains.
+
+3. **Cap 40 is too aggressive**: gains Flow FAIL→PASS and one
+   Splinter Cell FAIL→MARGINAL, but also regresses a different
+   Splinter Cell episode MARGINAL→FAIL. Net +1, but not zero-risk.
+
+**Recommendation**: raise `_MAX_TOTAL_CHAIN_GAIN_DB` from 30 to 35.
+Zero degradations, one grade improvement.
+
+**New baseline after E20**: 10 PASS / 5 MARGINAL / 16 FAIL
+(was 10/4/17 after E19).
+
+**Kept**: `max_shelves` constructor param (default stays 2),
+`_MAX_TOTAL_CHAIN_GAIN_DB` raised to 35.
+`test_library_sweep_e20` in sweep file.
+
 ---
 
 ## Next to try
