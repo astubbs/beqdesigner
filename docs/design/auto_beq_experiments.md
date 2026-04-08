@@ -1048,3 +1048,69 @@ that the model hasn't learned.
 | 13 | Audio 40 Hz | 1.7% |
 | 14 | Audio 60 Hz | 1.6% |
 | 15 | Audio format (DD+) | 1.6% |
+
+### E18e - Ablation: audio-only vs metadata-only vs full
+
+**Setup**: Three XGBoost models trained on the same ~8,200 synthetic
+catalogue entries, each seeing a different feature subset:
+- **audio-only**: 9 frequency bins (dims 0–8), metadata zeroed
+- **metadata-only**: 81 metadata features (dims 9–89), audio zeroed
+- **full**: all 90 dims (E18d baseline)
+
+All three evaluated on the same 14 real-audio validation titles.
+
+**Result**:
+
+| Variant | Real audio | Synthetic | Gap |
+|---|---|---|---|
+| **audio-only** | **3.53 dB** | 3.80 dB | **-0.27 dB** |
+| metadata-only | 3.78 dB | 3.78 dB | 0.00 dB |
+| full (audio+meta) | 6.34 dB | 3.45 dB | +2.90 dB |
+
+**Key findings**:
+
+1. **The combined model is the WORST on real audio** (6.34 dB), nearly 3 dB
+   worse than either feature set alone. Audio-only (3.53 dB) is the best
+   single predictor on real data.
+
+2. **Audio-only has a negative gap** (-0.27 dB): real audio is actually
+   *easier* than synthetic for the audio-only model. This makes sense —
+   when the model only sees audio features, it learns pure frequency-shape
+   patterns. Real measured curves have the same general rolloff shape as
+   synthetic, just noisier. The audio-only model is robust to that noise.
+
+3. **Metadata-only has zero gap** (0.00 dB): metadata features are identical
+   between synthetic and real (year, studio, format don't change). The 3.78 dB
+   metadata-only score is the pure metadata baseline — what you can predict
+   about a film's BEQ just from knowing it's "Paramount, 2024, Atmos".
+
+4. **The full model overfits to synthetic-specific cross-correlations**
+   between audio and metadata that don't hold on real audio. When XGBoost
+   sees metadata saying "Paramount, 2024, Atmos" alongside a noisy real
+   spectrum, the cross-feature splits it learned from perfect synthetic
+   curves produce worse predictions than either signal alone.
+
+**Interpretation**: This is a **feature interaction overfit**, not a
+metadata encoding problem. The solution is NOT to drop metadata — it
+carries real signal (3.78 dB standalone is close to audio-only's 3.53 dB).
+The solution is one of:
+
+1. **Train on real audio**: The cross-correlations between audio and metadata
+   would be learned from real spectra, eliminating the synthetic-to-real gap
+   that causes the overfit. This is the STFT pipeline work.
+
+2. **Late fusion**: Train separate audio-only and metadata-only models,
+   then combine their predictions (average, stack, or blend). This prevents
+   cross-feature overfitting entirely.
+
+3. **Regularisation**: Reduce XGBoost tree depth or increase min_child_weight
+   to prevent learning fine-grained audio×metadata interactions that don't
+   generalise.
+
+**Implication for architecture progression**: The 1D CNN dual-branch design
+(audio CNN + metadata dense → merged at penultimate layer) naturally provides
+late fusion. The CNN stage may solve this overfit problem structurally.
+
+This ablation is committed as a permanent test
+(`test_ablation_audio_vs_metadata`) for continuous reassessment as the
+model evolves.
