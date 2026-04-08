@@ -1,5 +1,38 @@
 # Agent instructions
 
+## Mandatory rules
+
+### Experiment logging
+
+**Every experiment MUST be logged in
+`docs/design/auto_beq_experiments.md` before committing.** This is
+non-negotiable. The experiment log is the source of truth for "what
+we tried and what happened". If you ran it, log it.
+
+Each entry must include:
+- Experiment ID (E1, E2, ... sequential)
+- What was changed and why
+- Quantitative results (per-title mean/max error, verdict counts)
+- Lesson learned
+- Whether the change was kept or reverted
+
+Infrastructure changes that aren't algorithm experiments (new scripts,
+cache dir, parallelism, etc) get a grouped entry under
+"Infrastructure improvements" with the date range.
+
+### Documentation
+
+**README and design docs must be updated alongside code changes.**
+
+- `README.md` quickstart section must reflect current scripts and
+  workflow. If you add/rename/remove a script, update the README.
+- `docs/design/auto_beq.md` must reflect current architecture.
+- `AGENTS.md` must reflect current scripts table and env vars.
+- `branch-plans/plan-*.md` must reflect current branch state.
+
+Do NOT commit code changes without checking whether the docs need
+updating. Stale docs are worse than no docs.
+
 ## Branch plans
 
 **Rule**: when working on a feature branch, save the branch's current

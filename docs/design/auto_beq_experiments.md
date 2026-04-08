@@ -11,8 +11,10 @@ append-only. Entries are dated (YYYY-MM-DD). Source of truth for
 Grading thresholds: mean_abs_err < 2 dB, max_abs_err < 5 dB, across
 5-80 Hz, vs catalogue entry's response curve.
 
-Test fixtures (real-media): Edge of Tomorrow (EoT, UHD DTS-HD 7.1),
-Mad Max: Fury Road (MM, UHD TrueHD Atmos 7.1), John Wick (JW, WEBDL
+Original test fixtures (E1-E15): Edge of Tomorrow (EoT, blacklisted
+E15c — wrong codec), Mad Max: Fury Road (MM), John Wick (JW).
+Expanded corpus (E17+): 63 titles, 132 files from TV + kids' movies.
+See E17 baseline for full title list. Current sweep fixtures (WEBDL
 EAC3 5.1).
 
 ---
@@ -631,6 +633,78 @@ failures are either:
 - Stereo content with no discrete LFE (Spawn: different signal)
 - Extreme cliff deficits (Splinter Cell: 43+ dB, even 30 dB cap
   isn't enough for some episodes)
+
+### E16 correction — catalogue-first was wrong for tests
+
+E16 used `propose_or_lookup()` in the sweep test, which served
+catalogue entries directly. Tests graded catalogue-vs-catalogue
+(trivially 0.00/0.00) — completely bypassed the auto-generation
+algorithm under test. User caught this: "our system's output is
+unusable but tests pass."
+
+Reverted sweep test to call `propose_filters_from_measured()`
+(honest auto-generation). `propose_or_lookup()` stays in
+`auto_beq.py` for production use only.
+
+**Lesson**: tests must ALWAYS exercise auto-generation. The
+catalogue is the answer key, not a shortcut to serve in tests.
+
+### E17 baseline — honest sweep across expanded corpus
+
+Expanded test corpus from 3 hand-picked films to 63 titles
+(132 files) via library sweep discovery. Covers TV shows (Blue Eye
+Samurai, Pantheon, Spawn, South Park, Splinter Cell, X-Men '97,
+Scavengers Reign, MINDHUNTER) plus kids' movies (Frozen, Coco,
+WALL-E, etc). 62% catalogue match rate.
+
+Baseline with MeasurementAdvisor (E14 formula) across 34 episodes:
+  1 MARGINAL (X-Men '97 ep2: 1.60/5.09)
+  33 FAIL
+  Best per title: South Park 3.12, Spawn 3.48, Pantheon 4.41
+
+### Infrastructure improvements (2026-04-06 to 2026-04-08)
+
+Not algorithm experiments, but significant pipeline changes:
+
+- **Mono downmix fallback**: stereo content (Spawn, Scavengers
+  Reign) now processed via `-ac 1` instead of skipping. Per
+  docs/workflow/beq.md "Post-BM" approach.
+- **Audio cache dir**: extracted WAVs stored under
+  `~/Downloads/beqdesigner/audio-cache/` with mirrored path
+  structure, no longer next to source media files. Configurable
+  via `settings.json`.
+- **Blacklist mechanism**: manifest entries with `"blacklisted": true`
+  are silently skipped. EoT blacklisted (wrong codec match, E15c).
+- **Library sweep discovery**: two-phase (inventory all roots first,
+  then match with global progress). Per-root match percentages in
+  summary.
+- **Backslash-escaped paths**: `_split_paths()` strips shell escapes
+  from interactive input.
+- **Multi-host Ollama**: round-robin load balancing across configured
+  hosts, failover on error, per-host timing stats.
+- **Parallel sweep**: `test_library_sweep_parallel` uses
+  `ThreadPoolExecutor` with concurrency = number of Ollama hosts.
+- **File logging**: all scripts now `tee` output to
+  `.pytest_cache/*.log` for tailing in another terminal.
+- **run-sweep-tests.sh**: new script for running the sweep pipeline.
+- **ceil(n/2) episode cap**: sweep tests half the episodes per title.
+
+### Multi-host Ollama test (2026-04-07)
+
+Configured two Ollama hosts: localhost (Apple Silicon) + grumpy
+(192.168.1.91, Windows, RTX GPU). Both running `qwen:14b`.
+
+**Result**: localhost timed out on `qwen:14b` at 120s timeout —
+the 14B model is too slow for the multi-step advisor flow (3-4
+sequential LLM calls per media file). Grumpy (GPU) responded but
+the serial nature of the multi-step flow means each file takes
+several minutes.
+
+**Lesson**: multi-host parallelism works mechanically (round-robin,
+failover) but qwen:14b is too slow for batch sweeps. Need either:
+(a) use small fast models for integration testing, proper models
+for accuracy testing (one at a time), or (b) use MeasurementAdvisor
+(no LLM) for sweeps and Ollama only for specific titles.
 
 ## Next to try
 
