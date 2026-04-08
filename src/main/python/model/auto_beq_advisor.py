@@ -77,6 +77,18 @@ class MediaMetadata:
     year: int | None = None
     audio_codec: str | None = None
     channel_layout: str | None = None
+    # Tier 1 — directly from BEQ catalogue (no external lookup needed)
+    audio_types: tuple[str, ...] = ()   # e.g. ("Atmos",), ("DTS-HD MA 7.1",)
+    source: str | None = None           # "Disc" | "Streaming"
+    genres: tuple[str, ...] = ()        # e.g. ("Action", "Science Fiction")
+    language: str | None = None         # "English", "Korean", etc.
+    # Tier 1 — needs external lookup (TMDb); zero-padded in ML model until then
+    studio: str | None = None           # "Disney", "Warner", "Universal", etc.
+    # Tier 2 — needs external lookup (IMDB); zero-padded until then
+    supervising_mixer: str | None = None
+    # Tier 3 — from catalogue, low marginal value but cost-free
+    rating: str | None = None           # "PG-13", "R", etc.
+    runtime_min: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1438,7 +1450,10 @@ def get_advisor(name: str | None = None) -> Advisor:
     then to HeuristicAdvisor.
 
     Supported names: ``heuristic``, ``measurement``, ``topology``,
-    ``slope_extension``, ``mock``, ``ollama``.
+    ``slope_extension``, ``mock``, ``ollama``, ``trained_model``.
+
+    For ``trained_model``: requires ``AUTO_BEQ_MODEL_PATH`` env var pointing
+    to a joblib file written by ``auto_beq_nn.save_model()``.
     """
     resolved = (name or os.environ.get("AUTO_BEQ_ADVISOR") or "heuristic").lower()
     if resolved == "heuristic":
@@ -1453,7 +1468,16 @@ def get_advisor(name: str | None = None) -> Advisor:
         return MockAdvisor()
     if resolved == "ollama":
         return OllamaAdvisor()
+    if resolved == "trained_model":
+        from model.auto_beq_nn import TrainedModelAdvisor
+        path = os.environ.get("AUTO_BEQ_MODEL_PATH")
+        if not path:
+            raise ValueError(
+                "AUTO_BEQ_MODEL_PATH env var required for 'trained_model' advisor — "
+                "set it to the path of a model saved by auto_beq_nn.save_model()"
+            )
+        return TrainedModelAdvisor.load(path)
     raise ValueError(
         f"unknown advisor name: {resolved!r} "
-        "(supported: heuristic, measurement, mock, ollama)"
+        "(supported: heuristic, measurement, topology, slope_extension, mock, ollama, trained_model)"
     )

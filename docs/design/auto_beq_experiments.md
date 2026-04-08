@@ -736,3 +736,59 @@ for accuracy testing (one at a time), or (b) use MeasurementAdvisor
 - [ ] **E12: Calibration layer** — learn a linear correction from
       LLM outputs to true catalogue values using the 3 existing
       fixtures. Thin wrapper over any LLM.
+
+---
+
+## 2026-04-08: ML model experiments (Experiments 18–19)
+
+See companion doc [`auto_beq_ml_experiments.md`](auto_beq_ml_experiments.md) for full design.
+
+### E18 - XGBoost trained model (initial code path)
+
+**Hypothesis**: A regression model trained on BEQ catalogue entries learns the
+mapping from audio features (Option A: 9-bin percentile curve) + metadata
+(year, audio format, release type, studio, mixer, genre, country, runtime,
+rating) to corrective filter parameters. Bypasses all hand-coded rolloff rules.
+
+**Status**: Code path being built (branch: feats/neural-net-strat). Initial
+training uses **synthetic data**: rolloff curves derived from catalogue filter
+chains rather than real audio. No STFT pipeline needed at this stage.
+
+**Feature vector** (60 dims):
+- Audio: 9 bins at 20/25/30/35/40/50/60/70/80 Hz (Option A)
+- Metadata: year(1) + audio_format(6) + source(3) + studio_embed(16) +
+  mixer_embed(8) + genre(10) + country(5) + runtime(1) + rating(1) = 51
+- Studio (most predictive) + mixer: zero-padded stubs until TMDb/IMDB lookup
+
+**Y label** (16 dims): MAX_FILTER_SLOTS=4 × [type_int, freq, gain, q]
+
+**Key design decisions**:
+- Deduplication before split: group by title, keep highest-quality format
+  (Atmos > TrueHD > DTS-HD MA > other) to avoid leaking BD/UHD duplicates
+  across the train/test boundary
+- Stop on downstream loss (mean dB error 20–80 Hz), not parameter MSE
+- 70/15/15 split, stratified by rolloff severity + contributor
+
+**Architecture progression**: XGBoost (this step) → 1D CNN → transformer.
+XGBoost feature importances gate escalation: if studio/year/format not high
+importance, metadata strategy needs revisiting before CNN.
+
+**New module**: `src/main/python/model/auto_beq_nn.py`
+**New tests**: `src/test/python/spike/test_auto_beq_nn.py` (7 tests)
+**Deps added**: `xgboost`, `scikit-learn`
+
+### E19 - Hybrid: trained model warm-start + scipy refinement
+
+**Hypothesis**: Model prediction (E18) warm-starts the scipy optimiser with
+±30% bounds. Metadata priors anchor prediction when audio evidence is thin.
+Scene-quality chunk filtering (from E3/E6 modules) feeds cleaner audio signal.
+
+**Status**: Deferred until E18 XGBoost baseline is validated.
+
+**Architecture**:
+1. Stage 1: chunk quality filtering (music exclusion, energy weighting)
+2. Stage 2: E18 model on filtered audio + full metadata → warm start
+3. Stage 3: scipy L-BFGS-B with model prediction as init, ±30% bounds
+
+**Confidence scoring**: chunk count + ensemble variance + metadata completeness
++ stage 2→3 delta + optimiser convergence. Below threshold → human review flag.
