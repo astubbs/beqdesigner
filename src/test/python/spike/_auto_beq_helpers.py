@@ -253,15 +253,27 @@ def extract_lfe_wav(
     return cache_path
 
 
-def load_and_smooth(wav_path: Path, fs: int, freqs: np.ndarray) -> np.ndarray:
+def load_and_smooth(
+    wav_path: Path,
+    fs: int,
+    freqs: np.ndarray,
+    expected_runtime_min: float = 0,
+) -> np.ndarray:
     """Load a WAV file, compute avg spectrum, interp to grid, smooth to 1/6-octave.
 
-    Pipeline: WAV → Welch avg spectrum → interp to log grid → normalise
-    to 80 Hz anchor → 1/6-octave smooth → re-anchor. Matches the
-    ``test_real_media_roundtrip`` pipeline verbatim.
+    Pipeline: validate WAV integrity → WAV → Welch avg spectrum → interp
+    to log grid → normalise to 80 Hz anchor → 1/6-octave smooth → re-anchor.
+
+    Raises RuntimeError if the WAV fails integrity checks.
     """
     from model.auto_beq import smooth_fractional_octave
     from model.signal import Signal, read_wav_data
+    from model.wav_integrity import validate_wav
+
+    # Integrity gate — every WAV is validated before use.
+    ok, reason = validate_wav(wav_path, expected_runtime_min=expected_runtime_min)
+    if not ok:
+        raise RuntimeError(f"corrupt WAV, skipping: {wav_path.name} — {reason}")
 
     samples, read_fs, _ = read_wav_data(str(wav_path))
     assert read_fs == fs, f"expected fs={fs}, got {read_fs}"
@@ -289,10 +301,11 @@ def load_and_smooth_chunked(
     freqs: np.ndarray,
     chunk_s: float = 60.0,
     percentile: float = 90.0,
+    expected_runtime_min: float = 0,
 ) -> np.ndarray:
     """Chunked-percentile spectrum: chunks → STFT peak per chunk → Nth-percentile.
 
-    Pipeline: WAV → split into fixed-length chunks → STFT peak curve
+    Pipeline: validate WAV integrity → WAV → split into fixed-length chunks → STFT peak curve
     per chunk → stack [n_chunks × n_freq_bins] → Nth-percentile across
     chunks → interp to log grid → normalise to 80 Hz anchor → 1/6-oct
     smooth → re-anchor.
@@ -319,6 +332,12 @@ def load_and_smooth_chunked(
 
     from model.auto_beq import smooth_fractional_octave
     from model.signal import read_wav_data
+    from model.wav_integrity import validate_wav
+
+    # Integrity gate — every WAV is validated before use.
+    ok, reason = validate_wav(wav_path, expected_runtime_min=expected_runtime_min)
+    if not ok:
+        raise RuntimeError(f"corrupt WAV, skipping: {wav_path.name} — {reason}")
 
     samples, read_fs, _ = read_wav_data(str(wav_path))
     assert read_fs == fs, f"expected fs={fs}, got {read_fs}"
