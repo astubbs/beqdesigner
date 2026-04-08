@@ -19,11 +19,16 @@ Usage:
 
 Directory structure (managed by the script):
     beq-dir/
-      .extract_config.json          # saved media roots
-      missing_ids.txt               # media files without DB IDs
+      .extract_config.json          # saved media roots (auto-created on first run)
+      beq_catalogue.json            # BEQ catalogue (auto-fetched from GitHub, freshness-checked)
+      missing_ids.txt               # media files without DB ID tags
       wav-cache/
         Movies/A/Alien (1979) [tmdb-348]/Alien (1979) [tmdb-348].lfe-1000hz.wav
         TV/E/86 - Eighty Six (2021) [tvdb-378609]/Season 01/86 - Eighty Six S01E02 [tvdb-378609].lfe-1000hz.wav
+
+Only media with a matching BEQ catalogue entry is extracted. The catalogue
+is fetched from GitHub and cached locally — re-downloaded only when the
+remote has been updated (HTTP Last-Modified check).
 """
 
 from __future__ import annotations
@@ -79,19 +84,101 @@ def extract_media_id(media_path: Path) -> tuple[str, str] | None:
 
 
 # ---------------------------------------------------------------------------
+# BEQ catalogue fetch + cache
+# ---------------------------------------------------------------------------
+
+_CATALOGUE_URL = (
+    "https://raw.githubusercontent.com/3ll3d00d/beqcatalogue/master/docs/database.json"
+)
+
+
+def fetch_catalogue(beq_dir: Path) -> list[dict]:
+    """Fetch the BEQ catalogue, caching at {beq_dir}/beq_catalogue.json.
+
+    Does an HTTP HEAD to check Last-Modified against local file mtime.
+    Only re-downloads if the remote is newer. Uses stdlib only.
+    """
+    import email.utils
+    import urllib.request
+
+    cache_path = beq_dir / "beq_catalogue.json"
+
+    # Check if remote is newer than our cache.
+    need_download = True
+    if cache_path.exists():
+        local_mtime = cache_path.stat().st_mtime
+        try:
+            req = urllib.request.Request(_CATALOGUE_URL, method="HEAD")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                remote_modified = resp.headers.get("Last-Modified")
+                if remote_modified:
+                    remote_ts = email.utils.parsedate_to_datetime(remote_modified).timestamp()
+                    if remote_ts <= local_mtime:
+                        need_download = False
+                        log.info("catalogue cache is up to date: %s", cache_path)
+        except Exception as exc:
+            log.warning("HEAD check failed (%s) — using cached catalogue", exc)
+            need_download = False
+
+    if need_download:
+        log.info("downloading BEQ catalogue from %s ...", _CATALOGUE_URL)
+        try:
+            req = urllib.request.Request(_CATALOGUE_URL)
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = resp.read()
+            tmp = cache_path.with_suffix(".tmp")
+            tmp.write_bytes(data)
+            tmp.rename(cache_path)
+            log.info("catalogue saved: %s (%d bytes)", cache_path, len(data))
+        except Exception as exc:
+            if cache_path.exists():
+                log.warning("download failed (%s) — using stale cache", exc)
+            else:
+                raise RuntimeError(f"cannot fetch catalogue and no cache exists: {exc}")
+
+    catalogue = json.loads(cache_path.read_text())
+    log.info("catalogue loaded: %d entries", len(catalogue))
+    return catalogue
+
+
+def build_catalogue_index(catalogue: list[dict]) -> dict:
+    """Build in-memory lookup indices from the catalogue.
+
+    Returns dict with:
+      by_tmdb: {tmdb_id: entry} — primary index
+      by_title_year: {(title_lower, year_str): entry} — fallback for tvdb/imdb
+    """
+    by_tmdb: dict[str, dict] = {}
+    by_title_year: dict[tuple[str, str], dict] = {}
+    for e in catalogue:
+        tid = str(e.get("theMovieDB", "")).strip()
+        if tid:
+            by_tmdb.setdefault(tid, e)
+        key = (e.get("title", "").lower().strip(), str(e.get("year", "")))
+        by_title_year.setdefault(key, e)
+    log.info("catalogue index: %d tmdb IDs, %d title+year keys",
+             len(by_tmdb), len(by_title_year))
+    return {"by_tmdb": by_tmdb, "by_title_year": by_title_year}
+
+
+# ---------------------------------------------------------------------------
 # Media discovery
 # ---------------------------------------------------------------------------
 
 
-def discover_media(roots: list[Path]) -> list[dict]:
-    """Find all .mkv files with [tmdb-NNN] in their path.
+def discover_media(roots: list[Path], catalogue_index: dict) -> list[dict]:
+    """Find .mkv files that have a DB ID tag AND a BEQ catalogue match.
 
     Returns list of dicts: {path, media_id, id_type, id_value, title, year, size_bytes, ...}.
-    Files without TMDb IDs are logged and added to the missing list.
+    Files without DB IDs → missing_ids. Files with ID but no catalogue match → skipped.
     """
+    by_tmdb = catalogue_index["by_tmdb"]
+    by_title_year = catalogue_index["by_title_year"]
+
     results = []
     missing_ids = []
-    seen_keys = set()  # (tmdb_id, season, episode) for dedup
+    no_catalogue = []
+    seen_keys = set()
 
     for root in roots:
         if not root.exists():
@@ -135,6 +222,18 @@ def discover_media(roots: list[Path]) -> list[dict]:
                 title = f"unknown-{media_id}"
                 year = "0000"
 
+            # Check BEQ catalogue — skip media with no catalogue entry.
+            has_catalogue = False
+            if id_type == "tmdb" and id_value in by_tmdb:
+                has_catalogue = True
+            elif title and year:
+                # Fallback for tvdb/imdb: match by title+year.
+                if (title.lower().strip(), year) in by_title_year:
+                    has_catalogue = True
+            if not has_catalogue:
+                no_catalogue.append(f"{media_id} {title} ({year}) — {f.name}")
+                continue
+
             # Detect TV episodes.
             ep_match = _EPISODE_RE.search(f.stem)
             season = int(ep_match.group(1)) if ep_match else None
@@ -166,11 +265,18 @@ def discover_media(roots: list[Path]) -> list[dict]:
             })
 
     if missing_ids:
-        log.warning("%d media files missing [tmdb-NNN] ID — skipped", len(missing_ids))
+        log.warning("%d media files missing DB ID tag — skipped", len(missing_ids))
         for p in missing_ids[:10]:
             log.warning("  missing ID: %s", Path(p).name[:80])
         if len(missing_ids) > 10:
             log.warning("  ... and %d more", len(missing_ids) - 10)
+
+    if no_catalogue:
+        log.info("%d media files have DB ID but no BEQ catalogue entry — skipped", len(no_catalogue))
+        for desc in no_catalogue[:10]:
+            log.info("  no catalogue: %s", desc)
+        if len(no_catalogue) > 10:
+            log.info("  ... and %d more", len(no_catalogue) - 10)
 
     # Sort by size (smallest first = fastest extraction).
     results.sort(key=lambda r: r["size_bytes"])
@@ -503,8 +609,12 @@ def main(argv: list[str] | None = None):
     if not media_roots:
         parser.error("no media roots configured — use --media-root or run interactively")
 
-    # Discover media.
-    media, missing_ids = discover_media(media_roots)
+    # Fetch BEQ catalogue (cached, freshness-checked via Last-Modified).
+    catalogue = fetch_catalogue(beq_dir)
+    cat_index = build_catalogue_index(catalogue)
+
+    # Discover media — only titles with a BEQ catalogue match.
+    media, missing_ids = discover_media(media_roots, cat_index)
     log.info("found %d extractable titles (sorted by size, smallest first)", len(media))
 
     # Save missing IDs list.

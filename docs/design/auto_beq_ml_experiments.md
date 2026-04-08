@@ -317,12 +317,18 @@ and new users get the metadata for free without hitting TMDb independently.
 ### WAV audio cache
 
 **Portable cache** (`scripts/extract_lfe.py`):
-- Movies: `wav-root/Movies/B/Blade Runner (1982) [tmdb-78]/Blade Runner (1982) [tmdb-78].lfe-1000hz.wav`
-- TV: `wav-root/TV/B/BLUE EYE SAMURAI (2023) [tmdb-225180]/Season 01/BLUE EYE SAMURAI S01E01 [tmdb-225180].lfe-1000hz.wav`
-- Keyed by TMDb ID — required in filename, no fuzzy matching
+- Movies: `beq-dir/wav-cache/Movies/B/Blade Runner (1982) [tmdb-78]/Blade Runner (1982) [tmdb-78].lfe-1000hz.wav`
+- TV: `beq-dir/wav-cache/TV/E/86 - Eighty Six (2021) [tvdb-378609]/Season 01/86 - Eighty Six S01E02 [tvdb-378609].lfe-1000hz.wav`
+- Supports `[tmdb-NNN]`, `[tvdb-NNN]`, `[imdb-NNN]` — searches filename → parent → grandparent
+- **Only extracts catalogue-matched media**: auto-fetches BEQ catalogue from
+  GitHub, caches at `{beq-dir}/beq_catalogue.json`, freshness-checked via
+  HTTP Last-Modified (no arbitrary TTL). Catalogue loaded once into memory
+  at startup — indexed by tmdb ID + title+year fallback for tvdb/imdb.
 - Standalone script: scp to NAS, run locally, no project deps
-- Atomic writes: `.tmp` → rename on success, prevents corruption
+- Atomic writes: `.tmp` → rename on success + `-f wav` for format, prevents corruption
 - Sample rate 1000 Hz hardcoded (coupled to BEQ analysis algorithm)
+- Config persisted at `{beq-dir}/.extract_config.json` — no args needed after first run
+- Self-hash logged at startup for version tracking on remote servers
 
 **Legacy cache** (`_auto_beq_helpers.py`):
 - Structure: mirrors source media path under `~/Downloads/beqdesigner/audio-cache/`
