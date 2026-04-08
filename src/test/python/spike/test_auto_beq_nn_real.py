@@ -214,12 +214,13 @@ def test_train_full_catalogue_validate_real_audio(tmp_path):
     log.info("feature importances: audio=%.3f metadata=%.3f", audio_imp, meta_imp)
 
     # Top features.
+    from model.auto_beq_nn import _STUDIO_VOCAB, _MIXER_VOCAB
     feature_names = (
         [f"audio_{hz}Hz" for hz in [20, 25, 30, 35, 40, 50, 60, 70, 80]]
         + ["year", "fmt_atmos", "fmt_truehd", "fmt_dtshd", "fmt_ddatmos", "fmt_dd", "fmt_other"]
         + ["src_disc", "src_stream", "src_unk"]
-        + [f"studio_{i}" for i in range(16)]
-        + [f"mixer_{i}" for i in range(8)]
+        + [f"studio_{s[:20]}" for s in _STUDIO_VOCAB]
+        + [f"mixer_{m[:20]}" for m in _MIXER_VOCAB]
         + [f"genre_{i}" for i in range(10)]
         + [f"country_{i}" for i in range(5)]
         + ["runtime", "rating"]

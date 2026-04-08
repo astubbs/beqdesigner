@@ -44,11 +44,36 @@ N_AUDIO_FORMAT = len(_AUDIO_FORMAT_BUCKETS)  # 6
 _SOURCE_BUCKETS = ["disc", "streaming", "unknown"]
 N_SOURCE = len(_SOURCE_BUCKETS)  # 3
 
-# Studio embedding dim (Tier 1 — most predictive; zero-padded until TMDb lookup)
-N_STUDIO_EMBED = 16
+# Studio vocabulary — top-30 studios by catalogue frequency + "other" bucket.
+# Covers ~20% of entries directly; the rest fall into "other". Each studio
+# gets its own XGBoost split point — no hash collisions.
+_STUDIO_VOCAB = [
+    "paramount pictures", "universal pictures", "columbia pictures",
+    "warner bros. pictures", "new line cinema", "walt disney pictures",
+    "lionsgate", "warner bros. animation", "marvel studios",
+    "dreamworks animation", "20th century fox", "metro-goldwyn-mayer",
+    "blumhouse productions", "dreamworks pictures", "dimension films",
+    "cj entertainment", "yash raj films", "a24", "tristar pictures",
+    "pixar", "legendary pictures", "screen gems", "village roadshow pictures",
+    "miramax", "touchstone pictures", "summit entertainment",
+    "eon productions", "t-series", "20th century studios", "europacorp",
+    "other",
+]
+N_STUDIO = len(_STUDIO_VOCAB)  # 31
 
-# Supervising mixer embedding dim (Tier 2 — zero-padded until IMDB lookup)
-N_MIXER_EMBED = 8
+# Mixer vocabulary — top-20 sound re-recording mixers + "other" + "unknown".
+# Covers ~17% of entries with known mixers. Sparse but each name is a
+# meaningful signal (individual mixers have consistent rolloff styles).
+_MIXER_VOCAB = [
+    "andy nelson", "kevin o'connell", "mike prestwood smith",
+    "paul massey", "ron bartlett", "anna behlmer", "michael minkler",
+    "lora hirschberg", "michael semanick", "tom fleischman",
+    "mark paterson", "chris burdon", "tom johnson", "christopher boyes",
+    "doug hemphill", "gary rizzo", "skip lievsay", "scott millan",
+    "frank a. montaño", "gary summers",
+    "other", "unknown",
+]
+N_MIXER = len(_MIXER_VOCAB)  # 22
 
 # Genre multi-hot (Tier 2)
 _GENRE_BUCKETS = [
@@ -69,15 +94,15 @@ N_METADATA_FEATURES = (
     1                # year normalised
     + N_AUDIO_FORMAT  # 6
     + N_SOURCE        # 3
-    + N_STUDIO_EMBED  # 16
-    + N_MIXER_EMBED   # 8
+    + N_STUDIO        # 31
+    + N_MIXER         # 22
     + N_GENRE         # 10
     + N_COUNTRY       # 5
     + 1               # runtime normalised
     + 1               # rating normalised
-)  # = 51
+)  # = 80
 
-N_FEATURES = N_AUDIO_FEATURES + N_METADATA_FEATURES  # 60
+N_FEATURES = N_AUDIO_FEATURES + N_METADATA_FEATURES  # 89
 
 # ---------------------------------------------------------------------------
 # Label constants (filter parameter output vector)
@@ -180,17 +205,22 @@ def _country_onehot(language: str | None) -> np.ndarray:
     return v
 
 
-def _hash_embed(name: str | None, dims: int) -> np.ndarray:
-    """Feature-hash a categorical string into a fixed-dim vector.
+def _vocab_onehot(name: str | None, vocab: list[str]) -> np.ndarray:
+    """One-hot encode a string against a fixed vocabulary.
 
-    For tree-based models (XGBoost), this is equivalent to a sparse one-hot
-    with hash collisions. For CNN stage, this gets replaced by nn.Embedding.
-    All zeros when name is None (unknown).
+    Looks up ``name`` (lowercased) in ``vocab``. If not found, activates
+    the last bucket (expected to be "other" or "unknown"). If ``name`` is
+    None, activates the last bucket.
     """
-    v = np.zeros(dims, dtype=np.float32)
+    v = np.zeros(len(vocab), dtype=np.float32)
     if name:
-        idx = hash(name.lower().strip()) % dims
-        v[idx] = 1.0
+        key = name.lower().strip()
+        if key in vocab:
+            v[vocab.index(key)] = 1.0
+        else:
+            v[-1] = 1.0  # "other" bucket
+    else:
+        v[-1] = 1.0
     return v
 
 
@@ -214,15 +244,15 @@ def build_metadata_features(metadata: MediaMetadata) -> np.ndarray:
     # Source one-hot (Tier 1)
     parts.append(_source_onehot(getattr(metadata, "source", None)))
 
-    # Studio — feature-hashed into 16 dims (Tier 1, most predictive field).
-    # Populated from TMDb via auto_beq_metadata.enrich_media_metadata().
+    # Studio — one-hot against top-30 vocabulary (Tier 1, most predictive).
+    # Each major studio gets its own XGBoost split point, no hash collisions.
     studio = getattr(metadata, "studio", None)
-    parts.append(_hash_embed(studio, N_STUDIO_EMBED))
+    parts.append(_vocab_onehot(studio, _STUDIO_VOCAB))
 
-    # Mixer — feature-hashed into 8 dims (Tier 2).
+    # Mixer — one-hot against top-20 vocabulary (Tier 2).
     # "Sound Re-Recording Mixer" from TMDb credits.
     mixer = getattr(metadata, "supervising_mixer", None)
-    parts.append(_hash_embed(mixer, N_MIXER_EMBED))
+    parts.append(_vocab_onehot(mixer, _MIXER_VOCAB))
 
     # Genre multi-hot (Tier 2)
     genres = getattr(metadata, "genres", ())

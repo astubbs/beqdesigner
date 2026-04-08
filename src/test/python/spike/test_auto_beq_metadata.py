@@ -27,7 +27,6 @@ from model.auto_beq_metadata import (
 )
 from model.auto_beq_nn import (
     N_FEATURES,
-    N_STUDIO_EMBED,
     build_feature_vector,
     build_metadata_features,
 )
@@ -245,17 +244,20 @@ def test_feature_vector_with_studio(tmp_path, monkeypatch):
     vec = build_feature_vector(features, metadata)
     assert vec.shape == (N_FEATURES,)
 
-    # Studio slot should now be non-zero (feature-hashed).
-    # Studio dims are at positions 10 through 25 (after year[1] + format[6] + source[3]).
-    studio_start = 9 + 6 + 3  # = 18 (in the metadata part, but we need offset from combined)
+    # Studio slot should have exactly one 1.0 (one-hot against vocab).
     # In the full vector: audio(9) + year(1) + format(6) + source(3) = 19
-    studio_slice = vec[19:19 + N_STUDIO_EMBED]
-    assert studio_slice.sum() > 0, (
-        f"studio embedding should be non-zero when studio='{metadata.studio}', "
-        f"got {studio_slice}"
+    from model.auto_beq_nn import N_STUDIO
+    studio_slice = vec[19:19 + N_STUDIO]
+    assert studio_slice.sum() == 1.0, (
+        f"studio should be one-hot when studio='{metadata.studio}', "
+        f"got sum={studio_slice.sum()}"
+    )
+    # "Columbia Pictures" should hit index 2 in the vocab, not the "other" bucket.
+    assert studio_slice[-1] == 0.0, (
+        f"Columbia Pictures should match vocab, not 'other'; got {studio_slice}"
     )
 
-    # Without studio, the same slot should be zero.
+    # Without studio, the "other" bucket (last position) should be 1.0.
     meta_no_studio = MediaMetadata(
         title=metadata.title, year=metadata.year,
         audio_types=metadata.audio_types, source=metadata.source,
@@ -264,8 +266,8 @@ def test_feature_vector_with_studio(tmp_path, monkeypatch):
         studio=None, supervising_mixer=None,
     )
     vec_no_studio = build_feature_vector(features, meta_no_studio)
-    studio_slice_none = vec_no_studio[19:19 + N_STUDIO_EMBED]
-    assert studio_slice_none.sum() == 0, "studio should be zero when studio=None"
+    studio_slice_none = vec_no_studio[19:19 + N_STUDIO]
+    assert studio_slice_none[-1] == 1.0, "studio=None should activate 'other' bucket"
 
-    print(f"\nWith studio '{metadata.studio}': studio_embed={studio_slice}")
-    print(f"Without studio: studio_embed={studio_slice_none}")
+    print(f"\nWith studio '{metadata.studio}': vocab hit at idx={int(studio_slice.argmax())}")
+    print(f"Without studio: 'other' bucket at idx={int(studio_slice_none.argmax())}")
