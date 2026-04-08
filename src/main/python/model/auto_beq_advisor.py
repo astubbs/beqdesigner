@@ -424,8 +424,8 @@ class MeasurementAdvisor:
     def __init__(
         self,
         *,
-        multi_knee_slope_threshold: float = 15.0,
-        multi_knee_q: float = 0.8,
+        multi_knee_slope_threshold: float = 10.0,  # E19: lowered from 15.0
+        multi_knee_q: float = 0.9,                 # E19: raised from 0.8
         max_total_chain_gain_db: float = _MAX_TOTAL_CHAIN_GAIN_DB,
         cascade_gain_ratio: float = 7.0,
         cascade_q: float = 0.9,

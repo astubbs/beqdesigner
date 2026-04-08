@@ -694,6 +694,9 @@ _E19_CONFIGS = [
     AdvisorConfig(multi_knee_q=0.7),
     AdvisorConfig(multi_knee_q=0.9),
     AdvisorConfig(multi_knee_q=1.0),
+    # Combined winners from one-at-a-time sweep:
+    # s10 (BES MARGINAL→PASS) + mQ0.9 (Super Mario FAIL→MARGINAL)
+    AdvisorConfig(multi_knee_slope_threshold=10.0, multi_knee_q=0.9),
 ]
 
 _E19_REPORT_PATH = Path(os.environ.get(

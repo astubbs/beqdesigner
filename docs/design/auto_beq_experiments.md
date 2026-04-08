@@ -891,6 +891,76 @@ strictly non-regressing with meaningful improvements. Offer
 **Kept**: `load_and_smooth_blended()` added to `_auto_beq_helpers.py`.
 Strategy sweep CSV: `.pytest_cache/auto_beq_sweep_strategies.csv`.
 
+### E19 - MeasurementAdvisor constant calibration (one-at-a-time sweep)
+
+**Hypothesis**: The cascade and multi-knee constants were tuned for
+Welch input. With blended extraction as default, recalibrating them
+may improve results.
+
+**Method**: Made MeasurementAdvisor constants configurable via
+constructor args. Swept 18 configurations (one-at-a-time + combined
+winner) across 31 film/episode tests with blended-a0.7 extraction.
+
+**Parameters swept**:
+- `cascade_gain_ratio`: 5.0, 6.0, **7.0** (baseline), 8.0, 9.0
+- `cascade_q`: 0.7, 0.8, **0.9** (baseline), 1.0, 1.2
+- `multi_knee_slope_threshold`: **10.0**, 12.0, **15.0** (baseline), 18.0, 20.0
+- `multi_knee_q`: 0.6, 0.7, **0.8** (baseline), **0.9**, 1.0
+
+**Results (558 tests)**:
+
+| Config | P/M/F | Imp | Deg | Avg Δ |
+|---|---|---|---|---|
+| baseline (g7/cQ0.9/s15/mQ0.8) | 9/4/18 | 0 | 0 | +0.00 |
+| **s10** (slope threshold 10) | 10/3/18 | 1 | 0 | -0.26 |
+| **mQ0.9** (multi-knee Q 0.9) | 9/5/17 | 1 | 0 | -0.04 |
+| **s10+mQ0.9** (combined) | **10/4/17** | **2** | **0** | **-0.32** |
+| all cascade_gain_ratio variants | 9/4/18 | 0 | 0 | +0.00 |
+| all cascade_q variants | 9/4/18 | 0 | 0 | +0.00 |
+
+**Key findings**:
+
+1. **`cascade_gain_ratio` and `cascade_q` have ZERO effect** across
+   all variants tested (5.0-9.0 and 0.7-1.2 respectively). The
+   cascade construction is completely insensitive to these parameters
+   in the current test set. This makes sense: the cascade is a target
+   for the fitter, and the fitter adjusts to match regardless of how
+   the target was constructed.
+
+2. **Lowering `multi_knee_slope_threshold` to 10** (from 15) flips
+   Blue Eye Samurai MARGINAL→PASS (-1.03 dB). By triggering the
+   multi-knee path for less steep rolloffs, more titles get the
+   explicit 2-shelf chain which the fitter can match better than
+   a single-knee cascade.
+
+3. **Raising `multi_knee_q` to 0.9** (from 0.8) flips Super Mario
+   Bros FAIL→MARGINAL (-0.55 dB). Tighter Q in the multi-knee shelves
+   produces a steeper correction knee that better matches the
+   catalogue's shape.
+
+4. **The two winners are complementary** (different parameters) and
+   combine cleanly: **s10+mQ0.9 gives 2 improvements, 0 degradations,
+   avg Δ=-0.32 dB**. Several other titles improve substantially
+   (Elio -2.02, KPop -1.91, Garfield -1.91) but remain FAIL.
+
+**Combined config detail (s10+mQ0.9)**:
+- Blue Eye Samurai: MARGINAL(1.95) → PASS(0.92) ✓
+- Super Mario Bros: FAIL(3.22) → MARGINAL(2.66) ✓
+- Elio: FAIL(6.38) → FAIL(4.37) — big improvement, still FAIL
+- KPop Demon Hunters: FAIL(6.91) → FAIL(5.00)
+- The Garfield Movie: FAIL(5.15) → FAIL(3.24)
+
+**Recommendation**: Update MeasurementAdvisor defaults to
+`multi_knee_slope_threshold=10.0` and `multi_knee_q=0.9`. These
+are strictly non-regressing with meaningful improvements.
+
+**New baseline after E19**: 10 PASS / 4 MARGINAL / 17 FAIL
+(was 9/4/18).
+
+**Kept**: configurable constructor in `MeasurementAdvisor`,
+`test_library_sweep_e19` in sweep file.
+CSV: `.pytest_cache/auto_beq_sweep_e19.csv`.
+
 ---
 
 ## Next to try
