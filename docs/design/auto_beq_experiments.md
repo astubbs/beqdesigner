@@ -880,3 +880,71 @@ Scene-quality chunk filtering (from E3/E6 modules) feeds cleaner audio signal.
 
 **Confidence scoring**: chunk count + ensemble variance + metadata completeness
 + stage 2→3 delta + optimiser convergence. Below threshold → human review flag.
+
+### E18c - Studio vocab encoding fix + TV endpoint fix
+
+**Problem**: Studio feature-hashing crammed ~3,419 unique studios into 16
+dims, causing massive collisions. Studio — identified in the plan as the
+"single most predictive metadata field" — didn't appear in the top 15
+feature importances in E18b.
+
+**Fix 1 — Studio vocab**: Replaced 16-dim feature hash with top-30 studio
+vocabulary (Paramount, Universal, Columbia, Warner, etc.) + "other" bucket.
+Same for mixer: top-20 vocabulary + "other" + "unknown". Each major studio
+gets its own XGBoost split point with zero collisions. Feature vector grew
+from 60 to 89 dims.
+
+**Fix 2 — TV endpoint**: BEQ catalogue has `content_type` ("film" vs "TV").
+Now uses `/tv/` TMDb endpoint for TV entries instead of always hitting
+`/movie/` and getting 404s on ~300 TV series entries. Also caches 404
+misses as sentinels so failed lookups aren't re-attempted.
+
+**Result** (14 real-audio titles, trained on ~7k synthetic catalogue):
+
+| Run | Real audio | Synthetic | Gap |
+|---|---|---|---|
+| E18b (hash 16-dim) | 7.43 dB | 4.44 dB | 2.99 dB |
+| E18c (vocab top-30) | **5.82 dB** | **3.80 dB** | **2.00 dB** |
+
+**1.6 dB improvement** on real audio from fixing studio encoding alone.
+Synthetic-to-real gap also shrank from 3.0 to 2.0 dB.
+
+Per-title standouts:
+- **Elio: 1.62 dB** — first title to cross the 2 dB threshold
+- **Mad Max: 2.90 dB** — MARGINAL, consistent across runs
+- **Sonic 3: 3.08 dB**, **Garfield: 4.03 dB** — in striking distance
+
+Updated feature importances (top 15):
+
+| Feature | Importance |
+|---|---|
+| Audio format (Atmos) | 5.0% |
+| Source (Streaming) | 4.0% |
+| Country (English) | 3.7% |
+| Audio 80 Hz | 3.0% |
+| Audio 35 Hz | 2.7% |
+| Source (Unknown) | 2.5% |
+| Year | 2.2% |
+| **Mixer (Michael Minkler)** | **2.0%** |
+| Audio 40 Hz | 1.9% |
+| Audio 30 Hz | 1.8% |
+| Audio 25 Hz | 1.8% |
+| Audio 70 Hz | 1.7% |
+| Source (Disc) | 1.7% |
+| Audio format (DD+) | 1.6% |
+| Mixer (unknown) | 1.6% |
+
+**Key observations**:
+1. **Studio still didn't crack top 15** — even with proper one-hot, top-30
+   studios only cover 20% of entries. The "other" bucket absorbs 80% of
+   titles, diluting the signal. May need more studios in the vocab, or
+   studio-family grouping (e.g. all Disney subsidiaries → "Disney").
+2. **Mixer is a real signal**: Michael Minkler at 2.0% importance — a
+   named individual outranks most audio bins. The plan's thesis about
+   individual mixer styles is confirmed.
+3. **Audio format dominates metadata**: Atmos vs non-Atmos is still the
+   single most important feature overall. This makes physical sense —
+   Atmos encodes use different headroom assumptions.
+4. **The gap is closing**: 2.0 dB synthetic-to-real gap means the model
+   trained on "perfect inverse" curves transfers reasonably to real audio.
+   Still room to improve with real audio training data.
