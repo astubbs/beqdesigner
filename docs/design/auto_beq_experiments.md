@@ -1776,3 +1776,58 @@ Encoded as 9-dim one-hot (8 authors + "unknown"). Feature vector: 99 dims.
    The author feature is only useful when **predicting what a specific
    author would do** for a title, not for generating novel BEQs. This
    makes author a calibration/training signal, not an inference feature.
+
+### E29a - Impact of author on all strategies (full rerun)
+
+With author added (E29), reran all strategies to measure impact.
+
+**Feature importances (E25 early fusion with author)**:
+
+| Rank | Feature | Importance |
+|---|---|---|
+| **1** | **author_aron7awol** | **14.8%** |
+| **2** | **author_mobe1969** | **5.9%** |
+| **3** | **author_kaelaria** | **2.6%** |
+| **4** | **author_mikejl** | **2.3%** |
+| 5 | audio_30Hz | 2.3% |
+| 6 | src_stream | 2.2% |
+| 7 | year | 2.0% |
+| **8** | **author_remixmark** | **1.9%** |
+
+Authors collectively account for ~28% of all feature importance. aron7awol
+alone (14.8%) is 3× more important than any non-author feature.
+
+**Strategy comparison (all with author)**:
+
+| Strategy | Real audio | Synthetic | Gap |
+|---|---|---|---|
+| E25 early fusion | 5.07 dB | 4.45 dB | +0.62 dB |
+| E27 late fusion (α=0.3) | 4.35 dB | 3.01 dB | +1.34 dB |
+| E28 CNN dual-branch | 6.00 dB | **2.08 dB** | +3.92 dB |
+| **Metadata-only (ablation)** | **3.09 dB** | 3.09 dB | **0.00 dB** |
+
+**E28 CNN with author — dramatic improvement**:
+
+| Metric | Without author | With author | Change |
+|---|---|---|---|
+| CNN real audio | 24.12 dB | **6.00 dB** | **-18.12 dB** |
+| CNN synthetic | 3.52 dB | **2.08 dB** | -1.44 dB |
+| CNN gap | +20.60 dB | +3.92 dB | -16.68 dB |
+
+Author gave the CNN enough anchor signal to avoid catastrophic overfitting.
+2.08 dB synthetic is the best synthetic loss from any model ever. But the
+CNN still has a 3.92 dB gap vs the metadata-only model's 0.00 dB gap.
+
+**Per-title standouts (E25 early fusion with author)**:
+- **Garfield: 1.65 dB** — first title under 2 dB threshold in early fusion
+- **John Wick: 1.85 dB** — MARGINAL verdict, under 2 dB
+- **Elio: 1.88 dB** — under threshold
+- Mad Max: 2.31 dB, KPop: 2.46 dB, Wild Robot: 2.60 dB — close
+- Outliers: Moana 2 (11.55), Kung Fu Panda 4 (10.56) — animated kids' films
+
+**Summary of E29 author impact across all strategies**:
+- Author is the single most powerful feature added to the model
+- Metadata-only at 3.09 dB remains the best real-audio result
+- CNN improved 18 dB but still trails XGBoost approaches on real audio
+- Early fusion gap collapsed from 2.90 to 0.62 dB — author stabilises transfer
+- The animated kids' film outliers suggest a genre-specific calibration issue
