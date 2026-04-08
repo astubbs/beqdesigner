@@ -73,7 +73,8 @@ plan/intent to `branch-plans/plan-<branch-name>.md` (project root).
 Also keep experiment logs and living design docs updated and committed
 alongside code — these are gold for resuming work across sessions.
 
-Current branch plan: [`branch-plans/plan-sharp-goldberg.md`](branch-plans/plan-sharp-goldberg.md)
+Current branch plan: [`branch-plans/plan-audio-chunks-strat.md`](branch-plans/plan-audio-chunks-strat.md)
+Parent branch plan: [`branch-plans/plan-sharp-goldberg.md`](branch-plans/plan-sharp-goldberg.md)
 
 ## Ollama model usage
 

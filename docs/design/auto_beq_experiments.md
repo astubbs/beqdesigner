@@ -706,6 +706,79 @@ failover) but qwen:14b is too slow for batch sweeps. Need either:
 for accuracy testing (one at a time), or (b) use MeasurementAdvisor
 (no LLM) for sweeps and Ollama only for specific titles.
 
+## 2026-04-08: Spectrum extraction experiments
+
+### E18 - Chunked percentile spectrum (STFT peak per chunk → P90)
+
+**Hypothesis**: Chunking the audio and taking the 90th percentile of
+STFT peak levels across chunks produces a more robust rolloff ceiling
+estimate than whole-film Welch average — resistant to outlier scenes
+(E15c: EoT showcase scenes inflate 10 Hz by 16-19 dB) and sparse bass
+content in short TV episodes.
+
+**Method**: Split LFE WAV into fixed-length chunks (30/60/90 s
+sub-experiment). For each chunk, compute STFT and take max amplitude
+at each frequency across all time frames (peak curve). Stack all chunk
+peaks into a matrix and take the 90th percentile across chunks at each
+frequency bin. Then normalise + smooth identically to `load_and_smooth()`.
+Feed resulting curve into `propose_filters_from_measured()` with
+MeasurementAdvisor (same pipeline as E17d baseline).
+
+**Implementation**: `load_and_smooth_chunked()` in `_auto_beq_helpers.py`,
+`test_chunked_percentile_roundtrip()` in `test_auto_beq.py`.
+
+**Results (2 titles from media manifest, MeasurementAdvisor)**:
+
+| Title | chunk_s | 10Hz delta | 20Hz delta | Mean err | Max err | Verdict |
+|---|---|---|---|---|---|---|
+| Mad Max: Fury Road | 30 | +8.9 dB | +0.2 dB | 8.80 | 20.21 | FAIL |
+| Mad Max: Fury Road | 60 | +7.9 dB | -0.1 dB | 8.68 | 20.11 | FAIL |
+| Mad Max: Fury Road | 90 | +7.4 dB | +0.1 dB | 8.53 | 19.91 | FAIL |
+| John Wick | 30 | +6.0 dB | +5.3 dB | 3.39 | 7.99 | FAIL |
+| John Wick | 60 | +4.9 dB | +5.0 dB | 2.32 | 6.57 | MARGINAL |
+| John Wick | 90 | +5.0 dB | +4.2 dB | 1.92 | 6.91 | MARGINAL |
+
+(Delta = chunked curve minus Welch baseline at that frequency, positive
+means chunked sees MORE energy.)
+
+**E17d baseline comparison** (same titles, MeasurementAdvisor):
+- Mad Max: FAIL in both (multi-knee catalogue, not a spectrum issue)
+- John Wick: E17d was FAIL with Welch; E18 improves to MARGINAL at
+  60s/90s chunks
+
+**Key observations**:
+1. **Chunking consistently lifts 10 Hz by 5-9 dB** vs Welch average.
+   The STFT peak captures transient bass events that Welch averages out.
+   This is expected — peak ≠ average.
+2. **20 Hz delta is small for Mad Max** (~0 dB) but **large for John
+   Wick** (+4-5 dB). JW has sparser bass content; chunked peak captures
+   its intermittent bass events that Welch dilutes.
+3. **Mad Max still fails** because the failure mode is catalogue shape
+   (multi-knee at 10+18 Hz), not spectrum extraction. The chunked curve
+   is "better" (higher 10 Hz) but MeasurementAdvisor over-estimates gain
+   from the larger deficit, leading to worse overshooting.
+4. **Chunk length sensitivity**: 90s slightly better than 30s for both
+   titles (less noisy per-chunk estimates). Sweet spot appears to be
+   60-90s.
+5. **The chunked curve fundamentally changes the MeasurementAdvisor's
+   input**: it sees a larger deficit (because peak > average), which
+   pushes gain higher. For titles where the catalogue wants aggressive
+   correction (like JW: +13 dB), this helps. For titles where the
+   catalogue is moderate, it overshoots.
+
+**Lesson**: chunked-percentile spectrum extraction IS a different
+signal than Welch average — it captures transient bass events that
+averaging dilutes. But feeding this higher-energy curve into the
+existing MeasurementAdvisor produces mixed results because the advisor's
+deficit formula was tuned to Welch input. The chunked curve needs
+either (a) a recalibrated gain formula, or (b) a different advisor
+that accounts for the peak-vs-average gap.
+
+**Kept**: yes, as a selectable spectrum extraction path. Run with
+`test_chunked_percentile_roundtrip` in `test_auto_beq.py`.
+
+---
+
 ## Next to try
 
 - [ ] **E12: Self-feedback loop**. Generate initial chain, compute

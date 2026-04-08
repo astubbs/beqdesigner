@@ -378,3 +378,149 @@ def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
         f"algorithm grade {metrics.verdict} worse than expected "
         f"{expected_grade} for {title}\n\n{report}"
     )
+
+
+# ---------------------------------------------------------------------------
+# E18: Chunked percentile analysis — alternative spectrum extraction.
+#
+# Instead of the whole-film Welch average, split audio into fixed-length
+# chunks, compute the STFT peak curve per chunk, then take the 90th
+# percentile across chunks at each frequency bin. Hypothesis: this
+# produces a more robust rolloff ceiling estimate, especially for short
+# TV episodes where one outlier scene dominates the whole-film statistic.
+# Sub-experiment: chunk length sensitivity (30/60/90 s).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not MEDIA_MANIFEST, reason="no media manifest / no files on disk")
+@pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
+@pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
+@pytest.mark.parametrize("chunk_s", [30.0, 60.0, 90.0])
+@pytest.mark.parametrize(
+    "manifest_entry",
+    MEDIA_MANIFEST,
+    ids=[
+        f"{e['title']}" + (f" ({e['notes'][:40]})" if e.get("notes") else "")
+        for e in MEDIA_MANIFEST
+    ],
+)
+def test_chunked_percentile_roundtrip(catalogue_snapshot, caplog, manifest_entry, chunk_s):
+    """E18: chunked-percentile spectrum vs whole-film Welch baseline.
+
+    Same pipeline as test_real_media_roundtrip but replaces the Welch
+    whole-film average with: chunk → STFT peak per chunk → 90th percentile
+    across chunks. Parametrised over chunk lengths (30/60/90 s) to find
+    the sweet spot.
+
+    Each run logs a delta vs the whole-film curve at 20 Hz so results
+    can be compared directly with the E17d baseline.
+    """
+    from spike._auto_beq_helpers import load_and_smooth, load_and_smooth_chunked
+
+    caplog.set_level(logging.INFO, logger="auto_beq_spike")
+
+    media_path = Path(manifest_entry["path"])
+    title = manifest_entry["title"]
+    filter_count = manifest_entry["filter_count"]
+    expected_grade = manifest_entry["expected_grade"]
+    notes = manifest_entry["notes"]
+
+    log.info("=== E18 chunked-percentile roundtrip (chunk_s=%.0f) ===", chunk_s)
+    log.info("media: %s", media_path)
+    log.info("title: %r  filter_count: %s  expected_grade: %s",
+             title, filter_count, expected_grade)
+    if notes:
+        log.info("notes: %s", notes)
+    assert media_path.exists(), f"media file not found: {media_path}"
+
+    entry = catalogue_snapshot(title, filter_count=filter_count)
+    log.info("catalogue entry matched: %d filters", len(entry["filters"]))
+
+    fs = 1000
+    freqs = DEFAULT_GRID
+
+    stream_info = _probe_audio_stream(media_path)
+    wav_path = _extract_lfe_wav(media_path, fs)
+
+    # Baseline: whole-film Welch average (existing code path).
+    baseline_curve = load_and_smooth(wav_path, fs, freqs)
+
+    # E18: chunked percentile.
+    chunked_curve = load_and_smooth_chunked(
+        wav_path, fs, freqs, chunk_s=chunk_s,
+    )
+
+    # Log delta at key frequencies for comparison.
+    anchor_idx = int(np.argmin(np.abs(freqs - 80.0)))
+    idx_10hz = int(np.argmin(np.abs(freqs - 10.0)))
+    idx_20hz = int(np.argmin(np.abs(freqs - 20.0)))
+    delta_10hz = chunked_curve[idx_10hz] - baseline_curve[idx_10hz]
+    delta_20hz = chunked_curve[idx_20hz] - baseline_curve[idx_20hz]
+    log.info(
+        "chunk_s=%.0f | 10Hz baseline=%.1f chunked=%.1f delta=%+.1f dB",
+        chunk_s, baseline_curve[idx_10hz], chunked_curve[idx_10hz], delta_10hz,
+    )
+    log.info(
+        "chunk_s=%.0f | 20Hz baseline=%.1f chunked=%.1f delta=%+.1f dB",
+        chunk_s, baseline_curve[idx_20hz], chunked_curve[idx_20hz], delta_20hz,
+    )
+
+    # Catalogue ground truth.
+    ground_truth = _ground_truth_curve(entry, freqs, fs)
+
+    # Sanity: chunked curve must still have LFE content.
+    band_mask = (freqs >= 5.0) & (freqs <= 80.0)
+    in_band_range = float(
+        chunked_curve[band_mask].max() - chunked_curve[band_mask].min()
+    )
+    log.info("chunked in-band dynamic range: %.1f dB", in_band_range)
+    assert in_band_range > 5.0, (
+        f"chunked curve has <5 dB dynamic range (chunk_s={chunk_s}) — "
+        "extraction may have failed"
+    )
+
+    # Propose filters from chunked curve — same advisor path as baseline.
+    advisor_name = os.environ.get("AUTO_BEQ_ADVISOR", "measurement")
+    try:
+        advisor = get_advisor(advisor_name)
+    except Exception as exc:
+        pytest.skip(f"advisor construction failed ({advisor_name}): {exc}")
+
+    media_metadata = MediaMetadata(
+        title=title,
+        year=entry.get("year") or None,
+        audio_codec=stream_info.get("codec_name") if stream_info else None,
+        channel_layout=stream_info.get("channel_layout") if stream_info else None,
+    )
+    log.info(
+        "running propose_filters_from_measured with advisor=%s",
+        advisor_name,
+    )
+    try:
+        proposed = propose_filters_from_measured(
+            chunked_curve, freqs, fs=fs,
+            advisor=advisor, metadata=media_metadata,
+        )
+    except Exception as exc:
+        pytest.skip(f"advisor.advise failed ({advisor_name}): {exc}")
+
+    metrics = compute_match_metrics(-ground_truth, proposed, freqs, fs=fs)
+    report = format_match_report(
+        f"{title} [E18 chunked {chunk_s:.0f}s]",
+        entry["filters"],
+        proposed,
+        metrics,
+        target_depth_db=float(ground_truth.max() - ground_truth.min()),
+    )
+    print("\n" + report)
+    log.info(
+        "chunk_s=%.0f | verdict=%s mean=%.2f dB max=%.2f dB",
+        chunk_s, metrics.verdict, metrics.mean_abs_err_db, metrics.max_abs_err_db,
+    )
+
+    grade_rank = {"PASS": 0, "MARGINAL": 1, "FAIL": 2}
+    assert grade_rank[metrics.verdict] <= grade_rank[expected_grade], (
+        f"E18 chunked-percentile (chunk_s={chunk_s:.0f}) grade "
+        f"{metrics.verdict} worse than expected {expected_grade} "
+        f"for {title}\n\n{report}"
+    )
