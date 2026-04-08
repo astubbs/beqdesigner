@@ -80,21 +80,9 @@ def _discover_and_sort() -> list[dict]:
     result = match_media_files(all_files, catalogue)
     log.info("catalogue matches: %d", len(result.matches))
 
-    # Filter out samples, trailers, featurettes — anything under 500 MB
-    # or in a directory containing "Sample", "Featurette", "Extras", etc.
-    _JUNK_DIRS = {"sample", "samples", "featurettes", "extras", "backdrops", "behind the scenes"}
-    filtered = []
-    for m in result.matches:
-        if m.size_bytes < 500_000_000:  # < 500 MB = not a feature
-            continue
-        path_lower = m.path.lower()
-        if any(f"/{junk}/" in path_lower or path_lower.endswith(f"/{junk}") for junk in _JUNK_DIRS):
-            continue
-        filtered.append(m)
-    log.info("after filtering samples/trailers (≥500MB): %d", len(filtered))
-    result.matches = filtered
-
     # Sort by file size (smallest first) for fastest extraction.
+    # Note: samples/trailers are already filtered by inventory_root()
+    # (minimum 500 MB + junk-directory exclusion).
     result.matches.sort(key=lambda m: m.size_bytes)
 
     # Deduplicate by title (keep smallest file per title).

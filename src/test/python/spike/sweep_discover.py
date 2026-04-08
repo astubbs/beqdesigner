@@ -68,6 +68,18 @@ _EPISODE_RE = re.compile(r"S(?P<season>\d+)E(?P<episode>\d+)", re.IGNORECASE)
 
 _MEDIA_EXTENSIONS = (".mkv",)
 
+# Subdirectory names that contain non-feature content (samples, trailers, etc.).
+# Media files found inside these directories are excluded from inventory.
+_JUNK_SUBDIRS = {
+    "sample", "samples", "featurettes", "featurette", "extras", "extra",
+    "backdrops", "behind the scenes", "deleted scenes", "trailers", "trailer",
+    "interviews", "shorts",
+}
+
+# Minimum file size for a feature-length media file. Anything smaller is
+# likely a sample, trailer, or theme file.
+_MIN_FEATURE_SIZE_BYTES = 500_000_000  # 500 MB
+
 
 # ---------------------------------------------------------------------------
 # .env loader (tiny, no deps)
@@ -420,6 +432,19 @@ def inventory_root(library_root: Path) -> list[Path]:
     # Also check for media files directly in the root (not in subdirs).
     for ext in _MEDIA_EXTENSIONS:
         media_files.extend(library_root.glob(f"*{ext}"))
+
+    # Filter out samples, trailers, featurettes: exclude files in junk
+    # subdirectories or below minimum size for a feature.
+    before = len(media_files)
+    media_files = [
+        f for f in media_files
+        if not any(part.lower() in _JUNK_SUBDIRS for part in f.parts)
+        and f.stat().st_size >= _MIN_FEATURE_SIZE_BYTES
+    ]
+    skipped = before - len(media_files)
+    if skipped:
+        log.info("filtered %d samples/trailers/featurettes (<%d MB or junk dir)",
+                 skipped, _MIN_FEATURE_SIZE_BYTES // 1_000_000)
     print(f"\r\033[2K    {len(media_files)} media files across {n_dirs} directories.")
     return media_files
 
