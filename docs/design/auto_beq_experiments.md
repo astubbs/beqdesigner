@@ -1925,4 +1925,5 @@ author makes metadata the dominant signal.
 | E25c (vocab encoding) | 5.82 dB | 14 | Studio one-hot |
 | E27 (late fusion, no author) | 4.03 dB | 14 | Separate audio+meta models |
 | E30 (expanded set) | 6.42 dB | 20 | TV content harder |
-| **E31 (NAS extraction)** | **3.36 dB** | **111** | **5× more data + late fusion** |
+| E31 (NAS extraction, 111) | 3.36 dB | 111 | 5× more data + late fusion |
+| **E31 (NAS extraction, 171)** | **5.02 dB** | **171** | **Harder content in expanded set** |

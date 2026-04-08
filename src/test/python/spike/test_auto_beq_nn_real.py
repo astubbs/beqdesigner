@@ -1,4 +1,4 @@
-"""Real-audio training spike for ML experiments (E25-E30).
+"""Real-audio training spike for ML experiments (E25-E32).
 
 Trains on the full BEQ catalogue (synthetic features) with TMDb metadata,
 then validates on titles where we have real extracted LFE WAV files. This
@@ -11,6 +11,8 @@ Skipped if no WAV files are available in the audio cache.
 from __future__ import annotations
 
 import logging
+import time
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -30,7 +32,12 @@ from model.auto_beq_nn import (
     train_xgboost,
 )
 
-from spike._auto_beq_helpers import discover_wav_catalogue_pairs
+from spike._auto_beq_helpers import (
+    STRATEGY_BLENDED_07,
+    STRATEGY_WELCH,
+    discover_wav_catalogue_pairs,
+    extract_features_with_strategy,
+)
 
 log = logging.getLogger("auto_beq_nn_real")
 
@@ -38,27 +45,67 @@ _DEFAULT_FS = 1000
 
 
 def _extract_real_audio_features(wav_path: Path, freqs_hz: np.ndarray, fs: int):
-    """Load WAV → spectrum → smooth → extract_curve_features.
+    """Load WAV → Welch spectrum → smooth → extract_curve_features."""
+    return extract_features_with_strategy(wav_path, freqs_hz, fs, strategy=STRATEGY_WELCH)
 
-    Same pipeline as test_auto_beq.py::test_real_media_roundtrip.
+
+def _extract_real_audio_features_chunked(wav_path: Path, freqs_hz: np.ndarray, fs: int):
+    """Load WAV → blended (Welch + chunked P90) → extract_curve_features."""
+    return extract_features_with_strategy(wav_path, freqs_hz, fs, strategy=STRATEGY_BLENDED_07)
+
+
+def _extract_one_wav(args: tuple) -> tuple:
+    """Worker function for parallel feature extraction.
+
+    Takes (wav_path, freqs_hz, fs, strategy) and returns (wav_path, features)
+    or (wav_path, None) on failure. Runs in a separate process.
     """
-    from model.signal import Signal, read_wav_data
+    wav_path, freqs_hz, fs, strategy = args
+    try:
+        features = extract_features_with_strategy(Path(wav_path), freqs_hz, fs, strategy=strategy)
+        return (str(wav_path), features)
+    except Exception as exc:
+        return (str(wav_path), None)
 
-    samples, read_fs, _ = read_wav_data(str(wav_path))
-    assert read_fs == fs, f"expected fs={fs}, got {read_fs}"
-    mono = samples[:, 0] if samples.ndim > 1 else samples
 
-    sig = Signal(str(wav_path.stem), mono, fs=fs)
-    measured_freqs, measured_db = sig.avg_spectrum()
+def _extract_features_parallel(
+    pairs: list[dict],
+    freqs_hz: np.ndarray,
+    fs: int,
+    strategy=None,
+    max_workers: int | None = None,
+) -> list[tuple]:
+    """Extract audio features from multiple WAVs in parallel.
 
-    # Interpolate onto standard log grid, normalise to 80 Hz, smooth.
-    curve = np.interp(freqs_hz, measured_freqs, measured_db)
-    anchor_idx = int(np.argmin(np.abs(freqs_hz - 80.0)))
-    curve -= curve[anchor_idx]
-    curve = smooth_fractional_octave(curve, freqs_hz, octaves=1.0 / 6.0)
-    curve -= curve[anchor_idx]
+    Returns list of (pair, features) tuples. Failed extractions are skipped.
+    Uses ProcessPoolExecutor since scipy Welch is single-threaded.
+    """
+    from spike._auto_beq_helpers import STRATEGY_WELCH
+    if strategy is None:
+        strategy = STRATEGY_WELCH
 
-    return extract_curve_features(curve, freqs_hz)
+    work = [
+        (str(p["wav_path"]), freqs_hz, fs, strategy)
+        for p in pairs
+    ]
+
+    t0 = time.time()
+    results = {}
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        for wav_str, features in executor.map(_extract_one_wav, work):
+            results[wav_str] = features
+
+    elapsed = time.time() - t0
+    ok_count = sum(1 for f in results.values() if f is not None)
+    log.info("parallel feature extraction: %d/%d in %.1fs (%.1f WAVs/s)",
+             ok_count, len(work), elapsed, ok_count / elapsed if elapsed > 0 else 0)
+
+    out = []
+    for p in pairs:
+        features = results.get(str(p["wav_path"]))
+        if features is not None:
+            out.append((p, features))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -564,3 +611,100 @@ def test_cnn_dual_branch(tmp_path):
     advice = advisor.advise(meta, feats)
     assert advice.source == "cnn_dual_branch"
     print(f"\n  CNNAdvisor test: {advice.reasoning}")
+
+
+@pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")
+def test_chunked_nn_training(tmp_path):
+    """E32: Chunked audio features vs Welch-only for NN training.
+
+    Compares the impact of blended extraction (Welch + chunked P90 at 60s)
+    vs Welch-only on NN model performance. Same XGBoost model and synthetic
+    training data — only the real-audio validation features differ.
+
+    Uses parallel feature extraction for speed.
+    """
+    from model.auto_beq_catalogue import _fetch_or_cache
+
+    log.info("=== E32 chunked NN training ===")
+
+    catalogue = _fetch_or_cache()
+    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
+
+    tmdb_cache = load_cache()
+    tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
+
+    # Build synthetic training set.
+    X_train_list, Y_train_list, train_entries = [], [], []
+    val_tmdb_ids = {p["tmdb_id"] for p in _PAIRS if p.get("tmdb_id")}
+    for e in deduped:
+        if str(e.get("theMovieDB", "")).strip() in val_tmdb_ids:
+            continue
+        features = _synthetic_features(e, DEFAULT_GRID)
+        metadata = enrich_media_metadata(e, tmdb_cache)
+        X_train_list.append(build_feature_vector(features, metadata))
+        Y_train_list.append(catalogue_entry_to_labels(e))
+    X_train = np.array(X_train_list, dtype=np.float32)
+    Y_train = np.array(Y_train_list, dtype=np.float32)
+    log.info("training set: %d synthetic entries", len(X_train))
+
+    # Train model once (same for both strategies).
+    model = train_xgboost(X_train, Y_train)
+
+    # Extract features with both strategies in parallel.
+    strategies = [
+        ("Welch-only", STRATEGY_WELCH),
+        ("Blended (α=0.7, 60s P90)", STRATEGY_BLENDED_07),
+    ]
+
+    print(f"\n{'='*70}")
+    print(f"  E32 CHUNKED NN TRAINING")
+    print(f"  Training: {len(X_train)} synthetic | Validation: {len(_PAIRS)} real-audio")
+    print(f"{'='*70}\n")
+    print(f"  {'Strategy':35s} {'Real audio':>12s} {'Synthetic':>12s} {'Gap':>8s}")
+    print(f"  {'-'*70}")
+
+    for name, strategy in strategies:
+        # Extract real-audio features.
+        t0 = time.time()
+        pairs_features = _extract_features_parallel(
+            _PAIRS, DEFAULT_GRID, _DEFAULT_FS, strategy=strategy,
+        )
+        extract_time = time.time() - t0
+
+        # Build validation arrays.
+        X_val, Y_val, val_entries = [], [], []
+        X_val_synth = []
+        for p, features in pairs_features:
+            entry = p["catalogue_entry"]
+            if not entry.get("filters"):
+                continue
+            metadata = enrich_media_metadata(entry, tmdb_cache)
+            X_val.append(build_feature_vector(features, metadata))
+            Y_val.append(catalogue_entry_to_labels(entry))
+            val_entries.append(entry)
+            # Synthetic features for comparison.
+            synth_feats = _synthetic_features(entry, DEFAULT_GRID)
+            X_val_synth.append(build_feature_vector(synth_feats, metadata))
+
+        if not val_entries:
+            print(f"  {name:35s} (no valid entries)")
+            continue
+
+        X_val = np.array(X_val, dtype=np.float32)
+        X_val_synth = np.array(X_val_synth, dtype=np.float32)
+        Y_val = np.array(Y_val, dtype=np.float32)
+
+        # Evaluate.
+        Y_pred_real = model.predict(X_val)
+        Y_pred_synth = model.predict(X_val_synth)
+
+        real_loss = sum(
+            downstream_loss(labels_to_filters(Y_pred_real[i]), e["filters"], DEFAULT_GRID)
+            for i, e in enumerate(val_entries)
+        ) / len(val_entries)
+        synth_loss = sum(
+            downstream_loss(labels_to_filters(Y_pred_synth[i]), e["filters"], DEFAULT_GRID)
+            for i, e in enumerate(val_entries)
+        ) / len(val_entries)
+
+        print(f"  {name:35s} {real_loss:10.2f} dB {synth_loss:10.2f} dB {real_loss - synth_loss:+6.2f} dB  ({extract_time:.0f}s)")
