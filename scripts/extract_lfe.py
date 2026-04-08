@@ -261,6 +261,7 @@ def extract_one(media_path: Path, wav_path: Path) -> bool:
         "-ac", "1",
         "-ar", str(_SAMPLE_RATE),
         "-sample_fmt", "s16",
+        "-f", "wav",   # force WAV format — .tmp extension confuses ffmpeg
         str(tmp_path),
     ]
 
