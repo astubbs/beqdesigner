@@ -2030,3 +2030,39 @@ the synthetic-to-real gap that has been a persistent bottleneck.
 500+ titles before it can compete with 8k synthetic. The NAS extraction
 is still running (1,244 titles queued). Re-run this experiment when the
 corpus is larger.
+
+### E36 — Unknown author at inference time
+
+**Question**: How much does the model degrade when we zero out the author
+feature at inference time (simulating production use where there's no
+known author)?
+
+**Result** (213 titles, early fusion):
+- With author: 4.94 dB
+- Without author: 5.61 dB
+- **Author impact: +0.67 dB**
+
+**Finding**: Author costs only 0.67 dB — much less than its 28% feature
+importance would suggest. The model is usable in production without author.
+The high importance reflects how much the model *uses* the feature during
+training, not how much it *needs* it for generalization.
+
+### E37 — Per-title breakdown (213 titles)
+
+**Summary**: 8 PASS | 23 MARGINAL | 182 FAIL | Mean: 4.94 dB
+
+**Best titles** (under 2 dB):
+In the Lost Lands (0.83), For All Mankind (0.87), Rick and Morty (1.02),
+The Lion King (1.03), Love Death + Robots (1.14), Inside Out (1.16),
+Foundation (1.18), Fullmetal Alchemist (1.25), Mindhunter (1.26)
+
+**Worst titles** (over 15 dB):
+History of the World Part I (20.35), Royal Space Force (20.34),
+WXIII: Patlabor (16.87), Riff Raff (16.70), Angel Heart (15.64)
+
+**Critical finding — filter type mismatch**: The worst titles all predict
+HighShelf (H) when the catalogue uses LowShelf (L) or PeakingEQ (P).
+The `Pred→Tgt` column shows patterns like `HHHL→LLLL` and `HLHH→LLLP`.
+The integer type encoding (LowShelf=0, HighShelf=1, PeakingEQ=2) causes
+XGBoost to default to HighShelf. **E34 (one-hot type encoding) is the
+highest-priority fix.**
