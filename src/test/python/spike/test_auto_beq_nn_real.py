@@ -557,6 +557,10 @@ def test_late_fusion_vs_early(tmp_path):
     print(f"\n  Best alpha: {best_alpha}")
     print(f"  LateFusionAdvisor test: {advice.reasoning}")
 
+    # Per-title breakdown on best late fusion model.
+    Y_pred_best = best_model.predict(X_val_real)
+    _print_per_title_breakdown(Y_pred_best, val_entries, f"E27 late fusion α={best_alpha}")
+
 
 @pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")
 def test_cnn_dual_branch(tmp_path):
