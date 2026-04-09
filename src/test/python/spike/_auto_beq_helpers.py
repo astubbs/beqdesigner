@@ -330,6 +330,41 @@ def load_and_smooth(
     return measured_on_grid
 
 
+def extract_chunk_stats(
+    chunk_matrix: np.ndarray,
+    freqs: np.ndarray,
+    bins_hz: list[float],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute per-bin chunk statistics (F2/E43 — Option B features).
+
+    From the ``[n_chunks x n_freq_bins]`` dB matrix, compute at each of
+    the target frequency bins:
+
+    1. **Standard deviation** across chunks — captures content variability.
+       High stddev = variable bass (showcase scenes inflate the average);
+       low stddev = consistent rolloff (high confidence in the ceiling).
+    2. **Ceiling fraction** — proportion of chunks within 3 dB of the 90th
+       percentile.  High fraction = most chunks agree on the rolloff level.
+
+    These 18 values (9 stddev + 9 ceiling_frac) supplement the 9 Option A
+    percentile values, forming the 27-dim Option B feature vector.
+
+    Returns ``(stddev_9, ceiling_frac_9)`` each of shape ``(len(bins_hz),)``.
+    """
+    n_bins = len(bins_hz)
+    stddev = np.empty(n_bins, dtype=np.float32)
+    ceiling_frac = np.empty(n_bins, dtype=np.float32)
+
+    for i, target_hz in enumerate(bins_hz):
+        col_idx = int(np.argmin(np.abs(freqs - target_hz)))
+        column = chunk_matrix[:, col_idx]
+        stddev[i] = float(np.std(column))
+        p90 = float(np.percentile(column, 90))
+        ceiling_frac[i] = float(np.mean(column >= p90 - 3.0))
+
+    return stddev, ceiling_frac
+
+
 def load_and_smooth_chunked(
     wav_path: Path,
     fs: int,
@@ -338,7 +373,8 @@ def load_and_smooth_chunked(
     percentile: float = 90.0,
     expected_runtime_min: float = 0,
     return_absolute: bool = False,
-) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    return_chunk_stats: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray] | dict:
     """Chunked-percentile spectrum: chunks → STFT peak per chunk → Nth-percentile.
 
     Pipeline: validate WAV integrity → WAV → split into fixed-length chunks → STFT peak curve
@@ -428,6 +464,16 @@ def load_and_smooth_chunked(
     matrix = np.stack(chunk_peaks, axis=0)
     aggregated = np.percentile(matrix, percentile, axis=0)
 
+    # F2/E43 (Option B): per-bin chunk statistics for the 9 Option A bins.
+    # stddev captures content variability; ceiling_frac captures how many
+    # chunks are near the rolloff ceiling (high = confident estimate).
+    chunk_stddev: np.ndarray | None = None
+    chunk_ceiling_frac: np.ndarray | None = None
+    if return_chunk_stats:
+        chunk_stddev, chunk_ceiling_frac = extract_chunk_stats(
+            matrix, freqs, OPTION_A_BINS_HZ,
+        )
+
     # F3/E42: capture absolute dBFS at Option A bins BEFORE normalisation.
     absolute_at_bins: np.ndarray | None = None
     if return_absolute:
@@ -444,9 +490,19 @@ def load_and_smooth_chunked(
         aggregated[int(np.argmin(np.abs(freqs - 20.0)))],
         aggregated[anchor_idx],
     )
+    result: dict = {"curve": aggregated}
     if return_absolute:
+        result["absolute"] = absolute_at_bins
+    if return_chunk_stats:
+        result["chunk_stddev"] = chunk_stddev
+        result["chunk_ceiling_frac"] = chunk_ceiling_frac
+
+    # Backward-compatible return: if no extras requested, return just the curve.
+    if not return_absolute and not return_chunk_stats:
+        return aggregated
+    if return_absolute and not return_chunk_stats:
         return aggregated, absolute_at_bins
-    return aggregated
+    return result
 
 
 def load_and_smooth_blended(
