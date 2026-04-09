@@ -105,6 +105,7 @@ so the user can see results incrementally: `AUTO_BEQ_SWEEP_LIMIT=1`.
 | `scripts/verify_wav_cache.py` | Verify WAV cache integrity, delete corrupt files | yes | no (imports wav_integrity) |
 | `scripts/wav_cache_status.py` | Summarise WAV cache: counts, titles, author breakdown, growth | yes | no (imports helpers) |
 | `scripts/nn_comparison_report.py` | Compare NN-predicted vs hand-coded BEQ filters, markdown output | yes | no (imports model + helpers) |
+| `scripts/nn_f_experiment_report.py` | Generate markdown comparison report from F-experiment CSV | yes | no (reads CSV) |
 | `docker/Dockerfile` | Docker image: Python 3.13-slim + ffmpeg + project source | — | — |
 | `docker/docker-compose.example.yml` | Example compose config — copy, edit paths, run | — | — |
 
