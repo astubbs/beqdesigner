@@ -199,9 +199,38 @@ def generate_profile(
              f"{season:02d}" if season else "?",
              f"{episode:02d}" if episode else "?")
 
-    # Extract LFE.
+    # Extract LFE to a temp directory (avoids long path issues with the
+    # legacy path-mirrored cache when filenames have many codec tags).
+    import tempfile
+    tmp_dir = Path(tempfile.mkdtemp(prefix="beq_lfe_"))
+    safe_stem = "".join(c if c.isalnum() or c in " -_()" else "_" for c in media_path.stem)[:80]
+    tmp_wav = tmp_dir / f"{safe_stem}.lfe-1000hz.wav"
+
     log.info("  extracting LFE...")
-    wav_path = extract_lfe_wav(media_path, 1000)
+    from spike._auto_beq_helpers import probe_audio_stream as _probe
+    stream = _probe(media_path)
+    layout = stream.get("channel_layout", "")
+    has_lfe = "LFE" in layout.upper() or any(
+        layout.lower().startswith(p) for p in ("5.1", "6.1", "7.1")
+    )
+    af_filter = "pan=mono|c0=LFE" if has_lfe else "aresample"
+    if not has_lfe:
+        log.info("  no LFE channel — falling back to mono downmix")
+
+    import subprocess
+    cmd = [
+        "ffmpeg", "-y", "-v", "error",
+        "-i", str(media_path),
+        "-af", af_filter, "-ac", "1", "-ar", "1000",
+        "-sample_fmt", "s16", "-f", "wav",
+        str(tmp_wav),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if result.returncode != 0:
+        log.error("ffmpeg failed: %s", result.stderr.strip()[:200])
+        raise RuntimeError(f"ffmpeg failed (exit {result.returncode})")
+
+    wav_path = tmp_wav
     log.info("  WAV: %s (%d bytes)", wav_path.name, wav_path.stat().st_size)
 
     # Measure spectrum.
