@@ -188,7 +188,7 @@ N_FEATURES = N_AUDIO_FEATURES + N_METADATA_FEATURES  # 102
 # Label constants (filter parameter output vector)
 # ---------------------------------------------------------------------------
 
-MAX_FILTER_SLOTS = 8  # E39a: was 4, increased to cover 90% of catalogue entries
+MAX_FILTER_SLOTS = 6  # E39a: was 4→8 (over-predicted), 6 covers 77% of catalogue
 N_TYPE = 3  # LowShelf, HighShelf, PeakingEQ — one-hot encoded
 # Per slot: [type_LS, type_HS, type_PEQ, freq_hz, gain_db, q] = 6 values
 N_PER_SLOT = N_TYPE + 3
