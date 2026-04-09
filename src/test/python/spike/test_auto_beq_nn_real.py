@@ -994,6 +994,32 @@ def test_reweighted_training(tmp_path):
     log.info("training late fusion α=0.7...")
     model_late = train_late_fusion(X_train, Y_train, alpha=0.7)
 
+    # Reweighted sub-models for late fusion: reweight the full-feature
+    # model, then build late fusion from it. The reweighted weights come
+    # from the early-fusion downstream loss — same weights apply to both
+    # audio-only and metadata-only sub-models since the bad samples are
+    # the same regardless of feature split.
+    log.info("training reweighted late fusion α=0.7...")
+    # Get weights from the reweighted model's round-1 evaluation.
+    Y_pred_std = model_std.predict(X_train)
+    rw_weights = np.ones(len(X_train), dtype=np.float32)
+    for i in range(len(X_train)):
+        pred_filters = labels_to_filters(Y_pred_std[i])
+        target_filters = labels_to_filters(Y_train[i])
+        loss = downstream_loss(pred_filters, target_filters, DEFAULT_GRID)
+        rw_weights[i] = max(1.0, loss)
+
+    n_audio = 9  # N_AUDIO_FEATURES
+    X_audio = np.zeros_like(X_train)
+    X_audio[:, :n_audio] = X_train[:, :n_audio]
+    X_meta = np.zeros_like(X_train)
+    X_meta[:, n_audio:] = X_train[:, n_audio:]
+
+    from model.auto_beq_nn import LateFusionModel
+    model_rw_audio = train_xgboost(X_audio, Y_train, sample_weight=rw_weights)
+    model_rw_meta = train_xgboost(X_meta, Y_train, sample_weight=rw_weights)
+    model_rw_late = LateFusionModel(model_rw_audio, model_rw_meta, alpha=0.7)
+
     print(f"\n{'='*70}")
     print(f"  E38 REWEIGHTED TRAINING")
     print(f"  Training: {len(X_train)} synthetic | Validation: {len(val_entries)} real-audio")
@@ -1006,6 +1032,7 @@ def test_reweighted_training(tmp_path):
         ("Reweighted (2 rounds)", model_rw),
         ("Reweighted (3 rounds)", model_rw3),
         ("Late fusion α=0.7", model_late),
+        ("Reweighted + Late fusion α=0.7", model_rw_late),
     ]:
         loss = _mean_loss(model)
         print(f"  {name:40s} {loss:10.2f} dB")
