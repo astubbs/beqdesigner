@@ -330,6 +330,103 @@ def load_and_smooth(
     return measured_on_grid
 
 
+def detect_music_chunks(
+    mono: np.ndarray,
+    fs: int,
+    chunk_s: float = 60.0,
+    periodicity_threshold: float = 0.4,
+) -> np.ndarray:
+    """Detect music-dominated chunks via onset regularity (F4/E44).
+
+    Musical content has periodic onset patterns at typical tempos
+    (60-200 BPM = 0.3-1.0 s lag).  Impact/effects audio is aperiodic.
+    By computing the autocorrelation of the spectral-flux onset envelope
+    per chunk and checking for strong peaks in the musical tempo range,
+    we can flag chunks where score/soundtrack dominates.
+
+    Excluding or down-weighting these chunks improves rolloff detection
+    because music bass is intentionally mixed and doesn't reflect the
+    rolloff ceiling the same way effects do.
+
+    Returns boolean array of shape ``(n_chunks,)`` where True = music detected.
+    """
+    import scipy.signal as ss
+
+    chunk_samples = int(chunk_s * fs)
+    min_chunk = chunk_samples // 2
+    chunks = [
+        mono[i : i + chunk_samples]
+        for i in range(0, len(mono), chunk_samples)
+        if len(mono[i : i + chunk_samples]) >= min_chunk
+    ]
+    is_music = np.zeros(len(chunks), dtype=bool)
+
+    # Tempo range: 60-200 BPM → period 0.3-1.0 s → lag in samples.
+    min_lag = int(0.3 * fs)
+    max_lag = min(int(1.0 * fs), chunk_samples // 2)
+    if max_lag <= min_lag:
+        return is_music  # chunk too short for tempo detection
+
+    for i, chunk in enumerate(chunks):
+        # Spectral flux as onset strength proxy.
+        nperseg = min(256, len(chunk))
+        _, _, Zxx = ss.stft(chunk, fs=fs, nperseg=nperseg, noverlap=nperseg // 2)
+        mag = np.abs(Zxx)
+        # Half-wave rectified difference between successive frames.
+        flux = np.maximum(0, np.diff(mag, axis=1)).sum(axis=0)
+        if len(flux) < max_lag + 1:
+            continue
+
+        # Normalised autocorrelation in the tempo lag range.
+        flux_centered = flux - flux.mean()
+        norm = np.dot(flux_centered, flux_centered)
+        if norm < 1e-12:
+            continue
+        acorr = np.correlate(flux_centered, flux_centered, mode="full")
+        acorr = acorr[len(flux_centered) - 1 :]  # positive lags only
+        acorr /= norm
+
+        tempo_region = acorr[min_lag : max_lag + 1]
+        if len(tempo_region) > 0 and tempo_region.max() > periodicity_threshold:
+            is_music[i] = True
+
+    n_flagged = int(is_music.sum())
+    if n_flagged > 0:
+        log.info("music detection: %d/%d chunks flagged as music", n_flagged, len(chunks))
+    return is_music
+
+
+def _weighted_percentile(
+    matrix: np.ndarray,
+    weights: np.ndarray,
+    percentile: float,
+) -> np.ndarray:
+    """Weighted percentile across axis 0 of a 2-D matrix.
+
+    Rows with weight 0 are excluded.  Falls back to ``np.percentile``
+    when all weights are equal.
+    """
+    mask = weights > 0
+    if mask.all() and np.allclose(weights, weights[0]):
+        return np.percentile(matrix, percentile, axis=0)
+    if not mask.any():
+        return np.percentile(matrix, percentile, axis=0)
+
+    m = matrix[mask]
+    w = weights[mask]
+    result = np.empty(m.shape[1], dtype=np.float64)
+    for col in range(m.shape[1]):
+        sorted_idx = np.argsort(m[:, col])
+        sorted_vals = m[sorted_idx, col]
+        sorted_w = w[sorted_idx]
+        cumw = np.cumsum(sorted_w)
+        cutoff = percentile / 100.0 * cumw[-1]
+        idx = int(np.searchsorted(cumw, cutoff))
+        idx = min(idx, len(sorted_vals) - 1)
+        result[col] = sorted_vals[idx]
+    return result
+
+
 def extract_chunk_stats(
     chunk_matrix: np.ndarray,
     freqs: np.ndarray,
@@ -374,6 +471,7 @@ def load_and_smooth_chunked(
     expected_runtime_min: float = 0,
     return_absolute: bool = False,
     return_chunk_stats: bool = False,
+    chunk_weights: np.ndarray | None = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray] | dict:
     """Chunked-percentile spectrum: chunks → STFT peak per chunk → Nth-percentile.
 
@@ -462,7 +560,10 @@ def load_and_smooth_chunked(
 
     # [n_chunks × n_freq_bins] → percentile across chunks at each freq bin.
     matrix = np.stack(chunk_peaks, axis=0)
-    aggregated = np.percentile(matrix, percentile, axis=0)
+    if chunk_weights is not None:
+        aggregated = _weighted_percentile(matrix, chunk_weights, percentile)
+    else:
+        aggregated = np.percentile(matrix, percentile, axis=0)
 
     # F2/E43 (Option B): per-bin chunk statistics for the 9 Option A bins.
     # stddev captures content variability; ceiling_frac captures how many
