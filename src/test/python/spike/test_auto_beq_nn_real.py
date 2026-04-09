@@ -737,3 +737,138 @@ def test_chunked_nn_training(tmp_path):
 
         print(f"\n  {'Late fusion α=0.3 + Blended':35s} {late_blended_loss:10.2f} dB")
         print(f"  (compare: late fusion α=0.3 Welch-only was 3.27 dB on 171 titles)")
+
+
+@pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")
+def test_real_audio_training(tmp_path):
+    """E33: Train on real audio features instead of synthetic.
+
+    Compares three training approaches on the same held-out real test set:
+    1. Synthetic-only (baseline): ~8k synthetic entries
+    2. Real-only: train on real WAV features only
+    3. Hybrid: real features where available + synthetic for the rest
+
+    Plus late fusion (α=0.3) variants of each.
+    """
+    from model.auto_beq_catalogue import _fetch_or_cache
+    from sklearn.model_selection import train_test_split
+
+    log.info("=== E33 real audio training ===")
+
+    # --- 1. Extract real audio features for ALL available WAVs ---
+    t0 = time.time()
+    all_real = _extract_features_parallel(
+        _PAIRS, DEFAULT_GRID, _DEFAULT_FS, strategy=STRATEGY_BLENDED_07,
+    )
+    extract_time = time.time() - t0
+    log.info("extracted %d real audio features in %.0fs", len(all_real), extract_time)
+
+    # Filter to entries with filters.
+    tmdb_cache = load_cache()
+    tmdb_cache = fetch_metadata_batch(
+        [p["catalogue_entry"] for p, _ in all_real], cache=tmdb_cache,
+    )
+
+    real_X, real_Y, real_entries = [], [], []
+    for p, features in all_real:
+        entry = p["catalogue_entry"]
+        if not entry.get("filters"):
+            continue
+        metadata = enrich_media_metadata(entry, tmdb_cache)
+        real_X.append(build_feature_vector(features, metadata))
+        real_Y.append(catalogue_entry_to_labels(entry))
+        real_entries.append(entry)
+
+    real_X = np.array(real_X, dtype=np.float32)
+    real_Y = np.array(real_Y, dtype=np.float32)
+    log.info("real audio dataset: %d entries", len(real_X))
+
+    if len(real_X) < 20:
+        pytest.skip(f"need at least 20 real audio entries, have {len(real_X)}")
+
+    # --- 2. Split real audio into train (80%) / test (20%) ---
+    indices = np.arange(len(real_X))
+    severity = [
+        "heavy" if sum(abs(float(f.get("gain", 0))) for f in e.get("filters", [])) >= 20
+        else "moderate" if sum(abs(float(f.get("gain", 0))) for f in e.get("filters", [])) >= 10
+        else "gentle"
+        for e in real_entries
+    ]
+    train_idx, test_idx = train_test_split(
+        indices, test_size=0.2, random_state=42,
+        stratify=severity if len(set(severity)) > 1 else None,
+    )
+
+    X_real_train = real_X[train_idx]
+    Y_real_train = real_Y[train_idx]
+    X_real_test = real_X[test_idx]
+    Y_real_test = real_Y[test_idx]
+    test_entries = [real_entries[i] for i in test_idx]
+    train_tmdb_ids = {str(real_entries[i].get("theMovieDB", "")).strip() for i in train_idx}
+
+    log.info("real train: %d, real test: %d", len(X_real_train), len(X_real_test))
+
+    # --- 3. Build synthetic training set (excluding test titles) ---
+    catalogue = _fetch_or_cache()
+    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
+
+    test_tmdb_ids = {str(real_entries[i].get("theMovieDB", "")).strip() for i in test_idx}
+    X_synth_list, Y_synth_list = [], []
+    for e in deduped:
+        if str(e.get("theMovieDB", "")).strip() in test_tmdb_ids:
+            continue  # exclude test titles from synthetic training
+        features = _synthetic_features(e, DEFAULT_GRID)
+        metadata = enrich_media_metadata(e, tmdb_cache)
+        X_synth_list.append(build_feature_vector(features, metadata))
+        Y_synth_list.append(catalogue_entry_to_labels(e))
+    X_synth = np.array(X_synth_list, dtype=np.float32)
+    Y_synth = np.array(Y_synth_list, dtype=np.float32)
+    log.info("synthetic train: %d (test titles excluded)", len(X_synth))
+
+    # --- 4. Build hybrid training set ---
+    # Real features for titles we have WAVs for (train split only),
+    # synthetic for everything else.
+    X_hybrid_list = list(X_real_train)
+    Y_hybrid_list = list(Y_real_train)
+    for i, e in enumerate(deduped):
+        tid = str(e.get("theMovieDB", "")).strip()
+        if tid in test_tmdb_ids or tid in train_tmdb_ids:
+            continue  # already in real train or test
+        X_hybrid_list.append(X_synth_list[i] if i < len(X_synth_list) else
+                             build_feature_vector(_synthetic_features(e, DEFAULT_GRID),
+                                                  enrich_media_metadata(e, tmdb_cache)))
+        Y_hybrid_list.append(Y_synth_list[i] if i < len(Y_synth_list) else
+                             catalogue_entry_to_labels(e))
+    X_hybrid = np.array(X_hybrid_list, dtype=np.float32)
+    Y_hybrid = np.array(Y_hybrid_list, dtype=np.float32)
+    log.info("hybrid train: %d (%d real + %d synthetic)",
+             len(X_hybrid), len(X_real_train), len(X_hybrid) - len(X_real_train))
+
+    # --- 5. Train + evaluate ---
+    def _mean_loss(model, X_test):
+        Y_pred = model.predict(X_test)
+        return sum(
+            downstream_loss(labels_to_filters(Y_pred[i]), e["filters"], DEFAULT_GRID)
+            for i, e in enumerate(test_entries)
+        ) / len(test_entries)
+
+    print(f"\n{'='*70}")
+    print(f"  E33 REAL AUDIO TRAINING")
+    print(f"  Real train: {len(X_real_train)} | Synthetic: {len(X_synth)}")
+    print(f"  Hybrid: {len(X_hybrid)} | Test: {len(X_real_test)} (held-out real)")
+    print(f"{'='*70}\n")
+    print(f"  {'Training approach':35s} {'Early fusion':>14s} {'Late α=0.3':>14s}")
+    print(f"  {'-'*65}")
+
+    for name, X_tr, Y_tr in [
+        (f"Synthetic-only ({len(X_synth)})", X_synth, Y_synth),
+        (f"Real-only ({len(X_real_train)})", X_real_train, Y_real_train),
+        (f"Hybrid ({len(X_hybrid)})", X_hybrid, Y_hybrid),
+    ]:
+        model_early = train_xgboost(X_tr, Y_tr)
+        early_loss = _mean_loss(model_early, X_real_test)
+
+        model_late = train_late_fusion(X_tr, Y_tr, alpha=0.3)
+        late_loss = _mean_loss(model_late, X_real_test)
+
+        print(f"  {name:35s} {early_loss:12.2f} dB {late_loss:12.2f} dB")
