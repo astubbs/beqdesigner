@@ -558,12 +558,13 @@ def train_xgboost(
     Y_train: np.ndarray,
     X_val: np.ndarray | None = None,
     Y_val: np.ndarray | None = None,
+    sample_weight: np.ndarray | None = None,
 ) -> object:
     """Train an XGBoost multi-output regressor.
 
     Uses native XGBoost multi-output tree strategy which processes all output
-    columns simultaneously. Early stopping is on validation downstream loss
-    (not parameter MSE) when val data is provided.
+    columns simultaneously. ``sample_weight`` upweights specific training
+    samples (used by reweighted training in E38).
 
     Returns the fitted model.
     """
@@ -584,9 +585,41 @@ def train_xgboost(
     if X_val is not None and Y_val is not None:
         fit_kwargs["eval_set"] = [(X_val, Y_val)]
         fit_kwargs["verbose"] = False
+    if sample_weight is not None:
+        fit_kwargs["sample_weight"] = sample_weight
 
     model.fit(X_train, Y_train, **fit_kwargs)
     log.info("XGBoost training complete. n_features_in=%d", model.n_features_in_)
+    return model
+
+
+def train_xgboost_reweighted(
+    X_train: np.ndarray,
+    Y_train: np.ndarray,
+    freqs_hz: np.ndarray,
+    n_rounds: int = 2,
+) -> object:
+    """Two-stage reweighted training (E38).
+
+    Stage 1: standard MSE training. Stage 2: compute downstream dB loss
+    per training sample, upweight high-loss samples, retrain. Focuses the
+    model on samples where parameter-MSE doesn't produce good acoustic results.
+    """
+    model = train_xgboost(X_train, Y_train)
+
+    for round_idx in range(1, n_rounds):
+        Y_pred = model.predict(X_train)
+        weights = np.ones(len(X_train), dtype=np.float32)
+        for i in range(len(X_train)):
+            pred_filters = labels_to_filters(Y_pred[i])
+            target_filters = labels_to_filters(Y_train[i])
+            loss = downstream_loss(pred_filters, target_filters, freqs_hz)
+            weights[i] = max(1.0, loss)  # upweight high-loss samples
+
+        log.info("reweighted round %d: mean_weight=%.2f max_weight=%.2f",
+                 round_idx + 1, weights.mean(), weights.max())
+        model = train_xgboost(X_train, Y_train, sample_weight=weights)
+
     return model
 
 

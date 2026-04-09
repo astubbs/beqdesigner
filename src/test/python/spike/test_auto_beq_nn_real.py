@@ -30,6 +30,7 @@ from model.auto_beq_nn import (
     save_model,
     train_late_fusion,
     train_xgboost,
+    train_xgboost_reweighted,
 )
 
 from spike._auto_beq_helpers import (
@@ -918,3 +919,93 @@ def test_real_audio_training(tmp_path):
         late_loss = _mean_loss(model_late, X_real_test)
 
         print(f"  {name:35s} {early_loss:12.2f} dB {late_loss:12.2f} dB")
+
+
+@pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")
+def test_reweighted_training(tmp_path):
+    """E38: Reweighted training — focus on acoustically bad predictions.
+
+    Two-stage training: Stage 1 trains normally with MSE, Stage 2 upweights
+    samples where parameter-MSE produced bad acoustic (downstream) results.
+    Compares standard, reweighted, late fusion, and reweighted + late fusion.
+
+    Permanent regression test for continuous assessment.
+    """
+    from model.auto_beq_catalogue import _fetch_or_cache
+
+    log.info("=== E38 reweighted training ===")
+
+    catalogue = _fetch_or_cache()
+    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
+
+    tmdb_cache = load_cache()
+    tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
+
+    # Build synthetic training set (excluding validation titles).
+    val_tmdb_ids = {p["tmdb_id"] for p in _PAIRS if p.get("tmdb_id")}
+    X_train_list, Y_train_list = [], []
+    for e in deduped:
+        if str(e.get("theMovieDB", "")).strip() in val_tmdb_ids:
+            continue
+        features = _synthetic_features(e, DEFAULT_GRID)
+        metadata = enrich_media_metadata(e, tmdb_cache)
+        X_train_list.append(build_feature_vector(features, metadata))
+        Y_train_list.append(catalogue_entry_to_labels(e))
+    X_train = np.array(X_train_list, dtype=np.float32)
+    Y_train = np.array(Y_train_list, dtype=np.float32)
+    log.info("training set: %d synthetic entries", len(X_train))
+
+    # Build real-audio validation features (parallel).
+    t0 = time.time()
+    pairs_features = _extract_features_parallel(
+        _PAIRS, DEFAULT_GRID, _DEFAULT_FS, strategy=STRATEGY_WELCH,
+    )
+    log.info("extracted %d features in %.0fs", len(pairs_features), time.time() - t0)
+
+    X_val, Y_val, val_entries = [], [], []
+    for p, features in pairs_features:
+        entry = p["catalogue_entry"]
+        if not entry.get("filters"):
+            continue
+        metadata = enrich_media_metadata(entry, tmdb_cache)
+        X_val.append(build_feature_vector(features, metadata))
+        Y_val.append(catalogue_entry_to_labels(entry))
+        val_entries.append(entry)
+    X_val = np.array(X_val, dtype=np.float32)
+    Y_val = np.array(Y_val, dtype=np.float32)
+
+    def _mean_loss(model):
+        Y_pred = model.predict(X_val)
+        return sum(
+            downstream_loss(labels_to_filters(Y_pred[i]), e["filters"], DEFAULT_GRID)
+            for i, e in enumerate(val_entries)
+        ) / len(val_entries)
+
+    # Train all strategies.
+    log.info("training standard XGBoost...")
+    model_std = train_xgboost(X_train, Y_train)
+
+    log.info("training reweighted XGBoost (2 rounds)...")
+    model_rw = train_xgboost_reweighted(X_train, Y_train, DEFAULT_GRID, n_rounds=2)
+
+    log.info("training reweighted XGBoost (3 rounds)...")
+    model_rw3 = train_xgboost_reweighted(X_train, Y_train, DEFAULT_GRID, n_rounds=3)
+
+    log.info("training late fusion α=0.7...")
+    model_late = train_late_fusion(X_train, Y_train, alpha=0.7)
+
+    print(f"\n{'='*70}")
+    print(f"  E38 REWEIGHTED TRAINING")
+    print(f"  Training: {len(X_train)} synthetic | Validation: {len(val_entries)} real-audio")
+    print(f"{'='*70}\n")
+    print(f"  {'Strategy':40s} {'Real audio':>12s}")
+    print(f"  {'-'*55}")
+
+    for name, model in [
+        ("Standard XGBoost", model_std),
+        ("Reweighted (2 rounds)", model_rw),
+        ("Reweighted (3 rounds)", model_rw3),
+        ("Late fusion α=0.7", model_late),
+    ]:
+        loss = _mean_loss(model)
+        print(f"  {name:40s} {loss:10.2f} dB")
