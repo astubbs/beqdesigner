@@ -2149,3 +2149,23 @@ produce good acoustic results.
 3. **3 rounds is worse than 2** (3.02 vs 3.00) — over-correction.
 4. Best overall: **late fusion α=0.7 at 2.60 dB** (reweighted) or
    **2.63 dB** (standard). The difference is marginal.
+
+### E37 updated — Per-title breakdown on late fusion (300 titles)
+
+**Best model**: late fusion α=0.7 + one-hot type encoding, 300 real-audio titles.
+
+**Summary**: 25 PASS | 66 MARGINAL | 209 FAIL | Mean: **2.67 dB**
+
+91 titles (30%) within practical tolerance (PASS + MARGINAL).
+
+**Best** (under 1 dB): Cosmos (0.27), Planet Earth II (0.36), Pantheon (0.40),
+Mindhunter (0.46), Scavengers Reign (0.47), Primal (0.50)
+
+**Worst** (over 6 dB): Spawn (9.45), Blade Runner (8.78), The Dead Don't Hurt
+(8.48), A Prayer Before Dawn (8.32), Royal Space Force (7.73)
+
+**Failure pattern**: No more HighShelf bias (one-hot fix confirmed). Remaining
+failures are magnitude calibration — right filter types but wrong gain/freq.
+Worst titles are older films (pre-2000), niche content (anime, arthouse),
+and titles with unusual rolloff shapes. These are titles where the
+catalogue author made aggressive choices that don't match common patterns.
