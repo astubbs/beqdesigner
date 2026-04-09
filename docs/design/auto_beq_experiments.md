@@ -2066,3 +2066,39 @@ The `Pred→Tgt` column shows patterns like `HHHL→LLLL` and `HLHH→LLLP`.
 The integer type encoding (LowShelf=0, HighShelf=1, PeakingEQ=2) causes
 XGBoost to default to HighShelf. **E34 (one-hot type encoding) is the
 highest-priority fix.**
+
+### E34 — Filter type one-hot encoding (was integer)
+
+**Fix**: Per filter slot: [type_LS, type_HS, type_PEQ, freq, gain, q] = 6
+values × 4 slots = 24 output dims (was 16). Decoded via argmax.
+
+**Result** (220 titles, early fusion):
+
+| Metric | Before (integer) | After (one-hot) | Change |
+|---|---|---|---|
+| **Mean loss** | 4.94 dB | **3.19 dB** | **-1.75 dB** |
+| Synthetic loss | 3.12 dB | **2.32 dB** | -0.80 dB |
+| Gap | 1.82 dB | **0.88 dB** | -0.94 dB |
+| PASS | 8 | 9 | +1 |
+| MARGINAL | 23 | 33 | +10 |
+| FAIL | 182 | 178 | -4 |
+| Author impact | +0.67 dB | **+0.27 dB** | author matters less |
+
+**1.75 dB improvement** — the single largest gain from any technique change.
+Per-title breakdown confirms the HighShelf bias is eliminated: predictions
+now show mostly L (LowShelf), matching the catalogue's distribution.
+
+Worst case dropped from 20+ dB (History of the World, Royal Space Force)
+to 12 dB (Crimson Tide). The model still struggles with some older films
+but the failure mode is now magnitude calibration, not wrong filter type.
+
+**Progression summary (updated)**:
+
+| Milestone | Real audio | Titles | Key change |
+|---|---|---|---|
+| E25b (hash encoding) | 7.43 dB | 7 | Initial baseline |
+| E25c (vocab encoding) | 5.82 dB | 14 | Studio one-hot |
+| E27 (late fusion, no author) | 4.03 dB | 14 | Separate audio+meta models |
+| E29 (author feature) | 5.07 dB | 20 | Author dominates importances |
+| E31 (NAS extraction) | 3.27 dB | 171 | 5× more data + late fusion |
+| **E34 (one-hot type)** | **3.19 dB** | **220** | **Fixes HighShelf bias** |
