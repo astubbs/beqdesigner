@@ -1982,3 +1982,51 @@ for speed (scipy Welch is single-threaded).
    feature vector may not be granular enough to capture the chunking
    benefit. Option B (27-value chunk feature matrix) would be the next
    escalation if this proves valuable.
+
+**E32 late fusion + blended**: 3.53 dB (compared to 3.27 dB Welch-only
+late fusion from a slightly earlier WAV set). Marginal — blended doesn't
+meaningfully help late fusion.
+
+### E33 — Train on real audio features (not synthetic)
+
+**Hypothesis**: Training on real measured audio features should eliminate
+the synthetic-to-real gap that has been a persistent bottleneck.
+
+**Setup**: 194 real WAVs from NAS extraction. 80/20 stratified split →
+155 train / 39 test (held-out real audio). Three training approaches:
+- Synthetic-only (baseline): 8,203 deduplicated catalogue entries
+- Real-only: 155 real audio features
+- Hybrid: 155 real + 8,092 synthetic for non-WAV titles
+
+**Result**:
+
+| Training approach | Early fusion | Late α=0.3 |
+|---|---|---|
+| **Synthetic-only (8,203)** | 4.13 dB | **3.22 dB** |
+| Real-only (155) | 4.39 dB | 4.36 dB |
+| Hybrid (8,247) | 4.76 dB | 3.46 dB |
+
+**Key findings**:
+
+1. **Synthetic-only still wins** at 3.22 dB late fusion — 155 real
+   training samples is not enough to beat 8,203 synthetic entries.
+   Synthetic data's diversity advantage (covering 8k titles vs 155)
+   outweighs its imperfect feature distribution.
+
+2. **Real-only underperforms** by 1.14 dB (4.36 vs 3.22 late fusion).
+   With only 155 training samples, XGBoost can't learn robust patterns.
+   The model overfits to the small real set.
+
+3. **Hybrid is worse than synthetic-only** (3.46 vs 3.22). Mixing real
+   and synthetic features in the same training set may confuse the model
+   — similar to the cross-correlation overfit from E25e. The feature
+   distributions are different enough that combining them hurts.
+
+4. **Late fusion barely helps real-only** (4.36 vs 4.39) — when the
+   training set is small, separating audio and metadata doesn't add value
+   because there aren't enough examples to learn either branch well.
+
+**Implication**: Real-audio training needs significantly more data — likely
+500+ titles before it can compete with 8k synthetic. The NAS extraction
+is still running (1,244 titles queued). Re-run this experiment when the
+corpus is larger.
