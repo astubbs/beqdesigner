@@ -278,15 +278,21 @@ def load_and_smooth(
     fs: int,
     freqs: np.ndarray,
     expected_runtime_min: float = 0,
-) -> np.ndarray:
+    return_absolute: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Load a WAV file, compute avg spectrum, interp to grid, smooth to 1/6-octave.
 
     Pipeline: validate WAV integrity → WAV → Welch avg spectrum → interp
     to log grid → normalise to 80 Hz anchor → 1/6-octave smooth → re-anchor.
 
+    When *return_absolute* is True (F3/E42), also returns absolute dBFS
+    levels at the 9 Option A frequency bins **before** 80 Hz normalisation.
+    This captures mastering-level information that normalisation strips out.
+
     Raises RuntimeError if the WAV fails integrity checks.
     """
     from model.auto_beq import smooth_fractional_octave
+    from model.auto_beq_nn import OPTION_A_BINS_HZ
     from model.signal import Signal, read_wav_data
     from model.wav_integrity import validate_wav
 
@@ -308,10 +314,19 @@ def load_and_smooth(
              len(measured_freqs), measured_freqs[0], measured_freqs[-1])
 
     measured_on_grid = np.interp(freqs, measured_freqs, measured_db)
+
+    # F3/E42: capture absolute dBFS at Option A bins BEFORE normalisation.
+    absolute_at_bins: np.ndarray | None = None
+    if return_absolute:
+        absolute_at_bins = np.interp(OPTION_A_BINS_HZ, freqs, measured_on_grid)
+
     anchor_idx = int(np.argmin(np.abs(freqs - 80.0)))
     measured_on_grid -= measured_on_grid[anchor_idx]
     measured_on_grid = smooth_fractional_octave(measured_on_grid, freqs, octaves=1.0 / 6.0)
     measured_on_grid -= measured_on_grid[anchor_idx]
+
+    if return_absolute:
+        return measured_on_grid, absolute_at_bins
     return measured_on_grid
 
 
@@ -322,7 +337,8 @@ def load_and_smooth_chunked(
     chunk_s: float = 60.0,
     percentile: float = 90.0,
     expected_runtime_min: float = 0,
-) -> np.ndarray:
+    return_absolute: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Chunked-percentile spectrum: chunks → STFT peak per chunk → Nth-percentile.
 
     Pipeline: validate WAV integrity → WAV → split into fixed-length chunks → STFT peak curve
@@ -334,6 +350,9 @@ def load_and_smooth_chunked(
     estimate than a whole-film Welch average, especially for short
     content where a single outlier scene can dominate the whole-film
     statistic (see E15c: EoT showcase scenes inflate 10 Hz by 16-19 dB).
+
+    When *return_absolute* is True (F3/E42), also returns absolute dBFS
+    levels at the 9 Option A bins before normalisation.
 
     Parameters
     ----------
@@ -351,6 +370,7 @@ def load_and_smooth_chunked(
     import scipy.signal as ss
 
     from model.auto_beq import smooth_fractional_octave
+    from model.auto_beq_nn import OPTION_A_BINS_HZ
     from model.signal import read_wav_data
     from model.wav_integrity import validate_wav
 
@@ -408,6 +428,11 @@ def load_and_smooth_chunked(
     matrix = np.stack(chunk_peaks, axis=0)
     aggregated = np.percentile(matrix, percentile, axis=0)
 
+    # F3/E42: capture absolute dBFS at Option A bins BEFORE normalisation.
+    absolute_at_bins: np.ndarray | None = None
+    if return_absolute:
+        absolute_at_bins = np.interp(OPTION_A_BINS_HZ, freqs, aggregated)
+
     # Same normalisation pipeline as load_and_smooth().
     anchor_idx = int(np.argmin(np.abs(freqs - 80.0)))
     aggregated -= aggregated[anchor_idx]
@@ -419,6 +444,8 @@ def load_and_smooth_chunked(
         aggregated[int(np.argmin(np.abs(freqs - 20.0)))],
         aggregated[anchor_idx],
     )
+    if return_absolute:
+        return aggregated, absolute_at_bins
     return aggregated
 
 
@@ -429,7 +456,8 @@ def load_and_smooth_blended(
     chunk_s: float = 60.0,
     percentile: float = 90.0,
     alpha: float = 0.5,
-) -> np.ndarray:
+    return_absolute: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Blend Welch average and chunked-percentile curves.
 
     ``alpha`` controls the blend: 0.0 = pure chunked, 1.0 = pure Welch.
@@ -437,8 +465,17 @@ def load_and_smooth_blended(
 
     Both curves are computed independently (each normalised to 80 Hz
     anchor and 1/6-oct smoothed), then blended in dB domain.
+
+    When *return_absolute* is True (F3/E42), returns absolute dBFS from
+    the Welch extraction (the more stable of the two).
     """
-    welch = load_and_smooth(wav_path, fs, freqs)
+    if return_absolute:
+        welch, absolute_at_bins = load_and_smooth(
+            wav_path, fs, freqs, return_absolute=True,
+        )
+    else:
+        welch = load_and_smooth(wav_path, fs, freqs)
+        absolute_at_bins = None
     chunked = load_and_smooth_chunked(
         wav_path, fs, freqs, chunk_s=chunk_s, percentile=percentile,
     )
@@ -449,6 +486,8 @@ def load_and_smooth_blended(
         blended[int(np.argmin(np.abs(freqs - 20.0)))],
         blended[int(np.argmin(np.abs(freqs - 80.0)))],
     )
+    if return_absolute:
+        return blended, absolute_at_bins
     return blended
 
 
@@ -457,23 +496,28 @@ def load_measured(
     fs: int,
     freqs: np.ndarray,
     strategy: ExtractionStrategy | None = None,
-) -> np.ndarray:
+    return_absolute: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Dispatch to the appropriate extraction function based on strategy.
 
     If *strategy* is None, uses ``_strategy_from_env()`` (which defaults
     to ``DEFAULT_STRATEGY`` = blend-a0.7-P90).
+
+    When *return_absolute* is True (F3/E42), also returns absolute dBFS
+    levels at the 9 Option A bins before normalisation.
     """
     if strategy is None:
         strategy = _strategy_from_env()
     log.info("extraction strategy: %s", strategy.label)
 
     if strategy.method == ExtractionMethod.WELCH:
-        return load_and_smooth(wav_path, fs, freqs)
+        return load_and_smooth(wav_path, fs, freqs, return_absolute=return_absolute)
     if strategy.method == ExtractionMethod.CHUNKED:
         return load_and_smooth_chunked(
             wav_path, fs, freqs,
             chunk_s=strategy.chunk_s,
             percentile=strategy.percentile,
+            return_absolute=return_absolute,
         )
     if strategy.method == ExtractionMethod.BLENDED:
         return load_and_smooth_blended(
@@ -481,6 +525,7 @@ def load_measured(
             chunk_s=strategy.chunk_s,
             percentile=strategy.percentile,
             alpha=strategy.alpha,
+            return_absolute=return_absolute,
         )
     raise ValueError(f"unknown extraction method: {strategy.method}")
 
