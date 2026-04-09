@@ -2101,4 +2101,23 @@ but the failure mode is now magnitude calibration, not wrong filter type.
 | E27 (late fusion, no author) | 4.03 dB | 14 | Separate audio+meta models |
 | E29 (author feature) | 5.07 dB | 20 | Author dominates importances |
 | E31 (NAS extraction) | 3.27 dB | 171 | 5× more data + late fusion |
-| **E34 (one-hot type)** | **3.19 dB** | **220** | **Fixes HighShelf bias** |
+| E34 (one-hot type, early) | 3.19 dB | 220 | Fixes HighShelf bias |
+| **E34 + late fusion α=0.7** | **2.45 dB** | **220** | **One-hot + late fusion** |
+
+### E34 + E27 late fusion with one-hot encoding
+
+| Strategy | Real audio | Synthetic | Gap |
+|---|---|---|---|
+| E25 early fusion | 3.19 dB | 2.32 dB | +0.88 dB |
+| E27 late fusion (α=0.3) | 2.61 dB | 2.83 dB | -0.22 dB |
+| E27 late fusion (α=0.5) | 2.52 dB | 2.78 dB | -0.27 dB |
+| **E27 late fusion (α=0.7)** | **2.45 dB** | **2.74 dB** | **-0.29 dB** |
+
+**2.45 dB on 220 real-audio titles** — first time below 2.5 dB. The gap
+is now *negative* (-0.29 dB) meaning real audio transfers better than
+synthetic for this model configuration.
+
+Optimal α flipped from 0.3 (metadata-heavy, before one-hot fix) to 0.7
+(audio-heavy, after fix). The audio branch is now more reliable because
+it no longer has to compensate for wrong filter types — the one-hot
+encoding lets XGBoost correctly learn filter type as a categorical output.
