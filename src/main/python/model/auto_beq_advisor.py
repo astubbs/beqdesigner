@@ -111,6 +111,13 @@ class CurveFeatures:
     rolloff_slope_db_per_oct: float
     dynamic_range_db: float
     curve_sample_points: tuple[tuple[float, float], ...] = field(default_factory=tuple)
+    # F2 (Option B): per-bin chunk statistics — None when not available
+    # (e.g. synthetic features or Welch-only extraction).
+    chunk_stddev: tuple[float, ...] | None = None
+    chunk_ceiling_frac: tuple[float, ...] | None = None
+    # F3: absolute dBFS levels at Option A bins, BEFORE 80 Hz normalisation.
+    # Captures mastering-level information that normalisation strips out.
+    absolute_dbfs: tuple[tuple[float, float], ...] | None = None
 
 
 @dataclass(frozen=True)

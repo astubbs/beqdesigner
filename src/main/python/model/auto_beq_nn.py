@@ -16,6 +16,7 @@ See docs/design/auto_beq_ml_experiments.md for full design rationale.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -183,6 +184,101 @@ N_METADATA_FEATURES = (
 )  # = 93
 
 N_FEATURES = N_AUDIO_FEATURES + N_METADATA_FEATURES  # 102
+
+
+# ---------------------------------------------------------------------------
+# Audio feature configuration (F-experiment support)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AugmentationConfig:
+    """Training-time noise augmentation for synthetic audio features (F1).
+
+    Adds controlled noise to audio feature dims during training to simulate
+    the distribution mismatch between synthetic "perfect inverse" curves and
+    real measured spectra.  Only applied during training, never at inference.
+
+    In ML literature this is *input feature augmentation* — analogous to
+    image augmentation (random crop, colour jitter) but applied to 1-D
+    spectral features.  The rationale is that synthetic training features are
+    deterministic inversions of catalogue filter chains, while real measured
+    spectra contain content-dependent noise, Welch averaging artefacts, and
+    chunk-level variation.  By injecting noise whose magnitude matches the
+    observed synthetic-to-real gap (~1-3 dB per bin from E25-E34), we teach
+    the model to be robust to these real-world perturbations.
+    """
+
+    gaussian_sigma_db: float = 1.5    # σ of additive N(0, σ) noise per bin
+    per_bin_uniform_db: float = 2.0   # half-width of U(-u, +u) per-bin jitter
+    smooth_prob: float = 0.3          # probability of 3-point running average
+    n_copies: int = 3                 # augmented copies per original sample
+    seed: int = 42
+
+    @property
+    def label(self) -> str:
+        return (
+            f"aug-s{self.gaussian_sigma_db:.1f}"
+            f"-u{self.per_bin_uniform_db:.0f}"
+            f"-n{self.n_copies}"
+        )
+
+
+@dataclass(frozen=True)
+class AudioFeatureConfig:
+    """Describes which audio features are active and their dimensionality.
+
+    Defaults reproduce the original 9-dim Option A behaviour so all existing
+    code paths work unchanged when constructed with no arguments.
+
+    Flag fields enable F-experiment extensions:
+      * ``use_option_b``      — F2: adds 18 chunk-statistics dims (stddev +
+                                ceiling fraction per bin)
+      * ``use_absolute_dbfs`` — F3: adds 9 absolute dBFS level dims
+      * ``use_high_res``      — F11: 16-bin high-resolution frequency grid
+      * ``use_rolloff_cluster`` — F7: k-means cluster ID as one-hot feature
+    """
+
+    n_audio: int = N_AUDIO_FEATURES   # base Option A bins (9 or 16)
+    use_option_b: bool = False        # F2: +18 dims
+    use_absolute_dbfs: bool = False   # F3: +9 dims
+    use_high_res: bool = False        # F11: 16 bins instead of 9
+    use_rolloff_cluster: bool = False # F7: cluster ID one-hot
+    n_clusters: int = 6              # F7: number of clusters
+
+    @property
+    def n_total_audio(self) -> int:
+        n = 16 if self.use_high_res else self.n_audio
+        if self.use_option_b:
+            n += 18  # 9 stddev + 9 ceiling_fraction (always at 9 bins)
+        if self.use_absolute_dbfs:
+            n += 9   # absolute dBFS at 9 bins
+        if self.use_rolloff_cluster:
+            n += self.n_clusters  # one-hot cluster ID
+        return n
+
+    @property
+    def n_features(self) -> int:
+        return self.n_total_audio + N_METADATA_FEATURES
+
+    @property
+    def label(self) -> str:
+        parts: list[str] = []
+        if self.use_high_res:
+            parts.append("HR16")
+        else:
+            parts.append(f"A{self.n_audio}")
+        if self.use_option_b:
+            parts.append("optB")
+        if self.use_absolute_dbfs:
+            parts.append("dBFS")
+        if self.use_rolloff_cluster:
+            parts.append(f"clust{self.n_clusters}")
+        return "+".join(parts) if parts else "A9"
+
+
+DEFAULT_AUDIO_CONFIG = AudioFeatureConfig()
+
 
 # ---------------------------------------------------------------------------
 # Label constants (filter parameter output vector)
@@ -378,17 +474,53 @@ def build_metadata_features(metadata: MediaMetadata) -> np.ndarray:
     return result
 
 
-def build_feature_vector(features: CurveFeatures, metadata: MediaMetadata) -> np.ndarray:
-    """Build the full 60-dim input vector: audio (9) + metadata (51).
+def build_feature_vector(
+    features: CurveFeatures,
+    metadata: MediaMetadata,
+    config: AudioFeatureConfig = DEFAULT_AUDIO_CONFIG,
+) -> np.ndarray:
+    """Build the full input vector: audio (variable) + metadata (93).
 
-    Returns float32 array of shape (60,).
+    The audio portion is configurable via *config*:
+      - Default (9 dims): Option A 9-bin percentile curve
+      - ``use_option_b``: +18 dims (stddev + ceiling fraction per bin)
+      - ``use_absolute_dbfs``: +9 dims (absolute dBFS at 9 bins)
+      - ``use_high_res``: 16 bins instead of 9
+      - ``use_rolloff_cluster``: +n_clusters dims (one-hot cluster ID)
+
+    Returns float32 array of shape ``(config.n_features,)``.
     """
-    audio = build_audio_features(features)
+    parts: list[np.ndarray] = [build_audio_features(features)]
+
+    if config.use_option_b:
+        if features.chunk_stddev is not None and features.chunk_ceiling_frac is not None:
+            parts.append(np.array(features.chunk_stddev, dtype=np.float32))
+            parts.append(np.array(features.chunk_ceiling_frac, dtype=np.float32))
+        else:
+            # Synthetic fallback: stddev=0 (perfectly consistent), ceiling_frac=1.0
+            parts.append(np.zeros(9, dtype=np.float32))
+            parts.append(np.ones(9, dtype=np.float32))
+
+    if config.use_absolute_dbfs:
+        if features.absolute_dbfs is not None:
+            parts.append(np.array(
+                [db for _, db in features.absolute_dbfs], dtype=np.float32,
+            ))
+        else:
+            parts.append(np.zeros(9, dtype=np.float32))
+
+    # F7 cluster ID is injected externally (requires a fitted KMeans model),
+    # so it is NOT populated here — the caller appends it after this call.
+
+    audio = np.concatenate(parts)
     meta = build_metadata_features(metadata)
     vec = np.concatenate([audio, meta]).astype(np.float32)
-    assert vec.shape == (N_FEATURES,), (
-        f"feature vector dim mismatch: {vec.shape} != ({N_FEATURES},)"
-    )
+    expected = config.n_features
+    # Allow cluster dims to be added later by caller
+    if not config.use_rolloff_cluster:
+        assert vec.shape == (expected,), (
+            f"feature vector dim mismatch: {vec.shape} != ({expected},)"
+        )
     return vec
 
 
@@ -662,14 +794,19 @@ class LateFusionModel:
     """
 
     def __init__(
-        self, model_audio: object, model_meta: object, alpha: float = 0.5,
+        self,
+        model_audio: object,
+        model_meta: object,
+        alpha: float = 0.5,
+        n_audio: int = N_AUDIO_FEATURES,
     ) -> None:
         self.model_audio = model_audio
         self.model_meta = model_meta
         self.alpha = alpha
+        self._n_audio = n_audio
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        n_audio = N_AUDIO_FEATURES
+        n_audio = self._n_audio
         X_audio = np.zeros_like(X)
         X_audio[:, :n_audio] = X[:, :n_audio]
         X_meta = np.zeros_like(X)
@@ -684,14 +821,21 @@ def train_late_fusion(
     X_train: np.ndarray,
     Y_train: np.ndarray,
     alpha: float = 0.5,
+    n_audio: int | None = None,
 ) -> LateFusionModel:
     """Train a late-fusion model: separate audio and metadata XGBoost models.
 
     Each sub-model sees only its own feature subset (audio dims zeroed for
     the metadata model and vice versa). Their predictions are blended with
     weight ``alpha`` (audio) vs ``1 - alpha`` (metadata).
+
+    *n_audio* specifies how many leading columns are audio features.
+    Defaults to ``N_AUDIO_FEATURES`` (9) for backward compatibility;
+    pass ``config.n_total_audio`` when using extended audio features
+    (Option B, absolute dBFS, high-res bins, etc.).
     """
-    n_audio = N_AUDIO_FEATURES
+    if n_audio is None:
+        n_audio = N_AUDIO_FEATURES
 
     X_audio = np.zeros_like(X_train)
     X_audio[:, :n_audio] = X_train[:, :n_audio]
@@ -706,7 +850,7 @@ def train_late_fusion(
     model_meta = train_xgboost(X_meta, Y_train)
 
     log.info("late fusion complete, alpha=%.2f", alpha)
-    return LateFusionModel(model_audio, model_meta, alpha=alpha)
+    return LateFusionModel(model_audio, model_meta, alpha=alpha, n_audio=n_audio)
 
 
 # ---------------------------------------------------------------------------
