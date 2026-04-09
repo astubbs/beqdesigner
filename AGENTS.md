@@ -129,6 +129,7 @@ so the user can see results incrementally: `AUTO_BEQ_SWEEP_LIMIT=1`.
 | `scripts/nn_author_pattern_report.py` | Per-author distribution analysis from BEQ catalogue | yes | no (reads JSON) |
 | `scripts/nn_cache_bias_report.py` | WAV cache vs catalogue distribution bias report | yes | no (imports helpers) |
 | `scripts/nn_acquisition_recommender.py` | Recommend N missing catalogue titles to acquire (greedy bias correction). Reads `media_inventory.json` to exclude already-owned titles. | yes | no (imports helpers) |
+| `scripts/generate_beq_profile.py` | Generate complete BEQ profiles for uncatalogued media | yes | no (imports model + helpers) |
 | `docker/Dockerfile` | Docker image: Python 3.13-slim + ffmpeg + project source | — | — |
 | `docker/docker-compose.example.yml` | Example compose config — copy, edit paths, run | — | — |
 
