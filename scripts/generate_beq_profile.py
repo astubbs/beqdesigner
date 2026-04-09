@@ -335,7 +335,8 @@ def generate_profile(
     # Generate spectrographs.
     img_dir = (output_dir or output_path.parent if output_path else Path("."))
     ep_label = f"S{season:02d}E{episode:02d}" if season and episode else ""
-    full_title = f"{title} ({year}) {ep_label}".strip()
+    author_label = f" [{author}]" if author != "auto" else ""
+    full_title = f"{title} ({year}) {ep_label}{author_label}".strip()
     images = _generate_spectrographs(curve, DEFAULT_GRID, filters, img_dir, full_title)
 
     # Compute MV adjust and digest.
