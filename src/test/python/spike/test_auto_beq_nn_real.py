@@ -93,6 +93,60 @@ def _print_per_title_breakdown(Y_pred: np.ndarray, val_entries: list[dict], mode
             f"{r['pred_types']:>3s}→{r['target_types']:<3s}"
         )
 
+    # Failure pattern analysis.
+    from collections import defaultdict
+    print(f"\n  --- Failure analysis ---")
+
+    # By decade.
+    decade_losses = defaultdict(list)
+    for r in results:
+        y = int(r["year"]) if r["year"].isdigit() else 0
+        if y:
+            decade_losses[f"{y // 10 * 10}s"].append(r["loss"])
+    print(f"\n  {'Decade':>8s} {'n':>4s} {'Mean':>6s} {'>4dB':>5s}")
+    for d in sorted(decade_losses):
+        losses = decade_losses[d]
+        mean = sum(losses) / len(losses)
+        bad = sum(1 for l in losses if l >= 4)
+        print(f"  {d:>8s} {len(losses):4d} {mean:5.1f}dB {bad:5d}")
+
+    # By author.
+    author_losses = defaultdict(list)
+    for r in results:
+        author_losses[r["author"]].append(r["loss"])
+    print(f"\n  {'Author':>12s} {'n':>4s} {'Mean':>6s} {'<2dB':>5s} {'>4dB':>5s}")
+    for a in sorted(author_losses, key=lambda a: -len(author_losses[a])):
+        losses = author_losses[a]
+        mean = sum(losses) / len(losses)
+        good = sum(1 for l in losses if l < 2)
+        bad = sum(1 for l in losses if l >= 4)
+        print(f"  {a:>12s} {len(losses):4d} {mean:5.1f}dB {good:5d} {bad:5d}")
+
+    # By content type.
+    type_losses = defaultdict(list)
+    for r in results:
+        type_losses[r["content_type"]].append(r["loss"])
+    print(f"\n  {'Type':>6s} {'n':>4s} {'Mean':>6s} {'<2dB':>5s} {'>4dB':>5s}")
+    for t in sorted(type_losses):
+        losses = type_losses[t]
+        mean = sum(losses) / len(losses)
+        good = sum(1 for l in losses if l < 2)
+        bad = sum(1 for l in losses if l >= 4)
+        print(f"  {t:>6s} {len(losses):4d} {mean:5.1f}dB {good:5d} {bad:5d}")
+
+    # Filter count match.
+    over = under = match = 0
+    for r in results:
+        pn = len(r["pred_types"])
+        tn = len(r["target_types"])
+        if pn > tn:
+            over += 1
+        elif pn < tn:
+            under += 1
+        else:
+            match += 1
+    print(f"\n  Filter count: {over} over, {under} under, {match} match")
+
 
 def _extract_real_audio_features(wav_path: Path, freqs_hz: np.ndarray, fs: int):
     """Load WAV → Welch spectrum → smooth → extract_curve_features."""
