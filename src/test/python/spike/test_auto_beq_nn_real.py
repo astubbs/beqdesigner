@@ -44,6 +44,55 @@ log = logging.getLogger("auto_beq_nn_real")
 _DEFAULT_FS = 1000
 
 
+def _print_per_title_breakdown(Y_pred: np.ndarray, val_entries: list[dict], model_name: str):
+    """Print per-title results sorted by loss, grouped by verdict."""
+    from model.auto_beq import compute_match_metrics
+
+    results = []
+    for i, entry in enumerate(val_entries):
+        pred_filters = labels_to_filters(Y_pred[i])
+        target_filters = entry["filters"]
+        loss = downstream_loss(pred_filters, target_filters, DEFAULT_GRID)
+
+        correction = evaluate_filter_chain(target_filters, DEFAULT_GRID, fs=_DEFAULT_FS)
+        target_curve = -correction
+        metrics = compute_match_metrics(target_curve, pred_filters, DEFAULT_GRID, fs=_DEFAULT_FS)
+
+        pred_types = [f["type"][0] for f in pred_filters]  # L/H/P
+        target_types = [f["type"][0] for f in target_filters]
+
+        results.append({
+            "title": entry.get("title", "?")[:35],
+            "year": str(entry.get("year", "?")),
+            "author": entry.get("author", "?")[:12],
+            "content_type": "TV" if entry.get("content_type", "") == "TV" else "film",
+            "loss": loss,
+            "verdict": metrics.verdict,
+            "pred_types": "".join(pred_types),
+            "target_types": "".join(target_types),
+            "n_filters": len(target_filters),
+        })
+
+    results.sort(key=lambda r: r["loss"])
+
+    pass_count = sum(1 for r in results if r["verdict"] == "PASS")
+    marginal_count = sum(1 for r in results if r["verdict"] == "MARGINAL")
+    fail_count = sum(1 for r in results if r["verdict"] == "FAIL")
+    mean_loss = sum(r["loss"] for r in results) / len(results) if results else 0
+
+    print(f"\n=== {model_name}: per-title breakdown ({len(results)} titles) ===")
+    print(f"  PASS: {pass_count} | MARGINAL: {marginal_count} | FAIL: {fail_count} | Mean: {mean_loss:.2f} dB")
+    print(f"\n  {'Title':35s} {'Year':>4s} {'Author':>12s} {'Type':>4s} {'Loss':>7s} {'Grade':>8s} {'Pred→Tgt':>8s}")
+    print(f"  {'-'*88}")
+
+    for r in results:
+        print(
+            f"  {r['title']:35s} {r['year']:>4s} {r['author']:>12s} "
+            f"{r['content_type']:>4s} {r['loss']:6.2f} dB {r['verdict']:>8s} "
+            f"{r['pred_types']:>3s}→{r['target_types']:<3s}"
+        )
+
+
 def _extract_real_audio_features(wav_path: Path, freqs_hz: np.ndarray, fs: int):
     """Load WAV → Welch spectrum → smooth → extract_curve_features."""
     return extract_features_with_strategy(wav_path, freqs_hz, fs, strategy=STRATEGY_WELCH)
@@ -233,35 +282,14 @@ def test_train_full_catalogue_validate_real_audio(tmp_path):
         name = feature_names[i] if i < len(feature_names) else f"feat_{i}"
         print(f"  {name:20s} {importances[i]:.4f}")
 
-    # --- 7. Evaluate on real-audio validation set ---
+    # --- 7. Evaluate on real-audio validation set (with per-title breakdown) ---
     Y_pred = model.predict(X_val)
-    print(f"\n=== Real-audio validation ({len(val_entries)} titles) ===")
-    print(f"{'Title':40s} {'Downstream':>10s} {'Verdict':>8s} {'Predicted filters'}")
-    print("-" * 90)
+    _print_per_title_breakdown(Y_pred, val_entries, "E25 early fusion")
 
-    total_loss = 0.0
-    for i, entry in enumerate(val_entries):
-        pred_filters = labels_to_filters(Y_pred[i])
-        target_filters = entry["filters"]
-        loss = downstream_loss(pred_filters, target_filters, DEFAULT_GRID)
-        total_loss += loss
-
-        # Also compute match metrics for the standard grading.
-        correction = evaluate_filter_chain(target_filters, DEFAULT_GRID, fs=_DEFAULT_FS)
-        target_curve = -correction
-        metrics = compute_match_metrics(target_curve, pred_filters, DEFAULT_GRID, fs=_DEFAULT_FS)
-
-        pred_summary = ", ".join(
-            f"{f['type']}({f['freq']:.0f}Hz,{f['gain']:+.1f}dB)"
-            for f in pred_filters
-        ) if pred_filters else "(empty)"
-
-        title = entry["title"][:40]
-        print(f"  {title:40s} {loss:10.2f} dB {metrics.verdict:>8s} {pred_summary}")
-
-    mean_loss = total_loss / len(val_entries) if val_entries else 0
-    print(f"\n  Mean downstream loss: {mean_loss:.2f} dB")
-    print(f"  (< 2 dB = good, < 5 dB = marginal, > 5 dB = needs work)")
+    mean_loss = sum(
+        downstream_loss(labels_to_filters(Y_pred[i]), e["filters"], DEFAULT_GRID)
+        for i, e in enumerate(val_entries)
+    ) / len(val_entries)
 
     # --- 8. Compare: same titles with synthetic features ---
     print(f"\n=== Same titles with SYNTHETIC features (sanity check) ===")
@@ -282,6 +310,24 @@ def test_train_full_catalogue_validate_real_audio(tmp_path):
     print(f"  Mean downstream loss (synthetic): {synth_mean:.2f} dB")
     print(f"  Mean downstream loss (real audio): {mean_loss:.2f} dB")
     print(f"  Gap (real - synthetic):            {mean_loss - synth_mean:.2f} dB")
+
+    # --- E36: Unknown author scenario ---
+    # Zero out the author columns to simulate production inference
+    # (where we're generating a BEQ, not reproducing a known author's work).
+    from model.auto_beq_nn import N_AUTHOR
+    author_start = N_FEATURES - N_AUTHOR  # author is the last N_AUTHOR dims
+    X_val_no_author = X_val.copy()
+    X_val_no_author[:, author_start:] = 0.0
+
+    Y_pred_no_author = model.predict(X_val_no_author)
+    no_author_loss = sum(
+        downstream_loss(labels_to_filters(Y_pred_no_author[i]), e["filters"], DEFAULT_GRID)
+        for i, e in enumerate(val_entries)
+    ) / len(val_entries)
+    print(f"\n=== E36: Unknown author (zeroed at inference) ===")
+    print(f"  With author:    {mean_loss:.2f} dB")
+    print(f"  Without author: {no_author_loss:.2f} dB")
+    print(f"  Author impact:  {no_author_loss - mean_loss:+.2f} dB")
 
 
 @pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")
