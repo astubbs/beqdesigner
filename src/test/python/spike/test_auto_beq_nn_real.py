@@ -1094,3 +1094,127 @@ def test_reweighted_training(tmp_path):
     ]:
         loss = _mean_loss(model)
         print(f"  {name:40s} {loss:10.2f} dB")
+
+
+@pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")
+def test_per_author_isolation(tmp_path):
+    """E40: Per-author model performance — isolate each author's calibration.
+
+    For each author with sufficient validation data:
+    1. Multi-author model (all catalogue) validated on that author's WAVs
+    2. Single-author model (only that author's catalogue) validated on their WAVs
+
+    Shows whether the model has learned each author's style, and whether
+    training on a single author improves predictions for their titles.
+
+    Permanent regression test for continuous assessment.
+    """
+    from collections import defaultdict
+    from model.auto_beq_catalogue import _fetch_or_cache
+
+    log.info("=== E40 per-author isolation ===")
+
+    # Extract real audio features for all WAVs (parallel).
+    t0 = time.time()
+    all_real = _extract_features_parallel(
+        _PAIRS, DEFAULT_GRID, _DEFAULT_FS, strategy=STRATEGY_WELCH,
+    )
+    log.info("extracted %d features in %.0fs", len(all_real), time.time() - t0)
+
+    tmdb_cache = load_cache()
+    tmdb_cache = fetch_metadata_batch(
+        [p["catalogue_entry"] for p, _ in all_real], cache=tmdb_cache,
+    )
+
+    # Build validation data grouped by author.
+    by_author: dict[str, list[dict]] = defaultdict(list)
+    for p, features in all_real:
+        entry = p["catalogue_entry"]
+        if not entry.get("filters"):
+            continue
+        metadata = enrich_media_metadata(entry, tmdb_cache)
+        author = entry.get("author", "unknown")
+        by_author[author].append({
+            "x": build_feature_vector(features, metadata),
+            "y": catalogue_entry_to_labels(entry),
+            "entry": entry,
+        })
+
+    # Build full synthetic training set.
+    catalogue = _fetch_or_cache()
+    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
+
+    all_val_tmdb = set()
+    for items in by_author.values():
+        for item in items:
+            all_val_tmdb.add(str(item["entry"].get("theMovieDB", "")).strip())
+
+    # Full training set (all authors, excluding validation titles).
+    X_train_all, Y_train_all = [], []
+    # Per-author training sets.
+    train_by_author: dict[str, tuple[list, list]] = defaultdict(lambda: ([], []))
+    for e in deduped:
+        tid = str(e.get("theMovieDB", "")).strip()
+        if tid in all_val_tmdb:
+            continue
+        features = _synthetic_features(e, DEFAULT_GRID)
+        metadata = enrich_media_metadata(e, tmdb_cache)
+        x = build_feature_vector(features, metadata)
+        y = catalogue_entry_to_labels(e)
+        X_train_all.append(x)
+        Y_train_all.append(y)
+        author = e.get("author", "unknown")
+        train_by_author[author][0].append(x)
+        train_by_author[author][1].append(y)
+
+    X_train_all = np.array(X_train_all, dtype=np.float32)
+    Y_train_all = np.array(Y_train_all, dtype=np.float32)
+
+    # Train multi-author model once.
+    log.info("training multi-author model (%d entries)...", len(X_train_all))
+    model_all = train_late_fusion(X_train_all, Y_train_all, alpha=0.3)
+
+    # Results table.
+    min_val_titles = 10
+    authors_to_test = [a for a in sorted(by_author, key=lambda a: -len(by_author[a]))
+                       if len(by_author[a]) >= min_val_titles]
+
+    print(f"\n{'='*75}")
+    print(f"  E40 PER-AUTHOR ISOLATION")
+    print(f"  Multi-author training: {len(X_train_all)} synthetic")
+    print(f"  Authors with ≥{min_val_titles} validation titles: {len(authors_to_test)}")
+    print(f"{'='*75}\n")
+    print(f"  {'Author':>12s} {'Val':>4s} {'Train':>6s} {'Multi-author':>14s} {'Single-author':>15s} {'Delta':>7s}")
+    print(f"  {'-'*62}")
+
+    for author in authors_to_test:
+        items = by_author[author]
+        X_val = np.array([item["x"] for item in items], dtype=np.float32)
+        val_entries = [item["entry"] for item in items]
+
+        # Multi-author model on this author's validation.
+        Y_pred_multi = model_all.predict(X_val)
+        multi_loss = sum(
+            downstream_loss(labels_to_filters(Y_pred_multi[i]), e["filters"], DEFAULT_GRID)
+            for i, e in enumerate(val_entries)
+        ) / len(val_entries)
+
+        # Single-author model.
+        author_train = train_by_author[author]
+        if len(author_train[0]) < 50:
+            single_loss_str = "(too few train)"
+            delta_str = ""
+        else:
+            X_tr = np.array(author_train[0], dtype=np.float32)
+            Y_tr = np.array(author_train[1], dtype=np.float32)
+            model_single = train_late_fusion(X_tr, Y_tr, alpha=0.3)
+            Y_pred_single = model_single.predict(X_val)
+            single_loss = sum(
+                downstream_loss(labels_to_filters(Y_pred_single[i]), e["filters"], DEFAULT_GRID)
+                for i, e in enumerate(val_entries)
+            ) / len(val_entries)
+            single_loss_str = f"{single_loss:13.2f} dB"
+            delta = single_loss - multi_loss
+            delta_str = f"{delta:+6.2f} dB"
+
+        print(f"  {author:>12s} {len(items):4d} {len(author_train[0]):6d} {multi_loss:12.2f} dB {single_loss_str:>15s} {delta_str:>7s}")
