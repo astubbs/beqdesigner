@@ -18,6 +18,7 @@ import csv
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -85,6 +86,10 @@ EXPERIMENTS: list[ExperimentConfig] = [
     ExperimentConfig("F6-confweight", confidence_weighted=True),
 
     # F7: Rolloff clustering (sweep cluster counts)
+    # Note: cluster features are appended by the harness after build_feature_vector,
+    # so we do NOT set use_rolloff_cluster on AudioFeatureConfig (which would cause
+    # an assertion mismatch). Instead, the harness detects use_rolloff_cluster on
+    # ExperimentConfig and handles cluster injection.
     ExperimentConfig("F7-clust-4", use_rolloff_cluster=True, n_clusters=4),
     ExperimentConfig("F7-clust-6", use_rolloff_cluster=True, n_clusters=6),
     ExperimentConfig("F7-clust-8", use_rolloff_cluster=True, n_clusters=8),
@@ -325,60 +330,96 @@ def test_f_experiment_comparison(tmp_path, caplog):
     ]
     log.info("training entries: %d (held out %d)", len(train_entries), len(deduped) - len(train_entries))
 
-    # --- Run each experiment ---
-    all_csv_rows: list[dict] = []
-    summary_lines: list[str] = []
+    # --- Pre-build feature matrices, cached by AudioFeatureConfig ---
+    # Most experiments share DEFAULT_AUDIO_CONFIG (9-dim audio).  Only F2,
+    # F3, F11, and combos have different configs.  Cache avoids rebuilding
+    # identical matrices 12+ times.
+    feature_cache: dict[AudioFeatureConfig, tuple] = {}
 
-    for exp in EXPERIMENTS:
-        log.info("=" * 60)
-        log.info("EXPERIMENT: %s", exp.label)
-        log.info("=" * 60)
+    def _get_features(config: AudioFeatureConfig):
+        if config not in feature_cache:
+            log.info("building features for config %s...", config.label)
+            Xt, Yt = _build_training_data(train_entries, DEFAULT_GRID, tmdb_cache, config)
+            Xv, Yv, ve = _build_validation_data(pairs, DEFAULT_GRID, tmdb_cache, config)
+            feature_cache[config] = (Xt, Yt, Xv, Yv, ve)
+        return feature_cache[config]
+
+    # Pre-warm the most common configs.
+    unique_configs = {exp.audio_config for exp in EXPERIMENTS}
+    log.info("pre-building features for %d unique AudioFeatureConfigs...", len(unique_configs))
+    for cfg in unique_configs:
+        _get_features(cfg)
+
+    # --- Run each experiment (parallelised where possible) ---
+
+    def _run_one(exp: ExperimentConfig) -> tuple[ExperimentConfig, list[dict], float]:
+        """Train + evaluate a single experiment.  Thread-safe: XGBoost
+        releases the GIL during tree building, so threads give real
+        parallelism on the training step."""
         t0 = time.time()
-
         config = exp.audio_config
         n_audio = config.n_total_audio
 
-        # Build training data with this config's feature dims.
-        X_train, Y_train = _build_training_data(
-            train_entries, DEFAULT_GRID, tmdb_cache, config,
-        )
+        X_train_base, Y_train, X_val_base, Y_val, val_entries = _get_features(config)
+        X_train = X_train_base.copy()
+        X_val = X_val_base.copy()
 
-        # Build validation data with same config.
-        X_val, Y_val, val_entries = _build_validation_data(
-            pairs, DEFAULT_GRID, tmdb_cache, config,
-        )
         if len(X_val) == 0:
-            log.warning("no validation data for %s, skipping", exp.name)
-            continue
+            return exp, [], time.time() - t0
 
-        # Train.
+        # F7: append rolloff cluster one-hot features.
+        if exp.use_rolloff_cluster:
+            from model.auto_beq_nn import cluster_ids_to_onehot, compute_rolloff_clusters
+
+            kmeans, train_ids = compute_rolloff_clusters(
+                X_train[:, :n_audio], n_clusters=exp.n_clusters,
+            )
+            X_train = np.hstack([X_train, cluster_ids_to_onehot(train_ids, exp.n_clusters)])
+            val_ids = kmeans.predict(X_val[:, :n_audio])
+            X_val = np.hstack([X_val, cluster_ids_to_onehot(val_ids, exp.n_clusters)])
+            n_audio += exp.n_clusters
+
         model = _train_model(exp, X_train, Y_train, train_entries, DEFAULT_GRID, n_audio)
-
-        # Evaluate.
         results = _evaluate(model, X_val, Y_val, val_entries, DEFAULT_GRID)
-        elapsed = time.time() - t0
+        return exp, results, time.time() - t0
 
-        # Aggregate stats.
-        losses = [r["loss_db"] for r in results]
-        mean_loss = float(np.mean(losses)) if losses else 0
-        n_pass = sum(1 for r in results if r["verdict"] == "PASS")
-        n_marg = sum(1 for r in results if r["verdict"] == "MARGINAL")
-        n_fail = sum(1 for r in results if r["verdict"] == "FAIL")
+    all_csv_rows: list[dict] = []
+    summary_lines: list[str] = []
 
-        line = (
-            f"{exp.name:25s} | mean={mean_loss:5.2f} dB | "
-            f"P={n_pass:3d} M={n_marg:3d} F={n_fail:3d} | {elapsed:.0f}s"
-        )
-        log.info(line)
-        summary_lines.append(line)
+    # Parallelise: XGBoost uses all cores for one model, so limit
+    # concurrency to 2 to avoid over-subscription.  Still 2× faster
+    # than serial since evaluation and data prep overlap with training.
+    max_workers = int(os.environ.get("AUTO_BEQ_F_WORKERS", "2"))
+    log.info("running %d experiments with max_workers=%d", len(EXPERIMENTS), max_workers)
 
-        # Append to CSV rows.
-        for r in results:
-            all_csv_rows.append({
-                "experiment": exp.name,
-                "experiment_label": exp.label,
-                **r,
-            })
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_run_one, exp): exp for exp in EXPERIMENTS}
+        for future in as_completed(futures):
+            exp, results, elapsed = future.result()
+
+            if not results:
+                log.warning("no results for %s, skipping", exp.name)
+                continue
+
+            losses = [r["loss_db"] for r in results]
+            mean_loss = float(np.mean(losses)) if losses else 0
+            n_pass = sum(1 for r in results if r["verdict"] == "PASS")
+            n_marg = sum(1 for r in results if r["verdict"] == "MARGINAL")
+            n_fail = sum(1 for r in results if r["verdict"] == "FAIL")
+
+            line = (
+                f"{exp.name:25s} | mean={mean_loss:5.2f} dB | "
+                f"P={n_pass:3d} M={n_marg:3d} F={n_fail:3d} | {elapsed:.0f}s"
+            )
+            log.info(line)
+            summary_lines.append(line)
+
+            for r in results:
+                all_csv_rows.append({
+                    "experiment": exp.name,
+                    "experiment_label": exp.label,
+                    **r,
+                })
 
     # --- Write CSV ---
     _write_csv(all_csv_rows)

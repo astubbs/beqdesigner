@@ -490,7 +490,10 @@ def build_feature_vector(
 
     Returns float32 array of shape ``(config.n_features,)``.
     """
-    parts: list[np.ndarray] = [build_audio_features(features)]
+    if config.use_high_res:
+        parts: list[np.ndarray] = [build_audio_features_high_res(features)]
+    else:
+        parts: list[np.ndarray] = [build_audio_features(features)]
 
     if config.use_option_b:
         if features.chunk_stddev is not None and features.chunk_ceiling_frac is not None:
