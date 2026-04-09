@@ -2195,3 +2195,34 @@ truncates but XGBoost compensates reasonably. 6 slots is the sweet spot
 if we keep this approach, but the improvement over 4 is within noise.
 The real bottleneck is magnitude calibration on older/niche content,
 not filter count.
+
+### E40 — Per-author model isolation
+
+**Question**: Does training on a single author's entries improve predictions
+for that author, compared to the multi-author model?
+
+**Result** (349 WAVs, late fusion α=0.3):
+
+| Author | Val | Multi-author | Single-author | Delta |
+|---|---|---|---|---|
+| **aron7awol** | 92 | 1.76 dB | **1.68 dB** | -0.09 |
+| **t1g8rsfan** | 16 | 2.06 dB | **1.62 dB** | -0.44 |
+| **kaelaria** | 58 | 2.96 dB | **2.54 dB** | -0.42 |
+| halcyon888 | 15 | **1.89 dB** | (too few) | — |
+| remixmark | 22 | **2.57 dB** | 3.20 dB | +0.63 |
+| mobe1969 | 149 | **3.33 dB** | 3.63 dB | +0.30 |
+
+**Key findings:**
+
+1. **aron7awol is solved** — 1.68-1.76 dB. Consistent calibration style,
+   fully learnable by the model. 92 validation titles.
+2. **t1g8rsfan and kaelaria benefit from isolation** (~0.4 dB each).
+   Their styles are distinct enough that removing other authors' noise helps.
+3. **mobe1969 gets WORSE isolated** (+0.30 dB). Despite 5,207 training
+   entries, his calibration is genuinely inconsistent — he makes different
+   choices for different titles. Other authors' data actually regularises.
+4. **Multi-author model is best for production** — handles all styles,
+   and the author feature lets it adapt. Single-author models are only
+   better for 3 of 5 testable authors.
+5. **halcyon888 at 1.89 dB with only 26 training entries** — most
+   consistent author. Perfect for a "conservative BEQ" production mode.
