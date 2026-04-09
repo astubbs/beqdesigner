@@ -2121,3 +2121,31 @@ Optimal α flipped from 0.3 (metadata-heavy, before one-hot fix) to 0.7
 (audio-heavy, after fix). The audio branch is now more reliable because
 it no longer has to compensate for wrong filter types — the one-hot
 encoding lets XGBoost correctly learn filter type as a categorical output.
+
+### E38 — Reweighted training (downstream loss sample weighting)
+
+**Approach**: Two-stage training. Stage 1: standard MSE. Stage 2: compute
+downstream dB loss per training sample, upweight high-loss samples, retrain.
+Forces the model to focus on samples where parameter accuracy doesn't
+produce good acoustic results.
+
+**Result** (~220 titles):
+
+| Strategy | Real audio |
+|---|---|
+| Standard XGBoost | 3.55 dB |
+| Reweighted (2 rounds) | 3.00 dB |
+| Reweighted (3 rounds) | 3.02 dB |
+| Late fusion α=0.7 | 2.63 dB |
+| **Reweighted + Late fusion α=0.7** | **2.60 dB** |
+
+**Findings**:
+1. **Reweighting helps early fusion significantly** (-0.55 dB, 3.55 → 3.00).
+   Samples where parameter-MSE gave bad acoustic results got upweighted
+   (mean weight 2.14, max 12.86).
+2. **Reweighting barely helps late fusion** (-0.03 dB, 2.63 → 2.60).
+   Late fusion already handles the hard cases by separating audio and
+   metadata branches.
+3. **3 rounds is worse than 2** (3.02 vs 3.00) — over-correction.
+4. Best overall: **late fusion α=0.7 at 2.60 dB** (reweighted) or
+   **2.63 dB** (standard). The difference is marginal.
