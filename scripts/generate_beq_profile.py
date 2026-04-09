@@ -207,8 +207,28 @@ def generate_profile(
     tmp_wav = tmp_dir / f"{safe_stem}.lfe-1000hz.wav"
 
     log.info("  extracting LFE...")
-    from spike._auto_beq_helpers import probe_audio_stream as _probe
-    stream = _probe(media_path)
+    import subprocess
+
+    # Handle Blu-ray ISOs: use bluray: protocol for ffprobe and ffmpeg.
+    is_iso = media_path.suffix.lower() == ".iso"
+    ffmpeg_input = f"bluray:{media_path}" if is_iso else str(media_path)
+    probe_input = ffmpeg_input
+
+    probe_cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "a:0",
+        "-show_entries", "stream=codec_name,channels,channel_layout,sample_rate",
+        "-of", "json", probe_input,
+    ]
+    probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
+    if probe_result.returncode == 0:
+        import json as _json
+        streams = _json.loads(probe_result.stdout).get("programs", [{}])[0].get("streams", [])
+        if not streams:
+            streams = _json.loads(probe_result.stdout).get("streams", [])
+        stream = streams[0] if streams else {}
+    else:
+        stream = {}
+
     layout = stream.get("channel_layout", "")
     has_lfe = "LFE" in layout.upper() or any(
         layout.lower().startswith(p) for p in ("5.1", "6.1", "7.1")
@@ -216,11 +236,12 @@ def generate_profile(
     af_filter = "pan=mono|c0=LFE" if has_lfe else "aresample"
     if not has_lfe:
         log.info("  no LFE channel — falling back to mono downmix")
+    else:
+        log.info("  LFE channel detected: %s", layout)
 
-    import subprocess
     cmd = [
         "ffmpeg", "-y", "-v", "error",
-        "-i", str(media_path),
+        "-i", ffmpeg_input,
         "-af", af_filter, "-ac", "1", "-ar", "1000",
         "-sample_fmt", "s16", "-f", "wav",
         str(tmp_wav),
