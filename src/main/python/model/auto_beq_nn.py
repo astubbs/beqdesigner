@@ -951,6 +951,300 @@ def train_late_fusion(
 
 
 # ---------------------------------------------------------------------------
+# F6/E46 — Confidence-weighted training (inter-author agreement)
+# ---------------------------------------------------------------------------
+
+
+def compute_agreement_weights(
+    entries: list[dict],
+    freqs_hz: np.ndarray,
+) -> np.ndarray:
+    """Compute per-sample training weights based on inter-author agreement.
+
+    BEQ catalogue entries vary in reliability.  When multiple authors profile
+    the same title and their filter chains produce similar frequency responses,
+    that's high-confidence ground truth.  When they disagree, the entry is
+    noisy.
+
+    Weighting by agreement is analogous to *label smoothing* in
+    classification — it down-weights unreliable labels so the model
+    focuses on clean signal.
+
+    For titles with 2+ entries from different authors: compute mean pairwise
+    ``downstream_loss`` between their filter chains.  Weight =
+    ``1 / (1 + mean_pairwise_loss)``.
+
+    For single-author or single-entry titles: weight = 1.0 (neutral).
+
+    Returns array of shape ``(len(entries),)`` with weights ≥ 0.
+    """
+    from model.auto_beq import evaluate_filter_chain
+
+    # Group by normalised title.
+    groups: dict[str, list[int]] = {}
+    for i, e in enumerate(entries):
+        key = str(e.get("title", "")).lower().strip()
+        groups.setdefault(key, []).append(i)
+
+    weights = np.ones(len(entries), dtype=np.float32)
+
+    for indices in groups.values():
+        if len(indices) < 2:
+            continue
+        # Pairwise downstream loss across authors.
+        losses: list[float] = []
+        for a in range(len(indices)):
+            for b in range(a + 1, len(indices)):
+                fa = entries[indices[a]].get("filters", [])
+                fb = entries[indices[b]].get("filters", [])
+                if fa and fb:
+                    losses.append(downstream_loss(fa, fb, freqs_hz))
+        if losses:
+            mean_loss = float(np.mean(losses))
+            w = 1.0 / (1.0 + mean_loss)
+            for idx in indices:
+                weights[idx] = w
+
+    log.info(
+        "agreement weights: mean=%.2f min=%.2f max=%.2f",
+        weights.mean(), weights.min(), weights.max(),
+    )
+    return weights
+
+
+# ---------------------------------------------------------------------------
+# F7/E47 — Rolloff shape clustering
+# ---------------------------------------------------------------------------
+
+
+def compute_rolloff_clusters(
+    X_audio: np.ndarray,
+    n_clusters: int = 6,
+) -> tuple[object, np.ndarray]:
+    """K-means clustering on audio feature vectors (F7/E47).
+
+    Discovers natural rolloff shape families (e.g. "Disney 2010s Atmos
+    rolloff", "1990s action cliff") via unsupervised clustering.  The
+    cluster ID becomes a categorical feature, compressing complex rolloff
+    patterns into a single high-information split point for XGBoost.
+
+    This is a form of *feature engineering via unsupervised learning* —
+    the same technique used in NLP (word2vec clusters) and image recognition
+    (visual bag-of-words).
+
+    Returns ``(kmeans_model, cluster_ids)`` where ``cluster_ids`` is a
+    1-D array of shape ``(n_samples,)`` with values in ``[0, n_clusters)``.
+    The kmeans model should be applied to validation data via
+    ``kmeans_model.predict(X_audio_val)``.
+    """
+    from sklearn.cluster import KMeans
+
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    cluster_ids = kmeans.fit_predict(X_audio)
+    log.info(
+        "rolloff clusters (%d): sizes=%s",
+        n_clusters,
+        np.bincount(cluster_ids).tolist(),
+    )
+    return kmeans, cluster_ids
+
+
+def cluster_ids_to_onehot(ids: np.ndarray, n_clusters: int) -> np.ndarray:
+    """Convert cluster IDs to one-hot encoded matrix."""
+    onehot = np.zeros((len(ids), n_clusters), dtype=np.float32)
+    onehot[np.arange(len(ids)), ids] = 1.0
+    return onehot
+
+
+# ---------------------------------------------------------------------------
+# F9/E48 — Downstream loss as training objective (2-phase)
+# ---------------------------------------------------------------------------
+
+
+def train_xgboost_downstream(
+    X_train: np.ndarray,
+    Y_train: np.ndarray,
+    freqs_hz: np.ndarray,
+    n_rounds: int = 2,
+) -> object:
+    """Two-phase training with downstream dB loss weighting (F9/E48).
+
+    Currently XGBoost trains on MSE of filter parameters, but two
+    different filter parameter sets can produce nearly identical acoustic
+    results (*parameter-space equivalence*).  This is analogous to
+    *perceptual loss* in image generation — pixel MSE penalises visually
+    identical images differently depending on pixel arrangement.
+
+    Phase 1: standard MSE training (400 trees).
+    Phase 2+: evaluate each training sample's *acoustic* error (downstream
+    dB loss, not parameter MSE), then upweight samples where parameter-MSE
+    succeeded but acoustic output diverged.  This focuses the model on the
+    acoustically meaningful errors.
+
+    Differs from E38 ``train_xgboost_reweighted`` in weighting strategy:
+    E38 uses ``max(1, loss)`` (floor at 1), this uses ``1 + loss²``
+    (quadratic emphasis on high-loss samples).
+    """
+    model = train_xgboost(X_train, Y_train)
+
+    for round_idx in range(1, n_rounds):
+        Y_pred = model.predict(X_train)
+        weights = np.ones(len(X_train), dtype=np.float32)
+        for i in range(len(X_train)):
+            pred_filters = labels_to_filters(Y_pred[i])
+            target_filters = labels_to_filters(Y_train[i])
+            loss = downstream_loss(pred_filters, target_filters, freqs_hz)
+            weights[i] = 1.0 + loss * loss  # quadratic emphasis
+
+        log.info(
+            "downstream-loss round %d: mean_weight=%.2f max_weight=%.2f",
+            round_idx + 1, weights.mean(), weights.max(),
+        )
+        model = train_xgboost(X_train, Y_train, sample_weight=weights)
+
+    return model
+
+
+# ---------------------------------------------------------------------------
+# F11/E49 — Multi-resolution audio features (16 bins)
+# ---------------------------------------------------------------------------
+
+# 16 bins with concentration in the 10-40 Hz critical range where most
+# BEQ correction happens.  The standard 9 bins (20-80 Hz) have only 2
+# below 30 Hz.  This is analogous to mel-scale binning in speech
+# recognition — allocate resolution where human (or in this case,
+# subwoofer) perception is most sensitive.
+OPTION_A_BINS_HR = [
+    10.0, 12.0, 15.0, 18.0, 20.0, 22.0, 25.0, 28.0,
+    30.0, 33.0, 35.0, 40.0, 50.0, 60.0, 70.0, 80.0,
+]
+
+
+def build_audio_features_high_res(features: CurveFeatures) -> np.ndarray:
+    """Build 16-bin high-resolution audio feature vector (F11/E49).
+
+    Uses OPTION_A_BINS_HR with denser sampling in 10-40 Hz.  Interpolates
+    from the full normalised curve rather than nearest-bin from the 12-point
+    sample (which doesn't cover 10-18 Hz well).
+    """
+    sample_pts = list(features.curve_sample_points)
+    if not sample_pts:
+        return np.zeros(len(OPTION_A_BINS_HR), dtype=np.float32)
+
+    sample_hz = np.array([hz for hz, _ in sample_pts])
+    sample_db = np.array([db for _, db in sample_pts])
+
+    out = np.empty(len(OPTION_A_BINS_HR), dtype=np.float32)
+    for i, target_hz in enumerate(OPTION_A_BINS_HR):
+        # Linear interpolation for bins between sample points.
+        out[i] = float(np.interp(target_hz, sample_hz, sample_db))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# F12/E50 — Per-author ensemble with router
+# ---------------------------------------------------------------------------
+
+
+class AuthorEnsembleModel:
+    """Routes predictions to author-specific models when available (F12/E50).
+
+    E40 showed 3 of 5 testable authors benefit from isolated models
+    (aron7awol -0.09 dB, t1g8rsfan -0.44, kaelaria -0.42).  This is a
+    *mixture-of-experts* approach where the gating function is the author
+    identity — trivial routing but effective because author style is the
+    single strongest feature (28% of importance in E29a).
+
+    Dedicated models are trained on author-filtered subsets with the author
+    column zeroed (the model IS that author, so the feature is redundant).
+    The fallback model handles all other authors using the full catalogue.
+    """
+
+    # Authors that benefit from isolation (E40 results).
+    DEDICATED_AUTHORS = {"aron7awol", "kaelaria", "t1g8rsfan"}
+
+    def __init__(
+        self,
+        dedicated: dict[str, object],
+        fallback: object,
+        author_col_start: int = 0,
+        n_author: int = N_AUTHOR,
+    ) -> None:
+        self.dedicated = dedicated
+        self.fallback = fallback
+        self._author_col_start = author_col_start
+        self._n_author = n_author
+
+    def predict(self, X: np.ndarray, authors: list[str] | None = None) -> np.ndarray:
+        """Predict with routing.  *authors* must match rows of X."""
+        if authors is None or not self.dedicated:
+            return self.fallback.predict(X)
+
+        Y = np.empty((len(X), self.fallback.predict(X[:1]).shape[1]))
+        for i in range(len(X)):
+            author = authors[i] if i < len(authors) else "unknown"
+            if author in self.dedicated:
+                Y[i] = self.dedicated[author].predict(X[i : i + 1])[0]
+            else:
+                Y[i] = self.fallback.predict(X[i : i + 1])[0]
+        return Y
+
+
+def train_author_ensemble(
+    X_train: np.ndarray,
+    Y_train: np.ndarray,
+    entries: list[dict],
+    author_col_start: int | None = None,
+) -> AuthorEnsembleModel:
+    """Train an author-routed ensemble (F12/E50).
+
+    Trains dedicated XGBoost models for each author in
+    ``AuthorEnsembleModel.DEDICATED_AUTHORS``, plus a fallback model
+    on the full catalogue.
+
+    The author columns are zeroed in dedicated models — they don't need
+    the author feature since they ARE that author.
+    """
+    if author_col_start is None:
+        # Author one-hot starts after: audio(9) + year(1) + format(6) +
+        # source(3) + studio(32) + mixer(22) + genre(10) + country(5) +
+        # runtime(1) + rating(1) = 90
+        author_col_start = N_AUDIO_FEATURES + (
+            1 + N_AUDIO_FORMAT + N_SOURCE + N_STUDIO + N_MIXER
+            + N_GENRE + N_COUNTRY + 1 + 1
+        )
+
+    # Full fallback model.
+    log.info("training fallback (full catalogue) model...")
+    fallback = train_xgboost(X_train, Y_train)
+
+    dedicated: dict[str, object] = {}
+    for author in AuthorEnsembleModel.DEDICATED_AUTHORS:
+        mask = np.array([
+            e.get("author", "").lower() == author for e in entries
+        ])
+        n_author_samples = int(mask.sum())
+        if n_author_samples < 50:
+            log.info("skipping %s: only %d samples", author, n_author_samples)
+            continue
+
+        X_author = X_train[mask].copy()
+        Y_author = Y_train[mask]
+        # Zero out author columns — the model IS this author.
+        X_author[:, author_col_start : author_col_start + N_AUTHOR] = 0.0
+
+        log.info("training dedicated model for %s (%d samples)...", author, n_author_samples)
+        dedicated[author] = train_xgboost(X_author, Y_author)
+
+    log.info("author ensemble: %d dedicated + 1 fallback", len(dedicated))
+    return AuthorEnsembleModel(
+        dedicated, fallback,
+        author_col_start=author_col_start,
+        n_author=N_AUTHOR,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Model persistence
 # ---------------------------------------------------------------------------
 
