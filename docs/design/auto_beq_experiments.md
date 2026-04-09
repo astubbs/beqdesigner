@@ -2169,3 +2169,29 @@ failures are magnitude calibration — right filter types but wrong gain/freq.
 Worst titles are older films (pre-2000), niche content (anime, arthouse),
 and titles with unusual rolloff shapes. These are titles where the
 catalogue author made aggressive choices that don't match common patterns.
+
+### E39 — Filter slots + era bucketing
+
+**E39c analysis**: 67% of catalogue has >4 filters. Dropping filters 5+
+costs 1.23 dB mean, but 64% lose <1 dB.
+
+**E39a (8 slots)**: Over-predicted filter count (243 over vs 43 under).
+48-dim output was too hard for XGBoost — filled empty slots with noise.
+
+**E39a revised (6 slots)**: Compromise. Results across slot sizes (~330 titles):
+
+| Config | Best late fusion | Best α | Notes |
+|---|---|---|---|
+| 4 slots | ~2.67 dB (300 titles) | 0.7 | Original |
+| 8 slots | 2.80 dB (331 titles) | 0.3 | Over-predicted |
+| 6 slots | 2.76 dB (342 titles) | 0.3 | Compromise |
+
+**E39b (era buckets)**: Pre-1990/1990-2009/2010+ one-hot added. 1980s
+still worst (5.4 dB mean) — era feature alone doesn't fix the problem
+since there are too few 1980s titles in the catalogue to learn from.
+
+**Conclusion**: More filter slots add marginal value. The 4-slot model
+truncates but XGBoost compensates reasonably. 6 slots is the sweet spot
+if we keep this approach, but the improvement over 4 is within noise.
+The real bottleneck is magnitude calibration on older/niche content,
+not filter count.
