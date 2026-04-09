@@ -183,11 +183,14 @@ N_FEATURES = N_AUDIO_FEATURES + N_METADATA_FEATURES  # 99
 # ---------------------------------------------------------------------------
 
 MAX_FILTER_SLOTS = 4
-N_OUTPUT = MAX_FILTER_SLOTS * 4  # [type_int, freq_hz, gain_db, q] × 4 = 16
+N_TYPE = 3  # LowShelf, HighShelf, PeakingEQ — one-hot encoded
+# Per slot: [type_LS, type_HS, type_PEQ, freq_hz, gain_db, q] = 6 values
+N_PER_SLOT = N_TYPE + 3
+N_OUTPUT = MAX_FILTER_SLOTS * N_PER_SLOT  # 4 × 6 = 24
 
 FILTER_TYPES = ["LowShelf", "HighShelf", "PeakingEQ"]
-_TYPE_TO_INT = {t: float(i) for i, t in enumerate(FILTER_TYPES)}
-_INT_TO_TYPE = {i: t for i, t in enumerate(FILTER_TYPES)}
+_TYPE_TO_IDX = {t: i for i, t in enumerate(FILTER_TYPES)}
+_IDX_TO_TYPE = {i: t for i, t in enumerate(FILTER_TYPES)}
 
 # Downstream evaluation band
 _DOWNSTREAM_BAND_HZ = (20.0, 80.0)
@@ -377,40 +380,47 @@ def build_feature_vector(features: CurveFeatures, metadata: MediaMetadata) -> np
 
 
 def catalogue_entry_to_labels(entry: dict) -> np.ndarray:
-    """Encode a catalogue entry's filter chain as a fixed 16-dim Y vector.
+    """Encode a catalogue entry's filter chain as a fixed 24-dim Y vector.
 
-    MAX_FILTER_SLOTS=4 slots, each [type_int, freq_hz, gain_db, q].
-    Unused slots are all zeros.
+    MAX_FILTER_SLOTS=4 slots, each [type_LS, type_HS, type_PEQ, freq, gain, q].
+    Filter type is one-hot encoded (3 dims) so XGBoost treats it as
+    categorical, not ordinal. Unused slots are all zeros.
     """
     y = np.zeros(N_OUTPUT, dtype=np.float32)
     filters = entry.get("filters", [])
     for i, f in enumerate(filters[:MAX_FILTER_SLOTS]):
-        slot = i * 4
-        y[slot] = _TYPE_TO_INT.get(str(f.get("type", "LowShelf")), 0.0)
-        y[slot + 1] = float(f.get("freq", 0.0))
-        y[slot + 2] = float(f.get("gain", 0.0))
-        y[slot + 3] = float(f.get("q", 0.9))
+        slot = i * N_PER_SLOT
+        # One-hot type encoding.
+        type_idx = _TYPE_TO_IDX.get(str(f.get("type", "LowShelf")), 0)
+        y[slot + type_idx] = 1.0
+        # Continuous params.
+        y[slot + N_TYPE] = float(f.get("freq", 0.0))
+        y[slot + N_TYPE + 1] = float(f.get("gain", 0.0))
+        y[slot + N_TYPE + 2] = float(f.get("q", 0.9))
     return y
 
 
 def labels_to_filters(y: np.ndarray, gain_threshold: float = 0.5) -> list[dict]:
-    """Decode a 16-dim Y vector back into a list of filter dicts.
+    """Decode a 24-dim Y vector back into a list of filter dicts.
 
+    Filter type decoded from one-hot (argmax of first 3 dims per slot).
     Skips slots whose |gain| is below ``gain_threshold`` (empty/noise slots).
     Clamps all parameters to valid ranges.
     """
     filters = []
     for i in range(MAX_FILTER_SLOTS):
-        slot = i * 4
-        type_int = int(round(float(y[slot])))
-        freq = float(y[slot + 1])
-        gain = float(y[slot + 2])
-        q = float(y[slot + 3])
+        slot = i * N_PER_SLOT
+        # Decode one-hot type: argmax of the 3 type dims.
+        type_probs = y[slot:slot + N_TYPE]
+        type_idx = int(np.argmax(type_probs))
+        freq = float(y[slot + N_TYPE])
+        gain = float(y[slot + N_TYPE + 1])
+        q = float(y[slot + N_TYPE + 2])
 
         if abs(gain) < gain_threshold:
             continue
 
-        ftype = _INT_TO_TYPE.get(max(0, min(2, type_int)), "LowShelf")
+        ftype = _IDX_TO_TYPE.get(type_idx, "LowShelf")
         filters.append({
             "type": ftype,
             "freq": float(np.clip(freq, 5.0, 200.0)),
