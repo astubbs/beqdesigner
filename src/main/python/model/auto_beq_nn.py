@@ -162,6 +162,11 @@ _AUTHOR_VOCAB = [
 ]
 N_AUTHOR = len(_AUTHOR_VOCAB)  # 9
 
+# Era buckets (E39b) — gives XGBoost explicit split points for decade patterns.
+# 1980s content is 5.1 dB mean vs 2.4 dB for 2020s.
+_ERA_BUCKETS = ["pre_1990", "1990_2009", "2010_plus"]
+N_ERA = len(_ERA_BUCKETS)  # 3
+
 # Metadata vector size
 N_METADATA_FEATURES = (
     1                # year normalised
@@ -174,19 +179,20 @@ N_METADATA_FEATURES = (
     + 1               # runtime normalised
     + 1               # rating normalised
     + N_AUTHOR        # 9
-)  # = 90
+    + N_ERA           # 3
+)  # = 93
 
-N_FEATURES = N_AUDIO_FEATURES + N_METADATA_FEATURES  # 99
+N_FEATURES = N_AUDIO_FEATURES + N_METADATA_FEATURES  # 102
 
 # ---------------------------------------------------------------------------
 # Label constants (filter parameter output vector)
 # ---------------------------------------------------------------------------
 
-MAX_FILTER_SLOTS = 4
+MAX_FILTER_SLOTS = 8  # E39a: was 4, increased to cover 90% of catalogue entries
 N_TYPE = 3  # LowShelf, HighShelf, PeakingEQ — one-hot encoded
 # Per slot: [type_LS, type_HS, type_PEQ, freq_hz, gain_db, q] = 6 values
 N_PER_SLOT = N_TYPE + 3
-N_OUTPUT = MAX_FILTER_SLOTS * N_PER_SLOT  # 4 × 6 = 24
+N_OUTPUT = MAX_FILTER_SLOTS * N_PER_SLOT  # 8 × 6 = 48
 
 FILTER_TYPES = ["LowShelf", "HighShelf", "PeakingEQ"]
 _TYPE_TO_IDX = {t: i for i, t in enumerate(FILTER_TYPES)}
@@ -352,6 +358,18 @@ def build_metadata_features(metadata: MediaMetadata) -> np.ndarray:
     # BEQ profile author — one-hot (E24). 100% coverage, 8 unique authors.
     author = getattr(metadata, "author", None)
     parts.append(_vocab_onehot(author, _AUTHOR_VOCAB))
+
+    # Era bucket — one-hot (E39b). Gives XGBoost explicit split points
+    # for decade-specific rolloff patterns.
+    year = float(metadata.year or 2000)
+    era = np.zeros(N_ERA, dtype=np.float32)
+    if year < 1990:
+        era[0] = 1.0  # pre_1990
+    elif year < 2010:
+        era[1] = 1.0  # 1990_2009
+    else:
+        era[2] = 1.0  # 2010_plus
+    parts.append(era)
 
     result = np.concatenate(parts)
     assert result.shape == (N_METADATA_FEATURES,), (
