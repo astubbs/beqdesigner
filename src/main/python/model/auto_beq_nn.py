@@ -592,6 +592,59 @@ def labels_to_filters(y: np.ndarray, gain_threshold: float = 0.5) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# H4 — Response curve label encoding (alternative to filter parameter labels)
+# ---------------------------------------------------------------------------
+
+
+def catalogue_entry_to_response_labels(
+    entry: dict,
+    freqs_hz: np.ndarray,
+    bins_hz: list[float] = OPTION_A_BINS_HZ,
+    fs: int = 1000,
+) -> np.ndarray:
+    """Encode a catalogue entry's filter chain as a 9-bin response curve (H4).
+
+    Predicting the response curve directly (instead of 24-dim filter
+    parameters) eliminates parameter-space ambiguity: two different chains
+    can produce identical responses, but their response curves are unique.
+    Aligns the training objective with the evaluation metric (downstream
+    dB error in response space).
+
+    Returns a 9-dim float32 array of dB values at the Option A frequency
+    bins, normalised to 0 dB at 80 Hz.
+    """
+    from model.auto_beq import evaluate_filter_chain
+
+    response = evaluate_filter_chain(entry.get("filters", []), freqs_hz, fs=fs)
+    out = np.array([float(np.interp(b, freqs_hz, response)) for b in bins_hz])
+    out -= out[-1]  # normalise to 0 dB at 80 Hz (last bin)
+    return out.astype(np.float32)
+
+
+def response_labels_to_filters(
+    y: np.ndarray,
+    freqs_hz: np.ndarray,
+    bins_hz: list[float] = OPTION_A_BINS_HZ,
+    fs: int = 1000,
+    max_filters: int = 6,
+) -> list[dict]:
+    """Decode a 9-bin predicted response into a filter chain (H4 inference).
+
+    Interpolates the predicted curve onto the full frequency grid, then
+    fits a chain via ``propose_filters()``.  Note: the fitter expects
+    "cancel this curve", so we flip the sign.
+    """
+    from model.auto_beq import propose_filters
+
+    # Interpolate 9 predicted bins to the full grid.
+    full_curve = np.interp(freqs_hz, bins_hz, y).astype(np.float64)
+    return propose_filters(
+        -full_curve, freqs_hz, fs=fs,
+        band=(5.0, 80.0), max_filters=max_filters,
+    )
+
+
 def downstream_loss(
     predicted_filters: list[dict],
     target_filters: list[dict],
@@ -650,6 +703,127 @@ def deduplicate_by_title(entries: list[dict]) -> list[dict]:
     for group in groups.values():
         best = min(group, key=_format_rank)
         result.append(best)
+    return result
+
+
+# Trusted authors for H1d response-averaging (excludes remixmark — worst
+# in validation — and bombaycat007 — too few samples to assess).
+TRUSTED_AUTHORS = frozenset({
+    "aron7awol", "t1g8rsfan", "kaelaria", "mobe1969", "mikejl", "halcyon888",
+})
+
+
+def deduplicate_by_title_response_avg(
+    entries: list[dict],
+    freqs_hz: np.ndarray,
+    fs: int = 1000,
+    strategy: str = "mean",
+    band: tuple[float, float] = (5.0, 80.0),
+    max_filters: int = 6,
+) -> list[dict]:
+    """Group by title; average response curves across authors and refit.
+
+    For multi-author titles, computes the response curve of each author's
+    chain, averages in dB space across authors, then fits a new chain to
+    the consensus curve via ``propose_filters()``.  This eliminates
+    parameter-space ambiguity (two different chains can produce identical
+    responses) by averaging in the only space where it makes sense.
+
+    Strategies:
+      * ``"mean"`` — equal-weight mean across all authors
+      * ``"median"`` — robust to outlier authors (e.g. remixmark)
+      * ``"trusted"`` — mean across only TRUSTED_AUTHORS
+      * ``"format"`` — original behaviour (pick highest-format entry)
+
+    Single-entry titles are unchanged.  Multi-entry single-author titles
+    are deduplicated to the highest-format entry.
+
+    The metadata (year, studio, format, etc.) is copied from the highest-
+    format-quality entry in each group.
+    """
+    from model.auto_beq import evaluate_filter_chain, propose_filters
+
+    if strategy == "format":
+        return deduplicate_by_title(entries)
+
+    groups: dict[str, list[dict]] = {}
+    for e in entries:
+        key = str(e.get("title", "")).lower().strip()
+        groups.setdefault(key, []).append(e)
+
+    result = []
+    n_averaged = 0
+    n_refit_failed = 0
+
+    for group in groups.values():
+        # Find unique authors in this group.
+        by_author: dict[str, list[dict]] = {}
+        for e in group:
+            a = str(e.get("author", "")).strip().lower()
+            by_author.setdefault(a, []).append(e)
+
+        # Single-author groups: just dedup by format.
+        if len(by_author) <= 1:
+            result.append(min(group, key=_format_rank))
+            continue
+
+        # Multi-author group: pick one entry per author (best format),
+        # filter by strategy, average response curves.
+        per_author = [min(eps, key=_format_rank) for eps in by_author.values()]
+
+        if strategy == "trusted":
+            per_author = [
+                e for e in per_author
+                if str(e.get("author", "")).strip().lower() in TRUSTED_AUTHORS
+            ]
+            if not per_author:
+                # All authors filtered out; fall back to format-only dedup.
+                result.append(min(group, key=_format_rank))
+                continue
+
+        # Compute response curve for each author entry.
+        curves = []
+        for e in per_author:
+            try:
+                response = evaluate_filter_chain(e["filters"], freqs_hz, fs=fs)
+                curves.append(response)
+            except Exception as exc:
+                log.debug("skipping bad chain in %s: %s", e.get("title"), exc)
+        if not curves:
+            result.append(min(group, key=_format_rank))
+            continue
+
+        stacked = np.stack(curves, axis=0)
+        if strategy == "median":
+            consensus = np.median(stacked, axis=0)
+        else:  # mean or trusted
+            consensus = np.mean(stacked, axis=0)
+
+        # Refit a new chain to the consensus.  propose_filters expects
+        # "cancel this curve", so flip the sign.
+        try:
+            new_filters = propose_filters(
+                -consensus, freqs_hz, fs=fs, band=band, max_filters=max_filters,
+            )
+        except Exception as exc:
+            log.debug("refit failed for %s: %s", group[0].get("title"), exc)
+            n_refit_failed += 1
+            result.append(min(group, key=_format_rank))
+            continue
+
+        # Build a consensus entry: copy metadata from the best-format entry,
+        # replace filters with the refit consensus chain.
+        best_meta = min(per_author, key=_format_rank)
+        consensus_entry = dict(best_meta)
+        consensus_entry["filters"] = new_filters
+        consensus_entry["_consensus_n_authors"] = len(per_author)
+        result.append(consensus_entry)
+        n_averaged += 1
+
+    log.info(
+        "response-avg dedup (%s): %d titles, %d multi-author averaged, %d refit failures",
+        strategy, len(result), n_averaged, n_refit_failed,
+    )
     return result
 
 
@@ -918,6 +1092,152 @@ class LateFusionModel:
         Y_audio = self.model_audio.predict(X_audio)
         Y_meta = self.model_meta.predict(X_meta)
         return self.alpha * Y_audio + (1.0 - self.alpha) * Y_meta
+
+    def predict_with_alphas(
+        self,
+        X: np.ndarray,
+        alphas: np.ndarray,
+    ) -> np.ndarray:
+        """Predict with per-sample alphas (G8 — per-author alpha selection).
+
+        ``alphas`` must have shape ``(n_samples,)``.  For each row, the
+        sub-model predictions are blended with that row's alpha.  This
+        enables per-author optimal alpha lookup at inference time.
+        """
+        n_audio = self._n_audio
+        X_audio = np.zeros_like(X)
+        X_audio[:, :n_audio] = X[:, :n_audio]
+        X_meta = np.zeros_like(X)
+        X_meta[:, n_audio:] = X[:, n_audio:]
+
+        Y_audio = self.model_audio.predict(X_audio)
+        Y_meta = self.model_meta.predict(X_meta)
+        a = alphas.reshape(-1, 1)
+        return a * Y_audio + (1.0 - a) * Y_meta
+
+    def predict_marginalized(
+        self,
+        X: np.ndarray,
+        author_col_start: int,
+        n_author: int = N_AUTHOR,
+        weights: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Predict with author marginalization (H2/E54).
+
+        For each sample, query the model with each author one-hot identity
+        in turn, then average the predictions.  The user gets a consensus
+        prediction without specifying an author — equivalent to a Bayesian
+        model average over the author categorical variable.
+
+        ``weights`` (optional, shape ``(n_author,)``): per-author averaging
+        weights.  Default is uniform.  Use frequency weights for
+        catalogue-wide consensus or quality weights to down-weight noisy
+        authors.
+        """
+        if weights is None:
+            weights = np.ones(n_author, dtype=np.float32) / n_author
+        else:
+            weights = np.asarray(weights, dtype=np.float32)
+            weights = weights / weights.sum()
+
+        # Pre-compute audio prediction once (independent of author).
+        n_audio = self._n_audio
+        X_audio = np.zeros_like(X)
+        X_audio[:, :n_audio] = X[:, :n_audio]
+        Y_audio = self.model_audio.predict(X_audio)
+
+        # Sum metadata predictions across all author identities.
+        Y_meta_sum = None
+        for author_idx in range(n_author):
+            X_meta = np.zeros_like(X)
+            X_meta[:, n_audio:] = X[:, n_audio:]
+            # Zero out existing author one-hot, set the chosen one.
+            X_meta[:, author_col_start : author_col_start + n_author] = 0
+            X_meta[:, author_col_start + author_idx] = 1.0
+            Y_meta_a = self.model_meta.predict(X_meta) * weights[author_idx]
+            if Y_meta_sum is None:
+                Y_meta_sum = Y_meta_a
+            else:
+                Y_meta_sum = Y_meta_sum + Y_meta_a
+
+        return self.alpha * Y_audio + (1.0 - self.alpha) * Y_meta_sum
+
+
+# Author column offset in the full feature vector (after audio + metadata
+# preceding fields): 9 + 1 (year) + 6 (format) + 3 (source) + 32 (studio)
+# + 22 (mixer) + 10 (genre) + 5 (country) + 1 (runtime) + 1 (rating) = 90
+# in metadata, 99 in full vector.
+AUTHOR_COL_OFFSET_IN_METADATA = (
+    1 + N_AUDIO_FORMAT + N_SOURCE + N_STUDIO + N_MIXER
+    + N_GENRE + N_COUNTRY + 1 + 1
+)  # = 81
+
+def author_col_start(n_audio: int = N_AUDIO_FEATURES) -> int:
+    """Return the column index where the author one-hot starts in the
+    full feature vector.  Depends on n_audio (which varies for F2/F3/F11)."""
+    return n_audio + AUTHOR_COL_OFFSET_IN_METADATA
+
+
+# Catalogue-wide author frequency weights (from full ~8k catalogue).
+# Used by H2b (frequency-weighted marginalization).
+AUTHOR_FREQUENCY_WEIGHTS: dict[str, float] = {
+    "mobe1969": 0.57,
+    "aron7awol": 0.13,
+    "kaelaria": 0.08,
+    "mikejl": 0.06,
+    "remixmark": 0.06,
+    "t1g8rsfan": 0.04,
+    "halcyon888": 0.03,
+    "bombaycat007": 0.02,
+    "unknown": 0.01,
+}
+
+# Quality weights from G2 per-author validation results.
+# Inverse of mean loss — better authors get more weight.
+# Mean losses (G2a): t1g8rsfan 0.89, aron7awol 1.64, mobe1969 1.93,
+# kaelaria 2.01, halcyon888 2.27, remixmark 2.85.  Other authors absent
+# from validation get 1/2.0 ≈ 0.5 default.
+AUTHOR_QUALITY_WEIGHTS: dict[str, float] = {
+    "mobe1969": 1.0 / 1.93,
+    "aron7awol": 1.0 / 1.64,
+    "kaelaria": 1.0 / 2.01,
+    "mikejl": 1.0 / 2.5,        # not in validation, assume average
+    "remixmark": 1.0 / 2.85,
+    "t1g8rsfan": 1.0 / 0.89,
+    "halcyon888": 1.0 / 2.27,
+    "bombaycat007": 1.0 / 2.5,  # not in validation, assume average
+    "unknown": 1.0 / 2.5,
+}
+
+
+def author_weights_array(
+    weights_dict: dict[str, float] | None = None,
+    vocab: list[str] | None = None,
+) -> np.ndarray:
+    """Convert per-author weight dict into array aligned with _AUTHOR_VOCAB."""
+    if vocab is None:
+        vocab = _AUTHOR_VOCAB
+    if weights_dict is None:
+        return np.ones(len(vocab), dtype=np.float32) / len(vocab)
+    return np.array(
+        [weights_dict.get(a, 1.0 / len(vocab)) for a in vocab],
+        dtype=np.float32,
+    )
+
+
+# Per-author optimal alphas, derived from G2 sweep results.
+# kaelaria and t1g8rsfan want audio-heavy (their styles correlate with
+# measured rolloff); aron7awol/halcyon888/remixmark want metadata-balanced
+# (their styles correlate with film context more than measured curve).
+PER_AUTHOR_ALPHA: dict[str, float] = {
+    "aron7awol": 0.5,
+    "halcyon888": 0.5,
+    "kaelaria": 0.9,
+    "mobe1969": 0.7,
+    "remixmark": 0.5,
+    "t1g8rsfan": 0.7,
+}
+DEFAULT_PER_AUTHOR_ALPHA = 0.6  # for unknown authors
 
 
 def train_late_fusion(

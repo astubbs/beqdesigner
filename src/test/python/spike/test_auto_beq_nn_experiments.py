@@ -60,6 +60,16 @@ class ExperimentConfig:
     # G7: augmented ensemble
     use_augmented_ensemble: bool = False
     n_ensemble_seeds: int = 3
+    # G8: per-author alpha selection
+    use_per_author_alpha: bool = False
+    # H1: response-space averaging dedup
+    dedup_strategy: str = "format"   # format | mean | median | trusted
+    # H2: author marginalization at inference
+    marginalization: str | None = None  # None | uniform | frequency | quality
+    # H3: training-data quality filtering
+    drop_authors: tuple[str, ...] = ()
+    # H4: response curve label encoding
+    output_mode: str = "filter_params"  # filter_params | response_curve
 
     @property
     def label(self) -> str:
@@ -187,6 +197,61 @@ G_EXPERIMENTS: list[ExperimentConfig] = [
                      use_augmented_ensemble=True, n_ensemble_seeds=3),
     ExperimentConfig("G7b-ens5", augmentation=_AUG_05,
                      use_augmented_ensemble=True, n_ensemble_seeds=5),
+
+    # --- G8: Per-author alpha selection ---
+    # Single trained model, but at inference time pick the optimal alpha
+    # for each title's author from PER_AUTHOR_ALPHA lookup table.  The
+    # training-time alpha is irrelevant because predict_with_alphas()
+    # bypasses self.alpha and computes Y_audio + Y_meta separately.
+    ExperimentConfig("G8-perauth", augmentation=_AUG_05,
+                     use_per_author_alpha=True),
+]
+
+
+# H-series: multi-author resolution.
+H_EXPERIMENTS: list[ExperimentConfig] = [
+    # Reference points
+    ExperimentConfig("Baseline"),
+    ExperimentConfig("F1-s0.5", augmentation=_AUG_05),               # F-best (α=0.7)
+    ExperimentConfig("G2a-a0.5", augmentation=_AUG_05, alpha=0.5),  # G-best
+    ExperimentConfig("G8-perauth", augmentation=_AUG_05,
+                     use_per_author_alpha=True),                     # G-best alt
+
+    # --- H1: Response-space averaging dedup ---
+    ExperimentConfig("H1a-respavg-mean", augmentation=_AUG_05, alpha=0.5,
+                     dedup_strategy="mean"),
+    ExperimentConfig("H1b-respavg-median", augmentation=_AUG_05, alpha=0.5,
+                     dedup_strategy="median"),
+    ExperimentConfig("H1d-respavg-trusted", augmentation=_AUG_05, alpha=0.5,
+                     dedup_strategy="trusted"),
+
+    # --- H2: Author marginalization at inference ---
+    ExperimentConfig("H2a-marg-uniform", augmentation=_AUG_05, alpha=0.5,
+                     marginalization="uniform"),
+    ExperimentConfig("H2b-marg-frequency", augmentation=_AUG_05, alpha=0.5,
+                     marginalization="frequency"),
+    ExperimentConfig("H2c-marg-quality", augmentation=_AUG_05, alpha=0.5,
+                     marginalization="quality"),
+
+    # --- H3: Quality filtering (drop noisy authors) ---
+    ExperimentConfig("H3a-drop-remixmark", augmentation=_AUG_05, alpha=0.5,
+                     drop_authors=("remixmark",)),
+
+    # --- H4: Response curve prediction (label space change) ---
+    ExperimentConfig("H4-resp-curve", augmentation=_AUG_05, alpha=0.5,
+                     output_mode="response_curve"),
+
+    # --- H5: Best combinations ---
+    ExperimentConfig("H5a-H1+G8", augmentation=_AUG_05,
+                     dedup_strategy="mean", use_per_author_alpha=True),
+    ExperimentConfig("H5b-H1+H2c", augmentation=_AUG_05, alpha=0.5,
+                     dedup_strategy="mean", marginalization="quality"),
+    ExperimentConfig("H5c-H1+H3", augmentation=_AUG_05, alpha=0.5,
+                     dedup_strategy="mean", drop_authors=("remixmark",)),
+    ExperimentConfig("H5d-ultimate", augmentation=_AUG_05,
+                     dedup_strategy="mean",
+                     use_per_author_alpha=True,
+                     drop_authors=("remixmark",)),
 ]
 
 
@@ -226,18 +291,36 @@ def _build_training_data(
     freqs_hz: np.ndarray,
     tmdb_cache: dict,
     config: AudioFeatureConfig,
+    output_mode: str = "filter_params",
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build (X, Y) training arrays from catalogue entries."""
+    """Build (X, Y) training arrays from catalogue entries.
+
+    *output_mode*: ``"filter_params"`` (default, 24-dim Y) or
+    ``"response_curve"`` (H4, 9-dim Y).
+    """
     from model.auto_beq_advisor import MediaMetadata
     from model.auto_beq_metadata import enrich_media_metadata
-    from model.auto_beq_nn import build_feature_vector, catalogue_entry_to_labels
+    from model.auto_beq_nn import (
+        build_feature_vector,
+        catalogue_entry_to_labels,
+        catalogue_entry_to_response_labels,
+    )
+
+    label_fn = (
+        catalogue_entry_to_response_labels
+        if output_mode == "response_curve"
+        else catalogue_entry_to_labels
+    )
 
     X, Y = [], []
     for e in entries:
         features = _synthetic_features(e, freqs_hz)
         metadata = enrich_media_metadata(e, tmdb_cache)
         X.append(build_feature_vector(features, metadata, config=config))
-        Y.append(catalogue_entry_to_labels(e))
+        if output_mode == "response_curve":
+            Y.append(label_fn(e, freqs_hz))
+        else:
+            Y.append(label_fn(e))
     return np.array(X, dtype=np.float32), np.array(Y, dtype=np.float32)
 
 
@@ -246,10 +329,15 @@ def _build_validation_data(
     freqs_hz: np.ndarray,
     tmdb_cache: dict,
     config: AudioFeatureConfig,
+    output_mode: str = "filter_params",
 ) -> tuple[np.ndarray, np.ndarray, list[dict]]:
     """Build (X, Y, entries) validation arrays from real-audio WAV pairs."""
     from model.auto_beq_metadata import enrich_media_metadata
-    from model.auto_beq_nn import build_feature_vector, catalogue_entry_to_labels
+    from model.auto_beq_nn import (
+        build_feature_vector,
+        catalogue_entry_to_labels,
+        catalogue_entry_to_response_labels,
+    )
 
     from spike._auto_beq_helpers import STRATEGY_WELCH, extract_features_with_strategy
 
@@ -266,7 +354,10 @@ def _build_validation_data(
             continue
         metadata = enrich_media_metadata(entry, tmdb_cache)
         X.append(build_feature_vector(features, metadata, config=config))
-        Y.append(catalogue_entry_to_labels(entry))
+        if output_mode == "response_curve":
+            Y.append(catalogue_entry_to_response_labels(entry, freqs_hz))
+        else:
+            Y.append(catalogue_entry_to_labels(entry))
         entries.append(entry)
     return np.array(X, dtype=np.float32), np.array(Y, dtype=np.float32), entries
 
@@ -277,14 +368,59 @@ def _evaluate(
     Y_val: np.ndarray,
     val_entries: list[dict],
     freqs_hz: np.ndarray,
+    per_author_alpha: bool = False,
+    marginalization: str | None = None,
+    n_audio: int = 9,
+    output_mode: str = "filter_params",
 ) -> list[dict]:
-    """Evaluate model predictions against validation targets."""
-    from model.auto_beq_nn import downstream_loss, labels_to_filters
+    """Evaluate model predictions against validation targets.
 
-    Y_pred = model.predict(X_val)
+    When *per_author_alpha* is True (G8), uses ``LateFusionModel.predict_with_alphas``
+    with per-row alpha looked up from PER_AUTHOR_ALPHA.
+
+    When *marginalization* is set (H2), uses ``LateFusionModel.predict_marginalized``
+    with per-author weights ("uniform", "frequency", or "quality").
+
+    When *output_mode* is "response_curve" (H4), the predicted Y is a 9-bin
+    response curve, decoded via ``response_labels_to_filters``.
+    """
+    from model.auto_beq_nn import (
+        AUTHOR_FREQUENCY_WEIGHTS,
+        AUTHOR_QUALITY_WEIGHTS,
+        DEFAULT_PER_AUTHOR_ALPHA,
+        PER_AUTHOR_ALPHA,
+        author_col_start,
+        author_weights_array,
+        downstream_loss,
+        labels_to_filters,
+        response_labels_to_filters,
+    )
+
+    if marginalization is not None and hasattr(model, "predict_marginalized"):
+        weight_dict = {
+            "uniform": None,
+            "frequency": AUTHOR_FREQUENCY_WEIGHTS,
+            "quality": AUTHOR_QUALITY_WEIGHTS,
+        }.get(marginalization)
+        weights = author_weights_array(weight_dict)
+        Y_pred = model.predict_marginalized(
+            X_val, author_col_start=author_col_start(n_audio), weights=weights,
+        )
+    elif per_author_alpha and hasattr(model, "predict_with_alphas"):
+        alphas = np.array([
+            PER_AUTHOR_ALPHA.get(e.get("author", ""), DEFAULT_PER_AUTHOR_ALPHA)
+            for e in val_entries
+        ], dtype=np.float32)
+        Y_pred = model.predict_with_alphas(X_val, alphas)
+    else:
+        Y_pred = model.predict(X_val)
+
     results = []
     for i in range(len(X_val)):
-        pred_filters = labels_to_filters(Y_pred[i])
+        if output_mode == "response_curve":
+            pred_filters = response_labels_to_filters(Y_pred[i], freqs_hz)
+        else:
+            pred_filters = labels_to_filters(Y_pred[i])
         target_filters = val_entries[i]["filters"]
         loss = downstream_loss(pred_filters, target_filters, freqs_hz)
         results.append({
@@ -386,38 +522,89 @@ def _run_experiment_batch(
     log.info("validation WAVs: %d files, %d unique tmdb IDs", len(pairs), len(val_tmdb_ids))
 
     catalogue = _fetch_or_cache()
+    raw_with_filters = [e for e in catalogue if e.get("filters")]
+    log.info("raw catalogue (with filters): %d entries", len(raw_with_filters))
+
+    # Pre-warm TMDb cache for the format-deduped set (covers most entries
+    # we'll need; H1 strategies will use cached entries from any author).
     deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
     tmdb_cache = load_cache()
     tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
 
-    train_entries = [
-        e for e in deduped
-        if str(e.get("theMovieDB", "")).strip() not in val_tmdb_ids
-    ]
-    log.info("training entries: %d (held out %d)", len(train_entries), len(deduped) - len(train_entries))
+    def _build_train_entries(
+        dedup_strategy: str,
+        drop_authors: tuple[str, ...],
+    ) -> list[dict]:
+        """Build the training entry list per experiment config."""
+        from model.auto_beq_nn import (
+            deduplicate_by_title,
+            deduplicate_by_title_response_avg,
+        )
+        if dedup_strategy == "format":
+            entries = deduplicate_by_title(raw_with_filters)
+        else:
+            entries = deduplicate_by_title_response_avg(
+                raw_with_filters, DEFAULT_GRID, fs=_DEFAULT_FS,
+                strategy=dedup_strategy,
+            )
+        # H3: drop noisy authors from training (validation untouched)
+        if drop_authors:
+            drop_set = {a.lower() for a in drop_authors}
+            entries = [
+                e for e in entries
+                if str(e.get("author", "")).strip().lower() not in drop_set
+            ]
+        # Hold out validation titles
+        return [
+            e for e in entries
+            if str(e.get("theMovieDB", "")).strip() not in val_tmdb_ids
+        ]
 
-    # Feature cache by AudioFeatureConfig (avoids rebuilding identical matrices).
-    feature_cache: dict[AudioFeatureConfig, tuple] = {}
+    # Feature cache keyed by (audio_config, dedup_strategy, drop_authors,
+    # output_mode).  Reuses identical matrices across experiments that
+    # differ only in inference behaviour (alpha, marginalization).
+    feature_cache: dict[tuple, tuple] = {}
 
-    def _get_features(config: AudioFeatureConfig):
-        if config not in feature_cache:
-            log.info("building features for config %s...", config.label)
-            Xt, Yt = _build_training_data(train_entries, DEFAULT_GRID, tmdb_cache, config)
-            Xv, Yv, ve = _build_validation_data(pairs, DEFAULT_GRID, tmdb_cache, config)
-            feature_cache[config] = (Xt, Yt, Xv, Yv, ve)
-        return feature_cache[config]
+    def _get_features(
+        config: AudioFeatureConfig,
+        dedup_strategy: str,
+        drop_authors: tuple[str, ...],
+        output_mode: str,
+    ):
+        key = (config, dedup_strategy, drop_authors, output_mode)
+        if key not in feature_cache:
+            log.info(
+                "building features: config=%s dedup=%s drop=%s mode=%s",
+                config.label, dedup_strategy, drop_authors, output_mode,
+            )
+            train_entries_local = _build_train_entries(dedup_strategy, drop_authors)
+            Xt, Yt = _build_training_data(
+                train_entries_local, DEFAULT_GRID, tmdb_cache, config,
+                output_mode=output_mode,
+            )
+            Xv, Yv, ve = _build_validation_data(
+                pairs, DEFAULT_GRID, tmdb_cache, config, output_mode=output_mode,
+            )
+            feature_cache[key] = (Xt, Yt, Xv, Yv, ve, train_entries_local)
+        return feature_cache[key]
 
-    unique_configs = {exp.audio_config for exp in experiments}
-    log.info("pre-building features for %d unique AudioFeatureConfigs...", len(unique_configs))
-    for cfg in unique_configs:
-        _get_features(cfg)
+    # Pre-warm: enumerate all unique cache keys.
+    unique_keys = {
+        (e.audio_config, e.dedup_strategy, e.drop_authors, e.output_mode)
+        for e in experiments
+    }
+    log.info("pre-building features for %d unique cache keys...", len(unique_keys))
+    for cfg, dedup, drops, omode in unique_keys:
+        _get_features(cfg, dedup, drops, omode)
 
     def _run_one(exp: ExperimentConfig) -> tuple[ExperimentConfig, list[dict], float]:
         t0 = time.time()
         config = exp.audio_config
         n_audio = config.n_total_audio
 
-        X_train_base, Y_train, X_val_base, Y_val, val_entries = _get_features(config)
+        X_train_base, Y_train, X_val_base, Y_val, val_entries, train_entries_local = (
+            _get_features(config, exp.dedup_strategy, exp.drop_authors, exp.output_mode)
+        )
         X_train = X_train_base.copy()
         X_val = X_val_base.copy()
 
@@ -435,8 +622,14 @@ def _run_experiment_batch(
             X_val = np.hstack([X_val, cluster_ids_to_onehot(val_ids, exp.n_clusters)])
             n_audio += exp.n_clusters
 
-        model = _train_model(exp, X_train, Y_train, train_entries, DEFAULT_GRID, n_audio)
-        results = _evaluate(model, X_val, Y_val, val_entries, DEFAULT_GRID)
+        model = _train_model(exp, X_train, Y_train, train_entries_local, DEFAULT_GRID, n_audio)
+        results = _evaluate(
+            model, X_val, Y_val, val_entries, DEFAULT_GRID,
+            per_author_alpha=exp.use_per_author_alpha,
+            marginalization=exp.marginalization,
+            n_audio=n_audio,
+            output_mode=exp.output_mode,
+        )
         return exp, results, time.time() - t0
 
     all_csv_rows: list[dict] = []
@@ -511,6 +704,10 @@ _G_CSV_PATH = Path(os.environ.get(
     "AUTO_BEQ_G_REPORT", ".pytest_cache/auto_beq_g_experiments.csv",
 ))
 
+_H_CSV_PATH = Path(os.environ.get(
+    "AUTO_BEQ_H_REPORT", ".pytest_cache/auto_beq_h_experiments.csv",
+))
+
 
 @pytest.mark.skipif(
     os.environ.get("AUTO_BEQ_SKIP_F_EXPERIMENTS", "0") == "1",
@@ -520,6 +717,16 @@ def test_g_experiment_comparison(tmp_path, caplog):
     """Run G-series experiments: combinations and tuning after F1 success."""
     caplog.set_level(logging.INFO, logger="auto_beq_f_experiments")
     _run_experiment_batch(G_EXPERIMENTS, "G-EXPERIMENT", _G_CSV_PATH)
+
+
+@pytest.mark.skipif(
+    os.environ.get("AUTO_BEQ_SKIP_F_EXPERIMENTS", "0") == "1",
+    reason="AUTO_BEQ_SKIP_F_EXPERIMENTS=1",
+)
+def test_h_experiment_comparison(tmp_path, caplog):
+    """Run H-series experiments: multi-author resolution."""
+    caplog.set_level(logging.INFO, logger="auto_beq_f_experiments")
+    _run_experiment_batch(H_EXPERIMENTS, "H-EXPERIMENT", _H_CSV_PATH)
 
 
 # ---------------------------------------------------------------------------
