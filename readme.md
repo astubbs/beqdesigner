@@ -158,7 +158,68 @@ their `.ui` sources.
 Research spike exploring automated BEQ filter generation from measured
 LFE audio — "take the human out of BEQ-making".
 
-### Quick start: generate profiles for your media
+### Quick start (Docker, recommended for NAS / servers)
+
+The LFE extractor — the slow, library-scanning step — ships as a small
+Docker image (Python 3.13 slim + ffmpeg + a handful of stdlib-only
+modules). Use this on your NAS to extract WAVs without installing
+Python or scipy/PyQt deps.
+
+```sh
+# 1. Build the image locally (from repo root)
+docker build -f docker/Dockerfile -t beq-extract .
+
+# 2. Push it to your NAS over SSH
+docker save beq-extract | ssh nas docker load
+
+# 3. Copy the example compose config and edit volume paths to match
+#    your NAS layout (media roots, beq working directory).
+scp docker/docker-compose.example.yml nas:/path/to/beqdesigner/docker-compose.yml
+ssh nas
+nano /path/to/beqdesigner/docker-compose.yml  # edit volume mounts
+
+# 4. Run extraction (resumes from cache, breadth-first ordering)
+ssh nas
+cd /path/to/beqdesigner
+docker compose run beq-lfe-extract
+
+# 5. Verify cache integrity later
+docker compose run beq-wav-verify
+```
+
+Service names are prefixed with `beq-` so they don't collide with any
+other Docker services on the same host.
+
+After code changes, rebuild and redeploy:
+```sh
+docker build -f docker/Dockerfile -t beq-extract .
+docker save beq-extract | ssh nas docker load
+# No need to re-copy the compose config — the image change is enough.
+```
+
+**Outputs (written to `{beq-dir}/` on the NAS):**
+
+| File | Purpose |
+|---|---|
+| `wav-cache/...` | Extracted LFE WAVs (the training set) |
+| `beq_catalogue.json` | Local cache of the BEQ GitHub catalogue |
+| `media_inventory.json` | Every media file with a `[tmdb-NNN]`/`[tvdb-NNN]` tag (matched + unmatched). Used to dedupe acquisition recommendations. |
+| `missing_ids.txt` | Plain-text list of media files **without** DB ID tags. Renaming them to add the correct tag would let the model learn from them. |
+
+**Pull results back to dev machine** for analysis:
+```sh
+scp nas:/path/to/beqdesigner/{media_inventory.json,beq_catalogue.json} \
+    ~/Downloads/beqdesigner/
+
+# Then locally generate bias and acquisition reports:
+poetry run python3 scripts/nn_cache_bias_report.py -o docs/wav_cache_bias.md
+poetry run python3 scripts/nn_acquisition_recommender.py -n 50 \
+    -o docs/acquisition_recommendations.md
+```
+
+### Quick start (local Python, for dev / single machine)
+
+If you don't have a NAS or want to run everything on one machine:
 
 **Prerequisites:** Python 3.13, Poetry, ffmpeg + ffprobe on PATH.
 
@@ -194,6 +255,14 @@ compares the output to the catalogue's expert-authored filters.
 | `scripts/run-sweep-tests.sh` | Run the auto-BEQ pipeline on discovered media. Wraps pytest with correct env. Supports `AUTO_BEQ_SWEEP_LIMIT=N` to cap how many files to process. |
 | `scripts/run-spike-tests.sh` | Run the full spike test suite (unit + integration + sweep). Use `SPIKE_TEST=...` to select specific tests, `SPIKE_VERBOSE=1` for full output. |
 | `scripts/spike_auto_beq.py` | Interactive CLI playground for testing auto-BEQ on a single title. |
+| `scripts/extract_lfe.py` | Standalone LFE extractor — scans media roots, extracts LFE WAVs to portable cache. Used directly or via Docker (see below). |
+| `scripts/verify_wav_cache.py` | Validate WAV cache integrity (header + duration check). |
+| `scripts/wav_cache_status.py` | Summarise WAV cache: counts, titles, author breakdown. |
+| `scripts/nn_cache_bias_report.py` | Compare WAV cache distribution to the full BEQ catalogue, surface bias and missing-ID files. |
+| `scripts/nn_acquisition_recommender.py` | Recommend N missing catalogue titles to acquire (greedy bias correction). Excludes titles already in your library via `media_inventory.json`. |
+| `scripts/nn_author_pattern_report.py` | Per-author distribution analysis from the BEQ catalogue. |
+| `scripts/nn_comparison_report.py` | Compare NN-predicted vs hand-coded BEQ filters across your WAV cache. |
+
 
 ### Environment variables
 

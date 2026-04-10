@@ -49,10 +49,30 @@ classification) differs between experiments.
 
 ### Documentation
 
-**README and design docs must be updated alongside code changes.**
+**User-facing docs must be updated alongside code changes.** Updating
+AGENTS.md is not enough — humans don't read it.
 
-- `README.md` quickstart section must reflect current scripts and
-  workflow. If you add/rename/remove a script, update the README.
+End-user docs live in three places, in priority order:
+
+1. **`readme.md`** — developer quickstart (Quick start sections for
+   Docker and local Python). The first thing anyone reads.
+2. **`docs/lfe_extractor.md`** + other `docs/*.md` pages — the
+   readthedocs site (`mkdocs.yml` controls the nav).
+3. **`docs/design/*.md`** — internal design + experiment logs. Less
+   visible to end users, but the source of truth for "why is the
+   model the way it is".
+
+Rules:
+
+- If you add/rename/remove a script, update the **scripts tables in
+  both `readme.md` and `AGENTS.md`**.
+- If you change the Docker workflow (build steps, compose service
+  names, output files, deploy steps), update **`readme.md` Quick
+  start AND `docs/lfe_extractor.md`** together. AGENTS.md should not
+  duplicate this — it should just reference the canonical doc.
+- If you add a new user-facing CLI script or workflow, add a section
+  to `readme.md` and consider whether it deserves its own
+  `docs/*.md` page (and entry in `mkdocs.yml`).
 - `docs/design/auto_beq.md` must reflect current architecture.
 - `AGENTS.md` must reflect current scripts table and env vars.
 - `branch-plans/plan-*.md` must reflect current branch state.
@@ -114,60 +134,20 @@ so the user can see results incrementally: `AUTO_BEQ_SWEEP_LIMIT=1`.
 
 ## Docker (NAS LFE extraction)
 
-The extraction pipeline runs in Docker for NAS deployment — no code
-duplication, no scp of scripts, no version drift.
+**Canonical docs**: end-user instructions live in
+[`docs/lfe_extractor.md`](docs/lfe_extractor.md) (published on
+readthedocs) and the **Quick start (Docker)** section of `readme.md`.
+Both cover the build → deploy → run loop, the volume mount layout,
+the output files, and how to pull results back to the dev machine.
 
-**Setup (one-time):**
-```bash
-# Build image
-docker build -f docker/Dockerfile -t beq-extract .
+When making changes that affect end users (new compose service, new
+output file, new flag, new deploy step), **update both `readme.md`
+and `docs/lfe_extractor.md` together** — AGENTS.md should not
+duplicate the workflow.
 
-# Deploy to NAS
-docker save beq-extract | ssh nas docker load
-
-# Copy and edit compose config on NAS
-scp docker/docker-compose.example.yml nas:/path/to/beqdesigner/docker-compose.yml
-# Edit volume paths to match NAS media layout
-```
-
-**Usage on NAS:**
-```bash
-cd /path/to/beqdesigner
-
-# Extract LFE WAVs (resumes from cache, breadth-first ordering)
-docker compose run extract
-
-# Verify WAV cache integrity
-docker compose run verify
-
-# Check training set status (run on dev machine, not Docker — needs numpy)
-poetry run python3 scripts/wav_cache_status.py /path/to/wav-cache
-```
-
-**Outputs of an extract run** (written to `{beq-dir}/`):
-- `wav-cache/...` — extracted LFE WAVs (the training set)
-- `beq_catalogue.json` — local cache of the BEQ GitHub catalogue
-- `media_inventory.json` — every media file with a DB ID, whether
-  catalogue-matched or not. Used by `nn_cache_bias_report.py` and
-  `nn_acquisition_recommender.py` to (a) exclude already-owned titles
-  from acquisition recommendations and (b) surface library files that
-  are missing their `[tmdb-NNN]` tags.
-- `missing_ids.txt` — plain-text list of media files without DB ID tags.
-  These are excluded from extraction; renaming them to add the correct
-  tag would let the model learn from them.
-
-After each run, copy these back to the dev machine if you want to
-regenerate the bias / acquisition reports locally:
-```bash
-scp nas:/path/to/beqdesigner/{media_inventory.json,beq_catalogue.json} \
-    ~/Downloads/beqdesigner/
-```
-
-**After code changes:** rebuild image and redeploy:
-```bash
-docker build -f docker/Dockerfile -t beq-extract .
-docker save beq-extract | ssh nas docker load
-```
+Service names in `docker-compose.example.yml` are deliberately
+prefixed with `beq-` (`beq-lfe-extract`, `beq-wav-verify`) so they
+don't collide with other compose stacks on the same host.
 
 All `.sh` scripts must have the executable flag set (`chmod +x`).
 
