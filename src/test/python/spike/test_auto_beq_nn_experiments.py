@@ -70,6 +70,8 @@ class ExperimentConfig:
     drop_authors: tuple[str, ...] = ()
     # H4: response curve label encoding
     output_mode: str = "filter_params"  # filter_params | response_curve
+    # I-series: predicted author selection at inference
+    author_predictor: str | None = None  # None | hard | soft_blend | top3
 
     @property
     def label(self) -> str:
@@ -255,6 +257,29 @@ H_EXPERIMENTS: list[ExperimentConfig] = [
 ]
 
 
+# I-series: automated author selection from metadata.
+I_EXPERIMENTS: list[ExperimentConfig] = [
+    # Reference points
+    ExperimentConfig("Baseline"),
+    ExperimentConfig("F1-s0.5", augmentation=_AUG_05),
+    ExperimentConfig("G2a-a0.5", augmentation=_AUG_05, alpha=0.5),
+    ExperimentConfig("G8-perauth-oracle", augmentation=_AUG_05,
+                     use_per_author_alpha=True),
+
+    # I1: Hard author prediction (argmax → alpha lookup)
+    ExperimentConfig("I1a-hard", augmentation=_AUG_05,
+                     author_predictor="hard"),
+
+    # I1b: Soft blend (probability-weighted alpha)
+    ExperimentConfig("I1b-soft-blend", augmentation=_AUG_05,
+                     author_predictor="soft_blend"),
+
+    # I1c: Top-3 weighted average
+    ExperimentConfig("I1c-top3", augmentation=_AUG_05,
+                     author_predictor="top3"),
+]
+
+
 # ---------------------------------------------------------------------------
 # CSV output
 # ---------------------------------------------------------------------------
@@ -372,6 +397,8 @@ def _evaluate(
     marginalization: str | None = None,
     n_audio: int = 9,
     output_mode: str = "filter_params",
+    author_classifier: object | None = None,
+    author_predictor: str | None = None,
 ) -> list[dict]:
     """Evaluate model predictions against validation targets.
 
@@ -389,12 +416,16 @@ def _evaluate(
         AUTHOR_QUALITY_WEIGHTS,
         DEFAULT_PER_AUTHOR_ALPHA,
         PER_AUTHOR_ALPHA,
+        _AUTHOR_VOCAB,
         author_col_start,
         author_weights_array,
         downstream_loss,
         labels_to_filters,
+        predict_alpha_from_metadata,
         response_labels_to_filters,
     )
+
+    predicted_authors_log: list[str] | None = None
 
     if marginalization is not None and hasattr(model, "predict_marginalized"):
         weight_dict = {
@@ -406,6 +437,17 @@ def _evaluate(
         Y_pred = model.predict_marginalized(
             X_val, author_col_start=author_col_start(n_audio), weights=weights,
         )
+    elif (
+        author_predictor is not None
+        and author_classifier is not None
+        and hasattr(model, "predict_with_alphas")
+    ):
+        # I-series: predict author from metadata, use that author's alpha.
+        alphas, predicted_idx = predict_alpha_from_metadata(
+            author_classifier, X_val, n_audio=n_audio, method=author_predictor,
+        )
+        Y_pred = model.predict_with_alphas(X_val, alphas)
+        predicted_authors_log = [_AUTHOR_VOCAB[i] for i in predicted_idx]
     elif per_author_alpha and hasattr(model, "predict_with_alphas"):
         alphas = np.array([
             PER_AUTHOR_ALPHA.get(e.get("author", ""), DEFAULT_PER_AUTHOR_ALPHA)
@@ -423,14 +465,17 @@ def _evaluate(
             pred_filters = labels_to_filters(Y_pred[i])
         target_filters = val_entries[i]["filters"]
         loss = downstream_loss(pred_filters, target_filters, freqs_hz)
-        results.append({
+        row = {
             "title": val_entries[i].get("title", "?"),
             "year": str(val_entries[i].get("year", "")),
             "author": val_entries[i].get("author", "?"),
             "content_type": val_entries[i].get("content_type", "film"),
             "loss_db": round(loss, 2),
             "verdict": "PASS" if loss < 2.0 else "MARGINAL" if loss < 4.0 else "FAIL",
-        })
+        }
+        if predicted_authors_log:
+            row["predicted_author"] = predicted_authors_log[i]
+        results.append(row)
     return results
 
 
@@ -623,12 +668,23 @@ def _run_experiment_batch(
             n_audio += exp.n_clusters
 
         model = _train_model(exp, X_train, Y_train, train_entries_local, DEFAULT_GRID, n_audio)
+
+        # I-series: train author classifier on the same training entries.
+        author_classifier = None
+        if exp.author_predictor:
+            from model.auto_beq_nn import train_author_classifier
+            author_classifier = train_author_classifier(
+                X_train, train_entries_local, n_audio=n_audio,
+            )
+
         results = _evaluate(
             model, X_val, Y_val, val_entries, DEFAULT_GRID,
             per_author_alpha=exp.use_per_author_alpha,
             marginalization=exp.marginalization,
             n_audio=n_audio,
             output_mode=exp.output_mode,
+            author_classifier=author_classifier,
+            author_predictor=exp.author_predictor,
         )
         return exp, results, time.time() - t0
 
@@ -682,9 +738,11 @@ def _write_csv_to(rows: list[dict], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not rows:
         return
-    fieldnames = list(rows[0].keys())
+    # Union of all keys across all rows (some experiments add extra columns
+    # like predicted_author).
+    all_keys = list(dict.fromkeys(k for r in rows for k in r.keys()))
     with path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=all_keys, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
     log.info("CSV written to %s (%d rows)", path, len(rows))
@@ -708,6 +766,10 @@ _H_CSV_PATH = Path(os.environ.get(
     "AUTO_BEQ_H_REPORT", ".pytest_cache/auto_beq_h_experiments.csv",
 ))
 
+_I_CSV_PATH = Path(os.environ.get(
+    "AUTO_BEQ_I_REPORT", ".pytest_cache/auto_beq_i_experiments.csv",
+))
+
 
 @pytest.mark.skipif(
     os.environ.get("AUTO_BEQ_SKIP_F_EXPERIMENTS", "0") == "1",
@@ -727,6 +789,16 @@ def test_h_experiment_comparison(tmp_path, caplog):
     """Run H-series experiments: multi-author resolution."""
     caplog.set_level(logging.INFO, logger="auto_beq_f_experiments")
     _run_experiment_batch(H_EXPERIMENTS, "H-EXPERIMENT", _H_CSV_PATH)
+
+
+@pytest.mark.skipif(
+    os.environ.get("AUTO_BEQ_SKIP_F_EXPERIMENTS", "0") == "1",
+    reason="AUTO_BEQ_SKIP_F_EXPERIMENTS=1",
+)
+def test_i_experiment_comparison(tmp_path, caplog):
+    """Run I-series experiments: automated author selection from metadata."""
+    caplog.set_level(logging.INFO, logger="auto_beq_f_experiments")
+    _run_experiment_batch(I_EXPERIMENTS, "I-EXPERIMENT", _I_CSV_PATH)
 
 
 # ---------------------------------------------------------------------------

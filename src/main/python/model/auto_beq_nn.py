@@ -1263,6 +1263,122 @@ PER_AUTHOR_ALPHA: dict[str, float] = {
 DEFAULT_PER_AUTHOR_ALPHA = 0.6  # for unknown authors
 
 
+# ---------------------------------------------------------------------------
+# I-series: automated author selection from metadata (E68+)
+# ---------------------------------------------------------------------------
+
+
+def strip_author_columns(X_full: np.ndarray, n_audio: int) -> np.ndarray:
+    """Drop the 9 author one-hot columns from a feature matrix.
+
+    Used for the author classifier — we want metadata WITHOUT the author
+    one-hot (since that's the target we're predicting).
+
+    The author block starts at column ``n_audio + AUTHOR_COL_OFFSET_IN_METADATA``
+    and is ``N_AUTHOR`` columns wide.
+    """
+    start = n_audio + AUTHOR_COL_OFFSET_IN_METADATA
+    end = start + N_AUTHOR
+    return np.concatenate([X_full[:, :start], X_full[:, end:]], axis=1)
+
+
+def train_author_classifier(
+    X_train: np.ndarray,
+    entries: list[dict],
+    n_audio: int = N_AUDIO_FEATURES,
+) -> object:
+    """Train an XGBoost classifier: metadata → author label (I1/E69).
+
+    Trains on the metadata portion of the full feature vector (with the
+    author one-hot columns dropped — that's the target).  The classifier
+    learns implicit author specialisation patterns from the catalogue
+    (e.g. mobe1969 dominates pre-2000 titles, t1g8rsfan does modern Atmos).
+
+    At inference, given an uncatalogued film's metadata, the classifier
+    predicts which author would most likely have scored it.  That author's
+    optimal alpha (from PER_AUTHOR_ALPHA) is then used for the final BEQ
+    prediction.
+
+    Returns a fitted XGBClassifier.
+    """
+    from xgboost import XGBClassifier
+
+    X_no_author = strip_author_columns(X_train, n_audio)
+    y = np.array([
+        _AUTHOR_VOCAB.index(
+            str(e.get("author", "unknown")).strip().lower()
+            if str(e.get("author", "unknown")).strip().lower() in _AUTHOR_VOCAB
+            else "unknown"
+        )
+        for e in entries
+    ])
+
+    clf = XGBClassifier(
+        n_estimators=400,
+        max_depth=6,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        tree_method="hist",
+        objective="multi:softprob",
+        num_class=N_AUTHOR,
+        random_state=42,
+        verbosity=0,
+    )
+    clf.fit(X_no_author, y)
+    log.info(
+        "author classifier trained: %d samples, train accuracy=%.3f",
+        len(y), float((clf.predict(X_no_author) == y).mean()),
+    )
+    return clf
+
+
+def predict_alpha_from_metadata(
+    classifier: object,
+    X_full: np.ndarray,
+    n_audio: int = N_AUDIO_FEATURES,
+    method: str = "hard",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Predict per-sample alphas from a fitted author classifier.
+
+    Methods:
+      * ``"hard"`` — argmax author, look up its alpha (I1a)
+      * ``"soft_blend"`` — sum_i(prob_i * alpha_i), single blended alpha (I1b/I3)
+      * ``"top3"`` — top-3 authors, mean of their alphas weighted by prob (I1c)
+
+    Returns ``(alphas, predicted_author_indices)`` — the predicted author
+    indices are returned for diagnostic / per-sample logging.
+    """
+    X_no_author = strip_author_columns(X_full, n_audio)
+    probs = classifier.predict_proba(X_no_author)  # shape (n, N_AUTHOR)
+
+    author_alphas = np.array(
+        [PER_AUTHOR_ALPHA.get(a, DEFAULT_PER_AUTHOR_ALPHA) for a in _AUTHOR_VOCAB],
+        dtype=np.float32,
+    )
+
+    if method == "hard":
+        author_idx = probs.argmax(axis=1)
+        alphas = author_alphas[author_idx]
+        return alphas, author_idx
+
+    if method == "soft_blend":
+        alphas = (probs * author_alphas[None, :]).sum(axis=1)
+        return alphas.astype(np.float32), probs.argmax(axis=1)
+
+    if method == "top3":
+        # For each sample, take the top-3 most probable authors and weight
+        # their alphas by their (renormalised) probabilities.
+        top3_idx = np.argsort(-probs, axis=1)[:, :3]
+        top3_probs = np.take_along_axis(probs, top3_idx, axis=1)
+        top3_probs = top3_probs / top3_probs.sum(axis=1, keepdims=True)
+        top3_alphas = author_alphas[top3_idx]
+        alphas = (top3_probs * top3_alphas).sum(axis=1)
+        return alphas.astype(np.float32), top3_idx[:, 0]
+
+    raise ValueError(f"unknown method: {method}")
+
+
 def train_late_fusion(
     X_train: np.ndarray,
     Y_train: np.ndarray,
