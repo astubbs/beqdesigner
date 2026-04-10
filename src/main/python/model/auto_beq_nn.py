@@ -1299,12 +1299,15 @@ def train_author_classifier(
     optimal alpha (from PER_AUTHOR_ALPHA) is then used for the final BEQ
     prediction.
 
-    Returns a fitted XGBClassifier.
+    Returns a fitted XGBClassifier with an attached
+    ``_author_index_map`` attribute mapping the contiguous training
+    labels back to ``_AUTHOR_VOCAB`` indices (used by
+    ``predict_alpha_from_metadata``).
     """
     from xgboost import XGBClassifier
 
     X_no_author = strip_author_columns(X_train, n_audio)
-    y = np.array([
+    raw_y = np.array([
         _AUTHOR_VOCAB.index(
             str(e.get("author", "unknown")).strip().lower()
             if str(e.get("author", "unknown")).strip().lower() in _AUTHOR_VOCAB
@@ -1312,6 +1315,15 @@ def train_author_classifier(
         )
         for e in entries
     ])
+
+    # XGBClassifier requires contiguous class labels [0, k-1].  If the
+    # training set is missing some authors (small folds, low-volume
+    # authors), the raw author indices may be non-contiguous (e.g.
+    # [0, 1, 2, 5]).  Remap to contiguous and store the inverse mapping
+    # so predict_alpha_from_metadata can recover the original indices.
+    unique_authors = sorted(set(int(v) for v in raw_y))
+    author_idx_to_contig = {a: i for i, a in enumerate(unique_authors)}
+    y = np.array([author_idx_to_contig[int(v)] for v in raw_y])
 
     clf = XGBClassifier(
         n_estimators=400,
@@ -1321,14 +1333,18 @@ def train_author_classifier(
         colsample_bytree=0.8,
         tree_method="hist",
         objective="multi:softprob",
-        num_class=N_AUTHOR,
+        num_class=len(unique_authors),
         random_state=42,
         verbosity=0,
     )
     clf.fit(X_no_author, y)
+    # Inverse mapping: contiguous label index → _AUTHOR_VOCAB index.
+    clf._author_index_map = np.array(unique_authors, dtype=int)
     log.info(
-        "author classifier trained: %d samples, train accuracy=%.3f",
-        len(y), float((clf.predict(X_no_author) == y).mean()),
+        "author classifier trained: %d samples, %d distinct authors, "
+        "train accuracy=%.3f",
+        len(y), len(unique_authors),
+        float((clf.predict(X_no_author) == y).mean()),
     )
     return clf
 
@@ -1352,15 +1368,23 @@ def predict_alpha_from_metadata(
     X_no_author = strip_author_columns(X_full, n_audio)
     raw_probs = classifier.predict_proba(X_no_author)  # shape (n, n_classes)
 
-    # XGBClassifier drops absent classes from training.  We need probs of
-    # shape (n, N_AUTHOR) aligned with _AUTHOR_VOCAB.  Pad missing columns
-    # with zero (those authors were never seen in training).
+    # The classifier was trained on contiguous labels [0..k-1] but those
+    # labels correspond to a subset of _AUTHOR_VOCAB indices.  Use the
+    # ``_author_index_map`` attached at training time to expand the probs
+    # back to a (n, N_AUTHOR) matrix with zeros for absent authors.
     n_samples = raw_probs.shape[0]
     probs = np.zeros((n_samples, N_AUTHOR), dtype=np.float64)
-    classes = list(getattr(classifier, "classes_", range(raw_probs.shape[1])))
-    for col_idx, class_label in enumerate(classes):
-        if 0 <= int(class_label) < N_AUTHOR:
-            probs[:, int(class_label)] = raw_probs[:, col_idx]
+    author_index_map = getattr(classifier, "_author_index_map", None)
+    if author_index_map is not None:
+        for contig_col, vocab_idx in enumerate(author_index_map):
+            if 0 <= int(vocab_idx) < N_AUTHOR:
+                probs[:, int(vocab_idx)] = raw_probs[:, contig_col]
+    else:
+        # Fall back to classifier.classes_ for older models.
+        classes = list(getattr(classifier, "classes_", range(raw_probs.shape[1])))
+        for col_idx, class_label in enumerate(classes):
+            if 0 <= int(class_label) < N_AUTHOR:
+                probs[:, int(class_label)] = raw_probs[:, col_idx]
 
     author_alphas = np.array(
         [PER_AUTHOR_ALPHA.get(a, DEFAULT_PER_AUTHOR_ALPHA) for a in _AUTHOR_VOCAB],

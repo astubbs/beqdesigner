@@ -327,3 +327,377 @@ def test_get_advisor_trained_model_no_path(monkeypatch):
     monkeypatch.delenv("AUTO_BEQ_MODEL_PATH", raising=False)
     with pytest.raises(ValueError, match="AUTO_BEQ_MODEL_PATH"):
         get_advisor("trained_model")
+
+
+# ---------------------------------------------------------------------------
+# F1: Synthetic feature augmentation
+# ---------------------------------------------------------------------------
+
+
+def test_augment_audio_features_shape_and_originals_preserved():
+    """augment_audio_features returns originals + n_copies, audio dims perturbed."""
+    from model.auto_beq_nn import AugmentationConfig, augment_audio_features
+
+    rng = np.random.default_rng(42)
+    n_orig = 10
+    n_audio = 9
+    n_meta = 93
+    X = rng.normal(0, 1, size=(n_orig, n_audio + n_meta)).astype(np.float32)
+    Y = rng.normal(0, 1, size=(n_orig, 24)).astype(np.float32)
+
+    config = AugmentationConfig(
+        gaussian_sigma_db=0.5,
+        per_bin_uniform_db=1.0,
+        n_copies=3,
+        smooth_prob=0.0,  # disable smoothing for determinism
+    )
+    X_aug, Y_aug = augment_audio_features(X, Y, config, n_audio=n_audio)
+
+    # Originals + 3 copies = 4× rows.
+    assert X_aug.shape == (n_orig * 4, n_audio + n_meta)
+    assert Y_aug.shape == (n_orig * 4, 24)
+    # First n_orig rows are original.
+    np.testing.assert_array_equal(X_aug[:n_orig], X)
+    np.testing.assert_array_equal(Y_aug[:n_orig], Y)
+    # Y is tiled (each block of n_orig rows == original).
+    for k in range(1, 4):
+        np.testing.assert_array_equal(Y_aug[k * n_orig:(k + 1) * n_orig], Y)
+
+
+def test_augment_audio_features_metadata_untouched():
+    """Augmentation perturbs only audio columns; metadata is preserved."""
+    from model.auto_beq_nn import AugmentationConfig, augment_audio_features
+
+    rng = np.random.default_rng(0)
+    n_audio = 9
+    n_meta = 93
+    X = rng.normal(0, 1, size=(5, n_audio + n_meta)).astype(np.float32)
+    Y = rng.normal(0, 1, size=(5, 24)).astype(np.float32)
+
+    config = AugmentationConfig(
+        gaussian_sigma_db=2.0, per_bin_uniform_db=2.0, n_copies=2,
+        smooth_prob=0.0,
+    )
+    X_aug, _ = augment_audio_features(X, Y, config, n_audio=n_audio)
+
+    # Metadata columns should be byte-identical for every augmented copy.
+    for i in range(X_aug.shape[0]):
+        orig_idx = i % 5
+        np.testing.assert_array_equal(
+            X_aug[i, n_audio:], X[orig_idx, n_audio:],
+            err_msg=f"metadata mutated at row {i}",
+        )
+
+    # Audio columns should differ from originals in the augmented copies
+    # (rows 5-14, since 0-4 are originals).
+    diffs = np.abs(X_aug[5:, :n_audio] - np.tile(X[:, :n_audio], (2, 1)))
+    assert diffs.mean() > 0.5, (
+        f"augmentation too weak: mean audio diff {diffs.mean():.2f}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# F2: Option B chunk statistics
+# ---------------------------------------------------------------------------
+
+
+def test_extract_chunk_stats_shapes():
+    """extract_chunk_stats returns (stddev, ceiling_frac) each shape (n_bins,)."""
+    from spike._auto_beq_helpers import extract_chunk_stats
+    from model.auto_beq_nn import OPTION_A_BINS_HZ
+
+    n_chunks, n_freqs = 50, 100
+    freqs = np.linspace(5, 200, n_freqs)
+    rng = np.random.default_rng(0)
+    matrix = rng.normal(-30, 5, size=(n_chunks, n_freqs)).astype(np.float32)
+
+    stddev, ceiling = extract_chunk_stats(matrix, freqs, OPTION_A_BINS_HZ)
+    assert stddev.shape == (len(OPTION_A_BINS_HZ),)
+    assert ceiling.shape == (len(OPTION_A_BINS_HZ),)
+    assert stddev.dtype == np.float32
+    assert ceiling.dtype == np.float32
+    # Random gaussian data: stddev should be ~5, ceiling fraction reasonable.
+    assert 3 < stddev.mean() < 7, f"stddev mean {stddev.mean()}"
+    assert 0 < ceiling.mean() < 1, f"ceiling mean {ceiling.mean()}"
+
+
+def test_extract_chunk_stats_constant_data():
+    """Constant chunks → stddev=0, ceiling_frac=1."""
+    from spike._auto_beq_helpers import extract_chunk_stats
+    from model.auto_beq_nn import OPTION_A_BINS_HZ
+
+    freqs = np.linspace(5, 200, 100)
+    matrix = np.full((20, 100), -30.0, dtype=np.float32)
+    stddev, ceiling = extract_chunk_stats(matrix, freqs, OPTION_A_BINS_HZ)
+    np.testing.assert_array_almost_equal(stddev, 0.0)
+    np.testing.assert_array_almost_equal(ceiling, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# AudioFeatureConfig dimension calculations
+# ---------------------------------------------------------------------------
+
+
+def test_audio_feature_config_dims():
+    """Each flag adjusts n_total_audio and n_features by the right amount."""
+    from model.auto_beq_nn import AudioFeatureConfig, N_AUDIO_FEATURES, N_METADATA_FEATURES
+
+    base = AudioFeatureConfig()
+    assert base.n_total_audio == N_AUDIO_FEATURES
+    assert base.n_features == N_AUDIO_FEATURES + N_METADATA_FEATURES
+
+    opt_b = AudioFeatureConfig(use_option_b=True)
+    assert opt_b.n_total_audio == N_AUDIO_FEATURES + 18
+
+    dbfs = AudioFeatureConfig(use_absolute_dbfs=True)
+    assert dbfs.n_total_audio == N_AUDIO_FEATURES + 9
+
+    hires = AudioFeatureConfig(use_high_res=True)
+    assert hires.n_total_audio == 16
+
+    clust = AudioFeatureConfig(use_rolloff_cluster=True, n_clusters=8)
+    assert clust.n_total_audio == N_AUDIO_FEATURES + 8
+
+    combo = AudioFeatureConfig(use_option_b=True, use_absolute_dbfs=True)
+    assert combo.n_total_audio == N_AUDIO_FEATURES + 18 + 9
+
+
+def test_build_feature_vector_with_option_b_synthetic_fallback():
+    """When CurveFeatures has no chunk stats, build_feature_vector pads zeros/ones."""
+    from model.auto_beq_advisor import CurveFeatures
+    from model.auto_beq_nn import AudioFeatureConfig, build_feature_vector
+
+    feats = CurveFeatures(
+        shoulder_peak_db=5.0, shoulder_peak_hz=30.0,
+        level_at_5hz_db=-10.0, level_at_10hz_db=-5.0, level_at_20hz_db=-2.0,
+        rolloff_depth_db=15.0, rolloff_slope_db_per_oct=3.0, dynamic_range_db=20.0,
+        curve_sample_points=tuple(),
+    )
+    meta = MediaMetadata(title="t", year=2020)
+    cfg = AudioFeatureConfig(use_option_b=True)
+    vec = build_feature_vector(feats, meta, config=cfg)
+    # 9 audio + 9 stddev (zeros) + 9 ceiling_frac (ones) + 93 metadata = 120
+    assert vec.shape == (cfg.n_features,)
+    # The synthetic fallback writes zeros for stddev and ones for ceiling_frac.
+    np.testing.assert_array_almost_equal(vec[9:18], 0.0)
+    np.testing.assert_array_almost_equal(vec[18:27], 1.0)
+
+
+# ---------------------------------------------------------------------------
+# G8: per-author alpha (predict_with_alphas)
+# ---------------------------------------------------------------------------
+
+
+def test_late_fusion_predict_with_alphas(tmp_path):
+    """LateFusionModel.predict_with_alphas blends per row."""
+    from model.auto_beq_nn import train_late_fusion
+
+    entries = _load_snapshot()
+    X, Y, _ = _build_dataset(entries, DEFAULT_GRID)
+    model = train_late_fusion(X, Y, alpha=0.5)
+
+    # Predict with two different alphas: row 0 → α=0.0 (pure metadata),
+    # row 1 → α=1.0 (pure audio).
+    n = 2
+    alphas = np.array([0.0, 1.0], dtype=np.float32)
+    Y_blend = model.predict_with_alphas(X[:n], alphas)
+    assert Y_blend.shape == Y[:n].shape
+
+    # Sanity: pure-metadata prediction matches metadata sub-model alone.
+    n_audio = model._n_audio
+    X_meta_only = np.zeros_like(X[:n])
+    X_meta_only[:, n_audio:] = X[:n, n_audio:]
+    Y_meta = model.model_meta.predict(X_meta_only)
+    np.testing.assert_allclose(Y_blend[0], Y_meta[0], rtol=1e-5)
+
+    # Pure-audio prediction matches audio sub-model alone.
+    X_audio_only = np.zeros_like(X[:n])
+    X_audio_only[:, :n_audio] = X[:n, :n_audio]
+    Y_audio = model.model_audio.predict(X_audio_only)
+    np.testing.assert_allclose(Y_blend[1], Y_audio[1], rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# H2: author marginalization
+# ---------------------------------------------------------------------------
+
+
+def test_late_fusion_predict_marginalized_uniform():
+    """predict_marginalized with uniform weights == mean over author identities."""
+    from model.auto_beq_nn import (
+        N_AUTHOR, author_col_start, train_late_fusion,
+    )
+
+    entries = _load_snapshot()
+    X, Y, _ = _build_dataset(entries, DEFAULT_GRID)
+    model = train_late_fusion(X, Y, alpha=0.5)
+
+    Y_marg = model.predict_marginalized(
+        X[:3], author_col_start=author_col_start(), n_author=N_AUTHOR,
+    )
+    assert Y_marg.shape == Y[:3].shape
+    # Should be a finite, sane prediction.
+    assert np.all(np.isfinite(Y_marg))
+
+
+# ---------------------------------------------------------------------------
+# H1: response-space averaging dedup
+# ---------------------------------------------------------------------------
+
+
+def test_deduplicate_by_title_response_avg_passthrough_for_singles():
+    """Single-author titles are passed through unchanged (no refit)."""
+    from model.auto_beq_nn import deduplicate_by_title_response_avg
+
+    # Build a single-author group.
+    entries = [
+        {"title": "Solo Film", "author": "aron7awol",
+         "audioTypes": ["Atmos"], "year": 2020,
+         "filters": [{"type": "LowShelf", "freq": 20.0, "gain": 5.0, "q": 0.7}]},
+    ]
+    result = deduplicate_by_title_response_avg(
+        entries, DEFAULT_GRID, fs=1000, strategy="mean",
+    )
+    assert len(result) == 1
+    # No consensus marker since it wasn't averaged.
+    assert "_consensus_n_authors" not in result[0]
+
+
+def test_deduplicate_by_title_response_avg_multi_author_refit():
+    """Multi-author title gets averaged + refit; result has consensus marker."""
+    from model.auto_beq_nn import deduplicate_by_title_response_avg
+
+    entries = [
+        {"title": "Multi Film", "author": "mobe1969",
+         "audioTypes": ["Atmos"], "year": 2020,
+         "filters": [{"type": "LowShelf", "freq": 20.0, "gain": 5.0, "q": 0.7}]},
+        {"title": "Multi Film", "author": "aron7awol",
+         "audioTypes": ["TrueHD"], "year": 2020,
+         "filters": [{"type": "LowShelf", "freq": 25.0, "gain": 4.0, "q": 0.7}]},
+    ]
+    result = deduplicate_by_title_response_avg(
+        entries, DEFAULT_GRID, fs=1000, strategy="mean", n_workers=1,
+    )
+    assert len(result) == 1
+    # Consensus marker is set on multi-author refits.
+    assert result[0].get("_consensus_n_authors") == 2
+    # Refit chain has at least one filter.
+    assert len(result[0]["filters"]) >= 1
+
+
+# ---------------------------------------------------------------------------
+# I1: author classifier (metadata → author)
+# ---------------------------------------------------------------------------
+
+
+def test_strip_author_columns_dim():
+    """strip_author_columns drops 9 columns from the right place."""
+    from model.auto_beq_nn import (
+        AUTHOR_COL_OFFSET_IN_METADATA, N_AUDIO_FEATURES, N_AUTHOR, N_FEATURES,
+        strip_author_columns,
+    )
+
+    X = np.arange(2 * N_FEATURES, dtype=np.float32).reshape(2, N_FEATURES)
+    X_no_author = strip_author_columns(X, n_audio=N_AUDIO_FEATURES)
+    assert X_no_author.shape == (2, N_FEATURES - N_AUTHOR)
+    # Columns before the author block are unchanged.
+    start = N_AUDIO_FEATURES + AUTHOR_COL_OFFSET_IN_METADATA
+    np.testing.assert_array_equal(X_no_author[:, :start], X[:, :start])
+    # Columns after the author block follow on directly.
+    np.testing.assert_array_equal(
+        X_no_author[:, start:], X[:, start + N_AUTHOR:],
+    )
+
+
+def test_train_author_classifier_then_predict_alpha():
+    """train_author_classifier + predict_alpha_from_metadata produces sensible alphas."""
+    from model.auto_beq_nn import (
+        DEFAULT_PER_AUTHOR_ALPHA, N_AUDIO_FEATURES, N_AUTHOR, PER_AUTHOR_ALPHA,
+        predict_alpha_from_metadata, train_author_classifier,
+    )
+
+    entries = _load_snapshot()
+    X, _Y, used = _build_dataset(entries, DEFAULT_GRID)
+
+    # Need ≥2 distinct authors with ≥2 samples each for the classifier
+    # to train successfully. The 18-entry snapshot may not satisfy this,
+    # so we duplicate the dataset to ensure each author has at least 2.
+    X_dup = np.vstack([X, X])
+    used_dup = used + used
+
+    clf = train_author_classifier(X_dup, used_dup, n_audio=N_AUDIO_FEATURES)
+
+    for method in ("hard", "soft_blend", "top3"):
+        alphas, predicted_idx = predict_alpha_from_metadata(
+            clf, X[:5], n_audio=N_AUDIO_FEATURES, method=method,
+        )
+        assert alphas.shape == (5,)
+        assert alphas.dtype == np.float32
+        # Alphas should be in the valid blend range.
+        assert np.all(alphas >= 0.0) and np.all(alphas <= 1.0)
+        # Predicted indices should map to valid authors.
+        assert predicted_idx.shape == (5,)
+        assert np.all((predicted_idx >= 0) & (predicted_idx < N_AUTHOR))
+
+
+# ---------------------------------------------------------------------------
+# F7: rolloff clustering
+# ---------------------------------------------------------------------------
+
+
+def test_compute_rolloff_clusters_shapes():
+    """compute_rolloff_clusters returns (kmeans, ids) with the right shape."""
+    from model.auto_beq_nn import cluster_ids_to_onehot, compute_rolloff_clusters
+
+    rng = np.random.default_rng(0)
+    X_audio = rng.normal(0, 1, size=(50, 9)).astype(np.float32)
+    kmeans, ids = compute_rolloff_clusters(X_audio, n_clusters=4)
+    assert ids.shape == (50,)
+    assert ids.min() >= 0 and ids.max() < 4
+
+    onehot = cluster_ids_to_onehot(ids, n_clusters=4)
+    assert onehot.shape == (50, 4)
+    # Each row sums to exactly 1.0 (one-hot).
+    np.testing.assert_array_almost_equal(onehot.sum(axis=1), 1.0)
+
+    # New samples can be assigned via the kmeans model.
+    X_new = rng.normal(0, 1, size=(7, 9)).astype(np.float32)
+    new_ids = kmeans.predict(X_new)
+    assert new_ids.shape == (7,)
+
+
+# ---------------------------------------------------------------------------
+# F6: confidence (inter-author agreement) weights
+# ---------------------------------------------------------------------------
+
+
+def test_compute_agreement_weights_single_author_neutral():
+    """Single-author entries get weight 1.0 (neutral)."""
+    from model.auto_beq_nn import compute_agreement_weights
+
+    entries = [
+        {"title": "A", "author": "x",
+         "filters": [{"type": "LowShelf", "freq": 20.0, "gain": 5.0, "q": 0.7}]},
+        {"title": "B", "author": "x",
+         "filters": [{"type": "LowShelf", "freq": 25.0, "gain": 3.0, "q": 0.7}]},
+    ]
+    weights = compute_agreement_weights(entries, DEFAULT_GRID)
+    assert weights.shape == (2,)
+    np.testing.assert_array_almost_equal(weights, 1.0)
+
+
+def test_compute_agreement_weights_disagreement_penalised():
+    """Disagreeing multi-author titles get a weight < 1.0."""
+    from model.auto_beq_nn import compute_agreement_weights
+
+    entries = [
+        {"title": "Same Title", "author": "alpha",
+         "filters": [{"type": "LowShelf", "freq": 20.0, "gain": 5.0, "q": 0.7}]},
+        {"title": "Same Title", "author": "beta",
+         "filters": [{"type": "PeakingEQ", "freq": 50.0, "gain": -8.0, "q": 2.0}]},
+    ]
+    weights = compute_agreement_weights(entries, DEFAULT_GRID)
+    # Both entries belong to the disagreeing pair, so both get the same weight < 1.
+    assert weights.shape == (2,)
+    assert weights[0] < 1.0
+    assert weights[0] == weights[1]

@@ -613,20 +613,26 @@ def main(argv: list[str] | None = None):
         log.info("missing TMDb IDs written to %s", missing_file)
 
     # Persist the full media inventory (every file with a DB ID, whether
-    # catalogue-matched or not).  Used by scripts/nn_acquisition_recommender.py
-    # to filter out titles already in the library.
+    # catalogue-matched or not, plus the missing-ID files).  Used by
+    # scripts/nn_acquisition_recommender.py to filter out titles already
+    # in the library, and by scripts/nn_cache_bias_report.py to surface
+    # files that need their tmdb tags fixed.
     inventory_file = beq_dir / "media_inventory.json"
     inventory_file.write_text(json.dumps({
         "scanned_at": int(time.time()),
         "media_roots": [str(r) for r in media_roots],
         "n_total_with_ids": len(all_with_ids),
         "n_catalogue_matched": sum(1 for m in all_with_ids if m["has_catalogue"]),
+        "n_missing_ids": len(missing_ids),
         "media": all_with_ids,
+        "missing_ids": sorted(set(missing_ids)),
     }, indent=2) + "\n")
     log.info(
-        "media inventory written to %s (%d files, %d catalogue-matched)",
+        "media inventory written to %s (%d files, %d catalogue-matched, "
+        "%d missing IDs)",
         inventory_file, len(all_with_ids),
         sum(1 for m in all_with_ids if m["has_catalogue"]),
+        len(missing_ids),
     )
 
     if args.limit > 0:

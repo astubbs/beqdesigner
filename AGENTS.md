@@ -144,6 +144,25 @@ docker compose run verify
 poetry run python3 scripts/wav_cache_status.py /path/to/wav-cache
 ```
 
+**Outputs of an extract run** (written to `{beq-dir}/`):
+- `wav-cache/...` — extracted LFE WAVs (the training set)
+- `beq_catalogue.json` — local cache of the BEQ GitHub catalogue
+- `media_inventory.json` — every media file with a DB ID, whether
+  catalogue-matched or not. Used by `nn_cache_bias_report.py` and
+  `nn_acquisition_recommender.py` to (a) exclude already-owned titles
+  from acquisition recommendations and (b) surface library files that
+  are missing their `[tmdb-NNN]` tags.
+- `missing_ids.txt` — plain-text list of media files without DB ID tags.
+  These are excluded from extraction; renaming them to add the correct
+  tag would let the model learn from them.
+
+After each run, copy these back to the dev machine if you want to
+regenerate the bias / acquisition reports locally:
+```bash
+scp nas:/path/to/beqdesigner/{media_inventory.json,beq_catalogue.json} \
+    ~/Downloads/beqdesigner/
+```
+
 **After code changes:** rebuild image and redeploy:
 ```bash
 docker build -f docker/Dockerfile -t beq-extract .
