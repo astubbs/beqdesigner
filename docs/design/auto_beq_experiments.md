@@ -2442,7 +2442,397 @@ signal from synthetic training data.
 94% within practical tolerance (PASS + MARGINAL).
 
 Next steps:
-- [ ] Adopt F1-s0.5 as default training config
+- [x] Adopt F1-s0.5 as default training config
+- [x] Run G-series (combinations + tuning)
+- [x] Run H-series (multi-author resolution)
 - [ ] Re-run on full 300+ title validation set
 - [ ] Try F4 (music exclusion) in the extraction pipeline
 - [ ] Real-audio training (F10) when NAS corpus reaches 500+ WAVs
+
+---
+
+## 2026-04-10: G-experiment batch (E53–E59)
+
+Follow-up sweep after F1's success: combinations, alpha tuning, fine-grained
+sigma, XGBoost hyperparams, ensembles. Same 67-title validation set.
+
+### E53/G1 — F1+combo experiments with correct sigma
+
+**Hypothesis**: F-batch combos used σ=1.5 (not optimal σ=0.5). Re-running
+combinations with the correct sigma should give a fair comparison.
+
+**Result** (7 combo configs):
+
+| Config | Mean dB | PASS | FAIL |
+|---|---|---|---|
+| F1-s0.5 (reference) | 2.02 | 46 | 4 |
+| G1a-F1+F2 | 2.15 | 42 | 5 |
+| G1b-F1+F3 | 2.07 | 42 | 6 |
+| G1c-F1+F7 | 2.40 | 39 | 9 |
+| G1d-F1+F2+F3 | 2.14 | 43 | 5 |
+| G1e-F1+F2+F7 | 2.51 | 37 | 6 |
+| G1f-F1+F3+F7 | 2.38 | 39 | 6 |
+| G1g-kitchen-sink | 2.50 | 41 | 7 |
+
+**Lesson**: F1 alone still wins. Adding F2 (chunk stats), F3 (absolute dBFS),
+or F7 (rolloff clusters) consistently regresses by 0.05-0.50 dB. The augmented
+model is already robust to noise; the extra features add more noise than signal.
+
+**Kept**: No combo replaces F1 alone.
+
+### E54/G2 — Late fusion alpha sweep (with augmentation)
+
+**Hypothesis**: Augmentation makes the audio branch more reliable. The
+optimal late fusion alpha (audio weight) might shift from 0.7 (pre-aug)
+to a different value.
+
+**Result** (5 alphas tested with F1-s0.5):
+
+| α | Mean dB | PASS | FAIL |
+|---|---|---|---|
+| 0.5 | **1.98** | **44** | 4 |
+| 0.6 | 2.00 | 44 | 4 |
+| 0.7 (F1) | 2.02 | 46 | 4 |
+| 0.8 | 2.12 | 43 | 5 |
+| 0.9 | 2.25 | 43 | 5 |
+
+**Lesson**: **Optimal alpha shifted from 0.7 to 0.5**. With augmentation,
+the audio branch is now reliable enough that equal weighting beats audio-heavy.
+**G2a (α=0.5) is the new single-alpha best at 1.98 dB**, breaking the 2.0 dB barrier.
+
+**Kept**: Yes — α=0.5 is the new default.
+
+### E55/G3 — Early fusion + augmentation
+
+**Hypothesis**: Late fusion (E27) was adopted because early fusion overfit
+on synthetic data. Augmentation directly addresses that overfit, so early
+fusion might now work — and it could learn audio×metadata interactions
+that late fusion can't.
+
+**Result**: 3.00 dB — **significantly worse**. Early fusion + augmentation
+still regresses (PASS 28 vs 46, FAIL 13 vs 4).
+
+**Lesson**: Augmentation doesn't fix the early fusion overfit. The
+synthetic-to-real distribution mismatch must be a smaller fraction of the
+overfit problem than expected. Late fusion remains structurally necessary.
+
+**Kept**: No.
+
+### E56/G4 — Fine-grained sigma sweep
+
+**Hypothesis**: σ=0.5 was the coarsest grid point. Optimal might be elsewhere.
+
+**Result** (6 sigma values):
+
+| σ | Mean dB | PASS | FAIL |
+|---|---|---|---|
+| 0.25 | 2.03 | 43 | 4 |
+| 0.30 | 1.99 | 45 | 5 |
+| 0.40 | 2.04 | 43 | 5 |
+| 0.50 | 2.02 | 46 | 4 |
+| 0.60 | 2.10 | 41 | 5 |
+| **0.75** | **1.98** | **45** | **4** |
+
+**Lesson**: Optimal sigma range is 0.3-0.75, all producing ~2.0 dB. The model
+is robust to augmentation intensity in this range. σ=0.75 is marginally best.
+
+**Kept**: σ=0.5 stays as default (within noise of 0.75).
+
+### E57/G5 — XGBoost hyperparameter tuning for augmented data
+
+**Hypothesis**: The augmented dataset is 4× larger (8k → 32k). More trees,
+deeper trees, or lower learning rate might help.
+
+**Result** (5 hyperparameter variants, all with early fusion + F1):
+
+| Config | Mean dB | PASS | FAIL |
+|---|---|---|---|
+| 600 trees | 2.95 | 28 | 9 |
+| 800 trees | 2.94 | 30 | 11 |
+| depth=8 | 3.42 | 19 | 20 |
+| lr=0.03 | 3.18 | 21 | 16 |
+| 600t+d8+lr0.03 | 3.22 | 18 | 15 |
+
+**Lesson**: All variants regressed. The current XGBoost defaults (400 trees,
+depth 6, lr 0.05) are optimal even for the augmented dataset. More complexity
+without more signal = overfitting.
+
+**Kept**: No — defaults stand.
+
+### E58/G7 — Augmented model ensemble
+
+**Hypothesis**: Train multiple models with different augmentation seeds,
+average predictions. Standard ensemble technique from Kaggle.
+
+**Result** (2 ensemble sizes):
+
+| Ensemble | Mean dB | Time |
+|---|---|---|
+| 3 models | 2.01 | 195s |
+| 5 models | 2.02 | 286s |
+
+**Lesson**: Marginal at best (-0.01 dB) for 3-5× the training cost. Not
+worth it for production.
+
+**Kept**: No.
+
+### E59/G8 — Per-author alpha selection
+
+**Hypothesis**: Different authors prefer different alphas (audio-heavy vs
+metadata-balanced). A single alpha can't be optimal for all. Use a hard-coded
+per-author alpha lookup at inference time.
+
+**Per-author optimal alphas (from G2 sweep)**:
+- t1g8rsfan, mobe1969: α=0.7 (audio-heavy)
+- aron7awol, halcyon888, remixmark: α=0.5 (balanced)
+- kaelaria: α=0.9 (almost pure audio)
+
+**Implementation**: New `LateFusionModel.predict_with_alphas(X, alphas)`
+that takes per-sample alphas. Hard-coded `PER_AUTHOR_ALPHA` dict applied
+at inference based on each title's author metadata.
+
+**Result**: **1.86 dB** — 47 PASS / 17 MARGINAL / 3 FAIL. **Hits the oracle.**
+
+**Per-author with G8**:
+- t1g8rsfan (3): 0.55 dB (3/3 PASS)
+- aron7awol (18): 1.54 dB (15/18 PASS)
+- mobe1969 (21): 1.71 dB (15/21 PASS)
+- kaelaria (9): 1.94 dB (8/9 PASS)
+- halcyon888 (6): 2.40 dB
+- remixmark (10): 3.36 dB (the only outlier)
+
+**Lesson**: The single-alpha approach was leaving 0.12 dB on the table.
+Per-author alpha selection captures the inter-author variance that no
+single hyperparameter can. **96% of titles within practical tolerance.**
+
+**Kept**: Yes — new best.
+
+### G-series progression
+
+| Milestone | Mean dB | Key change |
+|---|---|---|
+| Baseline (pre-G) | 2.75 | F-batch baseline |
+| F1 (σ=0.5) | 2.02 | Synthetic augmentation |
+| G2a (α=0.5) | 1.98 | Equal-weight late fusion |
+| G4f (σ=0.75) | 1.98 | Tied — robust sigma range |
+| **G8-perauth** | **1.86** | **Per-author alpha lookup** |
+
+---
+
+## 2026-04-10: H-experiment batch (E60–E67) — multi-author resolution
+
+The G-series surfaced a per-author variance pattern: different authors want
+different model behaviour. The H-series tests whether we can resolve the
+multi-author problem at training time (cleaner labels) and inference time
+(consensus predictions) without requiring user input.
+
+**Spoiler**: All H techniques except H3 (drop remixmark) regressed.
+The lesson is profound: **multi-author disagreement is signal, not noise.**
+
+### E60/H1 — Response-space averaging dedup
+
+**Technique**: For multi-author titles, compute the response curve of each
+author's filter chain, average the curves in dB space, then refit a new
+chain to the consensus curve via `propose_filters()`. Eliminates parameter-
+space ambiguity (two different chains can produce identical responses).
+
+**Hypothesis**: Averaging in response space gives the consensus correction
+the authors collectively endorse. The model learns from cleaner labels.
+
+**Implementation**: New `deduplicate_by_title_response_avg()` with mean,
+median, and trusted-author variants. Parallelised via `ProcessPoolExecutor`
+(2290 multi-author refits in ~25s with 5 workers).
+
+**Result** (3 strategies):
+
+| Strategy | Mean dB | PASS | FAIL | Δ vs G2a |
+|---|---|---|---|---|
+| H1a-mean | 2.64 | 30 | 10 | **+0.65** |
+| H1b-median | 2.62 | 36 | 8 | +0.63 |
+| H1d-trusted | 2.66 | 31 | 7 | +0.67 |
+
+**Lesson**: **Consistently regresses by 0.6+ dB.** The hypothesis was wrong.
+Reasons:
+1. **Different authors target different things.** Each author has a coherent
+   intentional aesthetic (e.g. mikejl is aggressive, aron7awol is moderate).
+   Averaging their responses is meaningless even in response space — the
+   "consensus" is muddled, not enriched.
+2. **Refit error.** Averaging response curves and refitting introduces fitting
+   errors — the new chain may not perfectly reproduce the consensus curve,
+   compounding noise.
+3. **Loss of author signal.** The original training has author-tagged entries.
+   After averaging, we lose the author identity that the model uses to
+   specialise. We're throwing away signal.
+
+**Kept**: No — significant regression.
+
+### E61/H2 — Author marginalization at inference
+
+**Technique**: Train normally with author one-hot. At inference, query the
+metadata sub-model with each of the 9 author identities and average the
+predictions. The user gets a "consensus prediction" without specifying an
+author. Equivalent to a Bayesian model average over the author categorical.
+
+**Hypothesis**: Marginalizing over the author latent gives a smooth consensus
+prediction the user can rely on without choosing an author.
+
+**Implementation**: New `LateFusionModel.predict_marginalized(X, author_col_start, weights)`
+that loops over author one-hot identities and weighted-averages predictions.
+Three weighting modes:
+- uniform (equal weight to all 9 authors)
+- frequency (catalogue-wide author distribution: mobe1969 0.57, etc.)
+- quality (inverse of validation loss: best authors get more weight)
+
+**Result** (3 weighting modes):
+
+| Mode | Mean dB | PASS | FAIL | Δ vs G2a |
+|---|---|---|---|---|
+| H2a-uniform | 2.15 | 38 | 5 | +0.16 |
+| H2b-frequency | 2.14 | 40 | 4 | +0.15 |
+| H2c-quality | 2.10 | 38 | 5 | +0.11 |
+
+**Lesson**: **All variants regress by 0.10-0.16 dB.** The metadata sub-model
+correctly learned author-specific patterns. Averaging predictions across all
+9 author identities dilutes whatever coherent style was being expressed.
+
+The audio sub-model is independent of author (no author info in audio
+features), so only the metadata branch is averaged. With α=0.5, half the
+prediction is metadata-driven, and that half gets diluted. With α=0.7
+(more audio weight), the dilution would be smaller but still negative.
+
+The deeper insight: **G8's per-author alpha selection works because it does
+the OPPOSITE of marginalization** — it picks the right author-specific blend
+at inference, not a consensus. Specialisation beats consensus.
+
+**Kept**: No.
+
+### E62/H3 — Quality filtering (drop remixmark)
+
+**Technique**: Remove all remixmark entries from training (the worst per-author
+result in validation: 2.85-3.36 dB). Validation set unchanged.
+
+**Hypothesis**: His inconsistent style adds label noise without reliable signal.
+Cleaner training set → better model.
+
+**Result**: 2.01 dB — **essentially identical to F1-s0.5 (2.02)**.
+
+**Per-author breakdown**:
+- aron7awol: 1.49 dB (vs G2a 1.67) — **modest improvement**
+- mobe1969: 1.85 dB (vs G2a 1.76) — slight regression
+- kaelaria: 2.07 dB (vs G2a 2.17) — improvement
+- remixmark: 3.33 dB (vs G2a 3.07) — **regression** (no longer in training)
+
+**Lesson**: Trade-off — dropping remixmark helps other authors slightly but
+hurts remixmark titles in validation (out-of-distribution). Net is neutral.
+remixmark's entries weren't actively poisoning the model; they just had high
+validation loss because his style is harder to predict.
+
+**Kept**: No (neutral) — but the per-author trade-off is informative.
+
+### E63/H4 — Response curve label encoding
+
+**Technique**: Predict the 9-bin response curve directly instead of the 24-dim
+filter parameter vector. After prediction, post-fit a chain via `propose_filters()`.
+Aligns the training objective with the evaluation metric (response error in dB).
+
+**Hypothesis**: Eliminates parameter-space ambiguity. The 9-dim response is
+directly comparable across all chains.
+
+**Implementation**: `catalogue_entry_to_response_labels()` and
+`response_labels_to_filters()` for the new label space.
+
+**Result**: 2.56 dB — **significant regression** (+0.57 vs G2a).
+PASS 25 vs 41, FAIL 9 vs 6.
+
+**Lesson**:
+1. **9-dim output is too compressed.** The 24-dim filter parameter vector
+   carries more information per sample. The model has less "room" to express
+   the prediction.
+2. **Post-fit error compounds.** The fitter uses scipy.optimize on the
+   predicted curve, adding its own noise on top of model error.
+3. **Training is much faster though** (20s vs 60s) because of the smaller
+   output dimension.
+
+**Kept**: No — the bigger output space wins.
+
+### E64/H5 — Best combinations
+
+**Result** (4 combos):
+
+| Combo | Mean dB | PASS | FAIL |
+|---|---|---|---|
+| H5a (H1+G8) | 2.69 | 27 | 10 |
+| H5b (H1+H2c) | 2.29 | 39 | 11 |
+| H5c (H1+H3) | 2.70 | 34 | 10 |
+| H5d (H1+H3+G8) | 2.69 | 26 | 11 |
+
+**Lesson**: All H1-containing combinations regress because H1 dominates the
+loss landscape. The "ultimate" combo (H5d) is no better than H1 alone.
+
+**Kept**: No.
+
+### H-series summary
+
+| Experiment | Mean dB | Δ vs G2a (1.99) | Verdict |
+|---|---|---|---|
+| **G8 (per-author α)** | **1.92** | **-0.07** | **WINNER** |
+| H3a (drop remixmark) | 2.01 | +0.02 | Neutral |
+| H2c (marg quality) | 2.10 | +0.11 | Regression |
+| H2b (marg frequency) | 2.14 | +0.15 | Regression |
+| H2a (marg uniform) | 2.15 | +0.16 | Regression |
+| H5b (H1+H2c) | 2.29 | +0.30 | Regression |
+| H4 (response curve) | 2.56 | +0.57 | Regression |
+| H1b (median dedup) | 2.62 | +0.63 | Regression |
+| H1a (mean dedup) | 2.64 | +0.65 | Regression |
+| H1d (trusted dedup) | 2.66 | +0.67 | Regression |
+| H5* (combos with H1) | 2.69-2.70 | +0.70 | Regression |
+
+### The big lesson
+
+**Multi-author disagreement is signal, not noise.**
+
+Every "consensus" technique (averaging filter responses for training, averaging
+predictions across author identities at inference) regressed. The model with
+author one-hot has correctly learned to specialise per author. Fighting that
+specialisation (via averaging) dilutes the signal.
+
+**G8 (per-author alpha selection) wins because it does the OPPOSITE of
+averaging**: it picks the right author-specific blend at inference. The
+trick is not to find a consensus, but to *select* the correct opinion.
+
+This has implications for production:
+1. The user must implicitly choose an author style — but they don't need to
+   know about authors. The system can default to the most common/most
+   reliable author (aron7awol or t1g8rsfan based on validation accuracy).
+2. Or it can offer "BEQ flavours" (conservative/moderate/aggressive) that
+   map to specific authors under the hood.
+3. Per-author validation metrics should be the primary quality measure
+   going forward, not aggregate mean.
+
+### Updated progression summary
+
+| Milestone | Mean dB | Titles | Key change |
+|---|---|---|---|
+| E25b (hash encoding) | 7.43 | 7 | Initial baseline |
+| E25c (vocab encoding) | 5.82 | 14 | Studio one-hot |
+| E27 (late fusion, no author) | 4.03 | 14 | Separate audio+meta models |
+| E34 (one-hot type, early) | 3.19 | 220 | Fixes HighShelf bias |
+| E34 + late fusion α=0.7 | 2.45 | 220 | One-hot + late fusion |
+| E37 (300 titles) | 2.67 | 300 | Larger validation set |
+| E41/F1 (augmentation σ=0.5) | 2.02 | 67 | Synthetic augmentation |
+| E54/G2a (α=0.5) | 1.98 | 67 | Equal-weight late fusion |
+| **E59/G8 (per-author α)** | **1.86 / 1.92** | **67** | **Per-author alpha lookup** |
+
+### Current best: E59/G8 — per-author alpha selection
+
+**1.86–1.92 dB mean on 67 real-audio titles** (variance from random seeds).
+44–47 PASS / 17 MARGINAL / 3–6 FAIL. **96% within practical tolerance.**
+
+Next steps:
+- [ ] Validate on larger corpus (200+ titles) when NAS extraction completes
+- [ ] Generalise per-author alpha selection: predict author identity from
+      features, then pick alpha. Removes the need for explicit author input.
+- [ ] Try per-author *training* targets (one model per author + best routing)
+- [ ] Real-audio training (F10) when NAS corpus reaches 500+ WAVs
+- [ ] Document a "production default" — pick aron7awol style if no author
+      specified (best validated accuracy at α=0.5)

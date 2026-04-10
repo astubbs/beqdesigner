@@ -713,6 +713,41 @@ TRUSTED_AUTHORS = frozenset({
 })
 
 
+def _process_multi_author_group(args: tuple) -> dict | None:
+    """Worker for parallel response-avg dedup.  Module-level for picklability."""
+    per_author, strategy, freqs_hz, fs, band, max_filters = args
+    from model.auto_beq import evaluate_filter_chain, propose_filters
+
+    curves = []
+    for e in per_author:
+        try:
+            response = evaluate_filter_chain(e["filters"], freqs_hz, fs=fs)
+            curves.append(response)
+        except Exception:
+            pass
+    if not curves:
+        return None
+
+    stacked = np.stack(curves, axis=0)
+    if strategy == "median":
+        consensus = np.median(stacked, axis=0)
+    else:
+        consensus = np.mean(stacked, axis=0)
+
+    try:
+        new_filters = propose_filters(
+            -consensus, freqs_hz, fs=fs, band=band, max_filters=max_filters,
+        )
+    except Exception:
+        return None
+
+    best_meta = min(per_author, key=_format_rank)
+    consensus_entry = dict(best_meta)
+    consensus_entry["filters"] = new_filters
+    consensus_entry["_consensus_n_authors"] = len(per_author)
+    return consensus_entry
+
+
 def deduplicate_by_title_response_avg(
     entries: list[dict],
     freqs_hz: np.ndarray,
@@ -720,6 +755,7 @@ def deduplicate_by_title_response_avg(
     strategy: str = "mean",
     band: tuple[float, float] = (5.0, 80.0),
     max_filters: int = 6,
+    n_workers: int | None = None,
 ) -> list[dict]:
     """Group by title; average response curves across authors and refit.
 
@@ -735,14 +771,9 @@ def deduplicate_by_title_response_avg(
       * ``"trusted"`` — mean across only TRUSTED_AUTHORS
       * ``"format"`` — original behaviour (pick highest-format entry)
 
-    Single-entry titles are unchanged.  Multi-entry single-author titles
-    are deduplicated to the highest-format entry.
-
-    The metadata (year, studio, format, etc.) is copied from the highest-
-    format-quality entry in each group.
+    Multi-author groups are refit in parallel via ``ProcessPoolExecutor``
+    (each ``propose_filters()`` call is an independent scipy optimisation).
     """
-    from model.auto_beq import evaluate_filter_chain, propose_filters
-
     if strategy == "format":
         return deduplicate_by_title(entries)
 
@@ -751,24 +782,20 @@ def deduplicate_by_title_response_avg(
         key = str(e.get("title", "")).lower().strip()
         groups.setdefault(key, []).append(e)
 
-    result = []
-    n_averaged = 0
-    n_refit_failed = 0
+    # Split groups into single-author (fast path) and multi-author (parallel).
+    single_author_results: list[dict] = []
+    multi_author_jobs: list[tuple] = []
 
     for group in groups.values():
-        # Find unique authors in this group.
         by_author: dict[str, list[dict]] = {}
         for e in group:
             a = str(e.get("author", "")).strip().lower()
             by_author.setdefault(a, []).append(e)
 
-        # Single-author groups: just dedup by format.
         if len(by_author) <= 1:
-            result.append(min(group, key=_format_rank))
+            single_author_results.append(min(group, key=_format_rank))
             continue
 
-        # Multi-author group: pick one entry per author (best format),
-        # filter by strategy, average response curves.
         per_author = [min(eps, key=_format_rank) for eps in by_author.values()]
 
         if strategy == "trusted":
@@ -777,52 +804,48 @@ def deduplicate_by_title_response_avg(
                 if str(e.get("author", "")).strip().lower() in TRUSTED_AUTHORS
             ]
             if not per_author:
-                # All authors filtered out; fall back to format-only dedup.
-                result.append(min(group, key=_format_rank))
+                single_author_results.append(min(group, key=_format_rank))
                 continue
 
-        # Compute response curve for each author entry.
-        curves = []
-        for e in per_author:
-            try:
-                response = evaluate_filter_chain(e["filters"], freqs_hz, fs=fs)
-                curves.append(response)
-            except Exception as exc:
-                log.debug("skipping bad chain in %s: %s", e.get("title"), exc)
-        if not curves:
-            result.append(min(group, key=_format_rank))
-            continue
-
-        stacked = np.stack(curves, axis=0)
-        if strategy == "median":
-            consensus = np.median(stacked, axis=0)
-        else:  # mean or trusted
-            consensus = np.mean(stacked, axis=0)
-
-        # Refit a new chain to the consensus.  propose_filters expects
-        # "cancel this curve", so flip the sign.
-        try:
-            new_filters = propose_filters(
-                -consensus, freqs_hz, fs=fs, band=band, max_filters=max_filters,
-            )
-        except Exception as exc:
-            log.debug("refit failed for %s: %s", group[0].get("title"), exc)
-            n_refit_failed += 1
-            result.append(min(group, key=_format_rank))
-            continue
-
-        # Build a consensus entry: copy metadata from the best-format entry,
-        # replace filters with the refit consensus chain.
-        best_meta = min(per_author, key=_format_rank)
-        consensus_entry = dict(best_meta)
-        consensus_entry["filters"] = new_filters
-        consensus_entry["_consensus_n_authors"] = len(per_author)
-        result.append(consensus_entry)
-        n_averaged += 1
+        multi_author_jobs.append(
+            (per_author, strategy, freqs_hz, fs, band, max_filters),
+        )
 
     log.info(
-        "response-avg dedup (%s): %d titles, %d multi-author averaged, %d refit failures",
-        strategy, len(result), n_averaged, n_refit_failed,
+        "response-avg dedup (%s): %d single-author + %d multi-author titles to refit",
+        strategy, len(single_author_results), len(multi_author_jobs),
+    )
+
+    # Refit multi-author groups in parallel.
+    consensus_results: list[dict] = []
+    n_refit_failed = 0
+    if multi_author_jobs:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        import os as _os
+
+        if n_workers is None:
+            n_workers = max(2, _os.cpu_count() // 2)
+
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            futures = [
+                pool.submit(_process_multi_author_group, job)
+                for job in multi_author_jobs
+            ]
+            done = 0
+            for fut in as_completed(futures):
+                done += 1
+                if done % 100 == 0:
+                    log.info("refit progress: %d / %d", done, len(multi_author_jobs))
+                res = fut.result()
+                if res is None:
+                    n_refit_failed += 1
+                    continue
+                consensus_results.append(res)
+
+    result = single_author_results + consensus_results
+    log.info(
+        "response-avg dedup (%s): %d titles total, %d multi-author averaged, %d refit failures",
+        strategy, len(result), len(consensus_results), n_refit_failed,
     )
     return result
 
