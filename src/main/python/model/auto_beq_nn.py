@@ -214,11 +214,15 @@ class AugmentationConfig:
     smooth_prob: float = 0.3          # probability of 3-point running average
     n_copies: int = 3                 # augmented copies per original sample
     seed: int = 42
+    # G6: per-bin sigma (measured noise profile).  When set, overrides
+    # gaussian_sigma_db with a different σ for each audio bin.
+    per_bin_sigma: tuple[float, ...] | None = None
 
     @property
     def label(self) -> str:
+        sigma_part = "targeted" if self.per_bin_sigma else f"s{self.gaussian_sigma_db:.1f}"
         return (
-            f"aug-s{self.gaussian_sigma_db:.1f}"
+            f"aug-{sigma_part}"
             f"-u{self.per_bin_uniform_db:.0f}"
             f"-n{self.n_copies}"
         )
@@ -737,8 +741,12 @@ def augment_audio_features(
         X_copy = X.copy()
         audio = X_copy[:, :n_audio].copy()
 
-        # 1. Global Gaussian noise
-        audio += rng.normal(0.0, config.gaussian_sigma_db, size=audio.shape)
+        # 1. Gaussian noise (global or per-bin)
+        if config.per_bin_sigma is not None:
+            for b in range(min(n_audio, len(config.per_bin_sigma))):
+                audio[:, b] += rng.normal(0.0, config.per_bin_sigma[b], size=n_orig)
+        else:
+            audio += rng.normal(0.0, config.gaussian_sigma_db, size=audio.shape)
 
         # 2. Per-bin uniform jitter
         audio += rng.uniform(
@@ -781,6 +789,9 @@ def train_xgboost(
     sample_weight: np.ndarray | None = None,
     augmentation: AugmentationConfig | None = None,
     n_audio: int = N_AUDIO_FEATURES,
+    n_estimators: int = 400,
+    max_depth: int = 6,
+    learning_rate: float = 0.05,
 ) -> object:
     """Train an XGBoost multi-output regressor.
 
@@ -794,6 +805,9 @@ def train_xgboost(
     *sample_weight* upweights specific training samples (used by reweighted
     training in E38 and confidence-weighted training in F6/E46).
 
+    *n_estimators*, *max_depth*, *learning_rate* (G5): XGBoost hyperparams,
+    configurable for tuning with augmented (larger) training data.
+
     Returns the fitted model.
     """
     import xgboost as xgb
@@ -802,10 +816,6 @@ def train_xgboost(
         X_train, Y_train = augment_audio_features(
             X_train, Y_train, augmentation, n_audio=n_audio,
         )
-        # Don't carry over sample_weight after augmentation — augmented
-        # copies get uniform weight.  The original samples' weights would
-        # need to be tiled, but for simplicity we drop custom weights when
-        # augmenting (they serve different purposes).
         if sample_weight is not None:
             log.warning(
                 "sample_weight dropped during augmentation — "
@@ -814,9 +824,9 @@ def train_xgboost(
             sample_weight = None
 
     model = xgb.XGBRegressor(
-        n_estimators=400,
-        max_depth=6,
-        learning_rate=0.05,
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        learning_rate=learning_rate,
         subsample=0.8,
         colsample_bytree=0.8,
         tree_method="hist",
@@ -1245,6 +1255,60 @@ def train_author_ensemble(
         author_col_start=author_col_start,
         n_author=N_AUTHOR,
     )
+
+
+# ---------------------------------------------------------------------------
+# G7 — Augmented model ensemble (average of multiple random-seed models)
+# ---------------------------------------------------------------------------
+
+
+class AugmentedEnsembleModel:
+    """Ensemble of models trained with different augmentation random seeds (G7).
+
+    Averaging predictions from models that saw different random noise creates
+    a more robust estimator — a standard technique in Kaggle competitions
+    and deep learning (dropout ensemble approximation).
+    """
+
+    def __init__(self, models: list[object]) -> None:
+        self.models = models
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        preds = [m.predict(X) for m in self.models]
+        return np.mean(preds, axis=0)
+
+
+def train_augmented_ensemble(
+    X_train: np.ndarray,
+    Y_train: np.ndarray,
+    augmentation: AugmentationConfig,
+    n_seeds: int = 3,
+    n_audio: int = N_AUDIO_FEATURES,
+    late_fusion: bool = True,
+    alpha: float = 0.7,
+) -> AugmentedEnsembleModel:
+    """Train an ensemble of augmented models with different random seeds."""
+    models = []
+    base_seed = augmentation.seed
+    for i in range(n_seeds):
+        aug_i = AugmentationConfig(
+            gaussian_sigma_db=augmentation.gaussian_sigma_db,
+            per_bin_uniform_db=augmentation.per_bin_uniform_db,
+            smooth_prob=augmentation.smooth_prob,
+            n_copies=augmentation.n_copies,
+            seed=base_seed + i,
+            per_bin_sigma=augmentation.per_bin_sigma,
+        )
+        if late_fusion:
+            m = train_late_fusion(
+                X_train, Y_train, alpha=alpha,
+                n_audio=n_audio, augmentation=aug_i,
+            )
+        else:
+            m = train_xgboost(X_train, Y_train, augmentation=aug_i, n_audio=n_audio)
+        log.info("ensemble member %d/%d trained (seed=%d)", i + 1, n_seeds, aug_i.seed)
+        models.append(m)
+    return AugmentedEnsembleModel(models)
 
 
 # ---------------------------------------------------------------------------

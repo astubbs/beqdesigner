@@ -53,6 +53,13 @@ class ExperimentConfig:
     downstream_loss_training: bool = False  # F9
     use_author_ensemble: bool = False       # F12
     music_filter: bool = False              # F4
+    # G5: XGBoost hyperparameters
+    n_estimators: int = 400
+    max_depth: int = 6
+    learning_rate: float = 0.05
+    # G7: augmented ensemble
+    use_augmented_ensemble: bool = False
+    n_ensemble_seeds: int = 3
 
     @property
     def label(self) -> str:
@@ -103,7 +110,7 @@ EXPERIMENTS: list[ExperimentConfig] = [
     # F12: Per-author ensemble
     ExperimentConfig("F12-ensemble", use_author_ensemble=True),
 
-    # Best combos (F1 + F2, F1 + F3, F1 + F2 + F3)
+    # F-series combos (used σ=1.5, not optimal — kept for reference)
     ExperimentConfig(
         "F1+F2",
         augmentation=AugmentationConfig(gaussian_sigma_db=1.5),
@@ -121,6 +128,67 @@ EXPERIMENTS: list[ExperimentConfig] = [
     ),
 ]
 
+# Shorthand for the optimal augmentation config.
+_AUG_05 = AugmentationConfig(gaussian_sigma_db=0.5, per_bin_uniform_db=1.0)
+
+# G-series: combinations and tuning after F1 success.
+G_EXPERIMENTS: list[ExperimentConfig] = [
+    # Baseline + F1 reference (for comparison within G-series run)
+    ExperimentConfig("Baseline"),
+    ExperimentConfig("F1-s0.5", augmentation=_AUG_05),
+
+    # --- G1: Combos with correct sigma (σ=0.5) ---
+    ExperimentConfig("G1a-F1+F2", augmentation=_AUG_05,
+                     audio_config=AudioFeatureConfig(use_option_b=True)),
+    ExperimentConfig("G1b-F1+F3", augmentation=_AUG_05,
+                     audio_config=AudioFeatureConfig(use_absolute_dbfs=True)),
+    ExperimentConfig("G1c-F1+F7", augmentation=_AUG_05,
+                     use_rolloff_cluster=True, n_clusters=8),
+    ExperimentConfig("G1d-F1+F2+F3", augmentation=_AUG_05,
+                     audio_config=AudioFeatureConfig(use_option_b=True, use_absolute_dbfs=True)),
+    ExperimentConfig("G1e-F1+F2+F7", augmentation=_AUG_05,
+                     audio_config=AudioFeatureConfig(use_option_b=True),
+                     use_rolloff_cluster=True, n_clusters=8),
+    ExperimentConfig("G1f-F1+F3+F7", augmentation=_AUG_05,
+                     audio_config=AudioFeatureConfig(use_absolute_dbfs=True),
+                     use_rolloff_cluster=True, n_clusters=8),
+    ExperimentConfig("G1g-kitchen-sink", augmentation=_AUG_05,
+                     audio_config=AudioFeatureConfig(use_option_b=True, use_absolute_dbfs=True),
+                     use_rolloff_cluster=True, n_clusters=8),
+
+    # --- G2: Alpha sweep with F1(σ=0.5) ---
+    ExperimentConfig("G2a-a0.5", augmentation=_AUG_05, alpha=0.5),
+    ExperimentConfig("G2b-a0.6", augmentation=_AUG_05, alpha=0.6),
+    # α=0.7 is F1-s0.5 above
+    ExperimentConfig("G2d-a0.8", augmentation=_AUG_05, alpha=0.8),
+    ExperimentConfig("G2e-a0.9", augmentation=_AUG_05, alpha=0.9),
+
+    # --- G3: Early fusion + augmentation ---
+    ExperimentConfig("G3a-early", augmentation=_AUG_05, late_fusion=False),
+
+    # --- G4: Fine-grained sigma sweep ---
+    ExperimentConfig("G4a-s0.25", augmentation=AugmentationConfig(gaussian_sigma_db=0.25, per_bin_uniform_db=0.5)),
+    ExperimentConfig("G4b-s0.3", augmentation=AugmentationConfig(gaussian_sigma_db=0.3, per_bin_uniform_db=0.6)),
+    ExperimentConfig("G4c-s0.4", augmentation=AugmentationConfig(gaussian_sigma_db=0.4, per_bin_uniform_db=0.8)),
+    # σ=0.5 is F1-s0.5 above
+    ExperimentConfig("G4e-s0.6", augmentation=AugmentationConfig(gaussian_sigma_db=0.6, per_bin_uniform_db=1.2)),
+    ExperimentConfig("G4f-s0.75", augmentation=AugmentationConfig(gaussian_sigma_db=0.75, per_bin_uniform_db=1.5)),
+
+    # --- G5: XGBoost hyperparameter tuning (early fusion to isolate effect) ---
+    ExperimentConfig("G5a-600t", augmentation=_AUG_05, late_fusion=False, n_estimators=600),
+    ExperimentConfig("G5b-800t", augmentation=_AUG_05, late_fusion=False, n_estimators=800),
+    ExperimentConfig("G5c-d8", augmentation=_AUG_05, late_fusion=False, max_depth=8),
+    ExperimentConfig("G5d-lr03", augmentation=_AUG_05, late_fusion=False, learning_rate=0.03),
+    ExperimentConfig("G5e-600t-d8-lr03", augmentation=_AUG_05, late_fusion=False,
+                     n_estimators=600, max_depth=8, learning_rate=0.03),
+
+    # --- G7: Augmented ensemble ---
+    ExperimentConfig("G7a-ens3", augmentation=_AUG_05,
+                     use_augmented_ensemble=True, n_ensemble_seeds=3),
+    ExperimentConfig("G7b-ens5", augmentation=_AUG_05,
+                     use_augmented_ensemble=True, n_ensemble_seeds=5),
+]
+
 
 # ---------------------------------------------------------------------------
 # CSV output
@@ -131,17 +199,7 @@ _CSV_PATH = Path(os.environ.get(
 ))
 
 
-def _write_csv(rows: list[dict]) -> None:
-    """Write results to CSV (overwrite each run)."""
-    _CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        return
-    fieldnames = list(rows[0].keys())
-    with _CSV_PATH.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-    log.info("CSV written to %s (%d rows)", _CSV_PATH, len(rows))
+# _write_csv moved to _write_csv_to (takes path param) — defined in harness below.
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +327,26 @@ def _train_model(
     if exp.use_author_ensemble:
         return train_author_ensemble(X_train, Y_train, entries_train)
 
+    # G7: augmented ensemble (multiple random seeds, averaged)
+    if exp.use_augmented_ensemble and exp.augmentation:
+        from model.auto_beq_nn import train_augmented_ensemble
+        return train_augmented_ensemble(
+            X_train, Y_train, exp.augmentation,
+            n_seeds=exp.n_ensemble_seeds,
+            n_audio=n_audio,
+            late_fusion=exp.late_fusion,
+            alpha=exp.alpha,
+        )
+
     aug = exp.augmentation
+    xgb_kwargs = {}
+    if exp.n_estimators != 400:
+        xgb_kwargs["n_estimators"] = exp.n_estimators
+    if exp.max_depth != 6:
+        xgb_kwargs["max_depth"] = exp.max_depth
+    if exp.learning_rate != 0.05:
+        xgb_kwargs["learning_rate"] = exp.learning_rate
+
     if exp.late_fusion:
         return train_late_fusion(
             X_train, Y_train, alpha=exp.alpha,
@@ -279,6 +356,7 @@ def _train_model(
         X_train, Y_train,
         augmentation=aug, n_audio=n_audio,
         sample_weight=sample_weight,
+        **xgb_kwargs,
     )
 
 
@@ -287,21 +365,12 @@ def _train_model(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    os.environ.get("AUTO_BEQ_SKIP_F_EXPERIMENTS", "0") == "1",
-    reason="AUTO_BEQ_SKIP_F_EXPERIMENTS=1",
-)
-def test_f_experiment_comparison(tmp_path, caplog):
-    """Run all F-experiment variants against baseline on real-audio validation.
-
-    This is the unified comparison harness. It trains each experiment variant
-    on the full synthetic catalogue (minus held-out validation titles) and
-    evaluates on real-audio WAV files discovered in the cache.
-
-    Results are written to CSV for downstream reporting.
-    """
-    caplog.set_level(logging.INFO, logger="auto_beq_f_experiments")
-
+def _run_experiment_batch(
+    experiments: list[ExperimentConfig],
+    batch_name: str = "EXPERIMENT",
+    csv_path: Path = _CSV_PATH,
+) -> None:
+    """Shared harness: train + evaluate a batch of experiment configs."""
     from model.auto_beq import DEFAULT_GRID
     from model.auto_beq_catalogue import _fetch_or_cache
     from model.auto_beq_metadata import fetch_metadata_batch, load_cache
@@ -309,7 +378,6 @@ def test_f_experiment_comparison(tmp_path, caplog):
 
     from spike._auto_beq_helpers import discover_wav_catalogue_pairs
 
-    # --- Discover validation WAVs ---
     pairs = discover_wav_catalogue_pairs()
     if not pairs:
         pytest.skip("No WAV files found in cache")
@@ -317,23 +385,18 @@ def test_f_experiment_comparison(tmp_path, caplog):
     val_tmdb_ids = {p["tmdb_id"] for p in pairs if p.get("tmdb_id")}
     log.info("validation WAVs: %d files, %d unique tmdb IDs", len(pairs), len(val_tmdb_ids))
 
-    # --- Load & prepare catalogue ---
     catalogue = _fetch_or_cache()
     deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
     tmdb_cache = load_cache()
     tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
 
-    # Hold out validation titles from training.
     train_entries = [
         e for e in deduped
         if str(e.get("theMovieDB", "")).strip() not in val_tmdb_ids
     ]
     log.info("training entries: %d (held out %d)", len(train_entries), len(deduped) - len(train_entries))
 
-    # --- Pre-build feature matrices, cached by AudioFeatureConfig ---
-    # Most experiments share DEFAULT_AUDIO_CONFIG (9-dim audio).  Only F2,
-    # F3, F11, and combos have different configs.  Cache avoids rebuilding
-    # identical matrices 12+ times.
+    # Feature cache by AudioFeatureConfig (avoids rebuilding identical matrices).
     feature_cache: dict[AudioFeatureConfig, tuple] = {}
 
     def _get_features(config: AudioFeatureConfig):
@@ -344,18 +407,12 @@ def test_f_experiment_comparison(tmp_path, caplog):
             feature_cache[config] = (Xt, Yt, Xv, Yv, ve)
         return feature_cache[config]
 
-    # Pre-warm the most common configs.
-    unique_configs = {exp.audio_config for exp in EXPERIMENTS}
+    unique_configs = {exp.audio_config for exp in experiments}
     log.info("pre-building features for %d unique AudioFeatureConfigs...", len(unique_configs))
     for cfg in unique_configs:
         _get_features(cfg)
 
-    # --- Run each experiment (parallelised where possible) ---
-
     def _run_one(exp: ExperimentConfig) -> tuple[ExperimentConfig, list[dict], float]:
-        """Train + evaluate a single experiment.  Thread-safe: XGBoost
-        releases the GIL during tree building, so threads give real
-        parallelism on the training step."""
         t0 = time.time()
         config = exp.audio_config
         n_audio = config.n_total_audio
@@ -367,7 +424,6 @@ def test_f_experiment_comparison(tmp_path, caplog):
         if len(X_val) == 0:
             return exp, [], time.time() - t0
 
-        # F7: append rolloff cluster one-hot features.
         if exp.use_rolloff_cluster:
             from model.auto_beq_nn import cluster_ids_to_onehot, compute_rolloff_clusters
 
@@ -386,14 +442,11 @@ def test_f_experiment_comparison(tmp_path, caplog):
     all_csv_rows: list[dict] = []
     summary_lines: list[str] = []
 
-    # Parallelise: XGBoost uses all cores for one model, so limit
-    # concurrency to 2 to avoid over-subscription.  Still 2× faster
-    # than serial since evaluation and data prep overlap with training.
     max_workers = int(os.environ.get("AUTO_BEQ_F_WORKERS", "2"))
-    log.info("running %d experiments with max_workers=%d", len(EXPERIMENTS), max_workers)
+    log.info("running %d experiments with max_workers=%d", len(experiments), max_workers)
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_run_one, exp): exp for exp in EXPERIMENTS}
+        futures = {pool.submit(_run_one, exp): exp for exp in experiments}
         for future in as_completed(futures):
             exp, results, elapsed = future.result()
 
@@ -421,17 +474,52 @@ def test_f_experiment_comparison(tmp_path, caplog):
                     **r,
                 })
 
-    # --- Write CSV ---
-    _write_csv(all_csv_rows)
+    _write_csv_to(all_csv_rows, csv_path)
 
-    # --- Print summary ---
     print("\n" + "=" * 70)
-    print("F-EXPERIMENT COMPARISON SUMMARY")
+    print(f"{batch_name} COMPARISON SUMMARY")
     print("=" * 70)
-    for line in summary_lines:
+    for line in sorted(summary_lines):
         print(line)
     print("=" * 70)
-    print(f"CSV: {_CSV_PATH}")
+    print(f"CSV: {csv_path}")
+
+
+def _write_csv_to(rows: list[dict], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        return
+    fieldnames = list(rows[0].keys())
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    log.info("CSV written to %s (%d rows)", path, len(rows))
+
+
+@pytest.mark.skipif(
+    os.environ.get("AUTO_BEQ_SKIP_F_EXPERIMENTS", "0") == "1",
+    reason="AUTO_BEQ_SKIP_F_EXPERIMENTS=1",
+)
+def test_f_experiment_comparison(tmp_path, caplog):
+    """Run all F-experiment variants against baseline."""
+    caplog.set_level(logging.INFO, logger="auto_beq_f_experiments")
+    _run_experiment_batch(EXPERIMENTS, "F-EXPERIMENT", _CSV_PATH)
+
+
+_G_CSV_PATH = Path(os.environ.get(
+    "AUTO_BEQ_G_REPORT", ".pytest_cache/auto_beq_g_experiments.csv",
+))
+
+
+@pytest.mark.skipif(
+    os.environ.get("AUTO_BEQ_SKIP_F_EXPERIMENTS", "0") == "1",
+    reason="AUTO_BEQ_SKIP_F_EXPERIMENTS=1",
+)
+def test_g_experiment_comparison(tmp_path, caplog):
+    """Run G-series experiments: combinations and tuning after F1 success."""
+    caplog.set_level(logging.INFO, logger="auto_beq_f_experiments")
+    _run_experiment_batch(G_EXPERIMENTS, "G-EXPERIMENT", _G_CSV_PATH)
 
 
 # ---------------------------------------------------------------------------
