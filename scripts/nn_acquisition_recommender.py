@@ -18,6 +18,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -116,14 +117,50 @@ def _score_candidate(
     return score
 
 
+def _load_library_inventory(inventory_path: Path | None) -> set[str]:
+    """Read media_inventory.json and return tmdb IDs already in the library.
+
+    These titles are already owned (whether or not their WAV has been
+    extracted yet), so they should be excluded from acquisition recommendations.
+    """
+    if inventory_path is None:
+        # Default location next to the WAV cache.
+        beq_dir = Path.home() / "Downloads" / "beqdesigner"
+        inventory_path = beq_dir / "media_inventory.json"
+    if not inventory_path.exists():
+        print(
+            f"warning: media inventory not found at {inventory_path} — "
+            "recommendations will not exclude already-owned titles. "
+            "Run scripts/extract_lfe.py to refresh the inventory.",
+            file=sys.stderr,
+        )
+        return set()
+    data = json.loads(inventory_path.read_text())
+    library_tmdb = set()
+    for m in data.get("media", []):
+        if m.get("id_type") == "tmdb":
+            library_tmdb.add(m["id_value"])
+    print(
+        f"library inventory: {len(data.get('media', []))} files, "
+        f"{len(library_tmdb)} unique tmdb IDs already owned",
+        file=sys.stderr,
+    )
+    return library_tmdb
+
+
 def select_acquisitions(
     n: int = 50,
     catalogue=None,
     have_tmdb_ids: set[str] = None,
+    library_tmdb_ids: set[str] | None = None,
     per_author_cap_factor: float = 1.0,
 ) -> list[dict]:
     """Greedy bias-correcting selection of *n* acquisition candidates.
 
+    *have_tmdb_ids*: tmdb IDs we already have *extracted WAVs* for.
+    *library_tmdb_ids*: tmdb IDs already in the user's media library
+        (whether or not extracted yet).  Acquisition picks exclude both
+        sets — we don't recommend buying something you already own.
     *per_author_cap_factor*: limit per-author picks to ``cap_factor *
     catalogue_share * n``, with a floor of 2.  Set to 1.0 for stratified
     diversification, higher (e.g. 2.0) to allow more concentration on the
@@ -137,6 +174,11 @@ def select_acquisitions(
         from spike._auto_beq_helpers import discover_wav_catalogue_pairs
         pairs = discover_wav_catalogue_pairs()
         have_tmdb_ids = {p["tmdb_id"] for p in pairs if p.get("tmdb_id")}
+    if library_tmdb_ids is None:
+        library_tmdb_ids = _load_library_inventory(None)
+
+    # Combined exclude set: WAV cache + library inventory.
+    exclude_tmdb = have_tmdb_ids | library_tmdb_ids
 
     # Filter to trainable entries.
     trainable = [e for e in catalogue if e.get("filters")]
@@ -154,21 +196,26 @@ def select_acquisitions(
         title_key = str(e.get("title", "")).lower().strip()
         by_title[title_key].append(e)
 
-    # Currently held entries (matched by tmdb_id).
+    # Currently held entries: WAVs we have OR titles in the user's library.
+    held_entries = [
+        e for e in trainable
+        if str(e.get("theMovieDB", "")).strip() in exclude_tmdb
+    ]
+    held_titles = {
+        str(e.get("title", "")).lower().strip() for e in held_entries
+    }
+    # have_entries (WAVs only) is what we use for the bias starting point.
     have_entries = [
         e for e in trainable
         if str(e.get("theMovieDB", "")).strip() in have_tmdb_ids
     ]
-    have_titles = {
-        str(e.get("title", "")).lower().strip() for e in have_entries
-    }
 
     # Candidate pool: pick the highest-quality format entry per missing title.
-    # That way "acquiring" a title means getting one specific source variant.
+    # "Missing" means not in WAV cache AND not in library inventory.
     candidates: list[tuple[dict, int]] = []
     for title_key, group in by_title.items():
-        if title_key in have_titles:
-            continue  # already in cache
+        if title_key in held_titles:
+            continue  # already in cache OR already in library
         if not group:
             continue
         # Pick the best format variant for acquisition.
@@ -179,8 +226,9 @@ def select_acquisitions(
         candidates.append((best, n_authors))
 
     print(
-        f"candidates: {len(candidates)} unique missing titles "
-        f"(vs {len(have_entries)} we have)",
+        f"candidates: {len(candidates)} truly missing titles "
+        f"(WAV cache: {len(have_entries)} entries, "
+        f"library: {len(library_tmdb_ids)} tmdb IDs)",
         file=sys.stderr,
     )
 
@@ -269,7 +317,7 @@ def select_acquisitions(
     return selected
 
 
-def generate_report(n: int, output=None) -> None:
+def generate_report(n: int, output=None, inventory_path: Path | None = None) -> None:
     pr = lambda s="": print(s, file=output or sys.stdout)
 
     from model.auto_beq_catalogue import _fetch_or_cache
@@ -278,9 +326,11 @@ def generate_report(n: int, output=None) -> None:
     catalogue = _fetch_or_cache()
     pairs = discover_wav_catalogue_pairs()
     have_tmdb_ids = {p["tmdb_id"] for p in pairs if p.get("tmdb_id")}
+    library_tmdb_ids = _load_library_inventory(inventory_path)
 
     selected = select_acquisitions(
         n=n, catalogue=catalogue, have_tmdb_ids=have_tmdb_ids,
+        library_tmdb_ids=library_tmdb_ids,
     )
 
     pr(f"# Acquisition Recommendations (top {len(selected)})")
@@ -289,8 +339,15 @@ def generate_report(n: int, output=None) -> None:
        "Each pick is the missing title that would most close the gap between "
        "the local WAV cache distribution and the full catalogue distribution.")
     pr()
-    pr(f"**Current cache**: {len(have_tmdb_ids)} unique tmdb IDs / "
+    pr(f"**Current WAV cache**: {len(have_tmdb_ids)} unique tmdb IDs / "
        f"{len(pairs)} WAV files")
+    if library_tmdb_ids:
+        pr(f"**Media library inventory**: {len(library_tmdb_ids)} unique "
+           f"tmdb IDs already owned (excluded from recommendations)")
+    else:
+        pr(f"**Media library inventory**: not available — recommendations "
+           f"may include titles you already own. Run `scripts/extract_lfe.py` "
+           f"to refresh `media_inventory.json`.")
     pr(f"**Catalogue size**: {len([e for e in catalogue if e.get('filters')]):,} "
        f"trainable entries")
     pr()
@@ -415,14 +472,17 @@ def main():
     parser.add_argument("-n", "--count", type=int, default=50,
                         help="Number of titles to recommend (default 50)")
     parser.add_argument("-o", "--output", type=Path, default=None)
+    parser.add_argument("--inventory", type=Path, default=None,
+                        help="Path to media_inventory.json (default: "
+                             "~/Downloads/beqdesigner/media_inventory.json)")
     args = parser.parse_args()
 
     if args.output:
         with args.output.open("w") as f:
-            generate_report(args.count, output=f)
+            generate_report(args.count, output=f, inventory_path=args.inventory)
         print(f"Report written to {args.output}")
     else:
-        generate_report(args.count)
+        generate_report(args.count, inventory_path=args.inventory)
 
 
 if __name__ == "__main__":

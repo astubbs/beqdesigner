@@ -16,7 +16,10 @@ Directory structure (managed by the script):
     beq-dir/
       .extract_config.json          # saved media roots (auto-created on first run)
       beq_catalogue.json            # BEQ catalogue (auto-fetched from GitHub, freshness-checked)
-      missing_ids.txt               # media files without DB ID tags
+      missing_ids.txt               # media files without DB ID tags (can't identify)
+      media_inventory.json          # every media file with a DB ID, whether
+                                    # catalogue-matched or not (used by the
+                                    # acquisition recommender to dedupe)
       wav-cache/
         Movies/A/Alien (1979) [tmdb-348]/Alien (1979) [tmdb-348].lfe-1000hz.wav
         TV/E/86 - Eighty Six (2021) [tvdb-378609]/Season 01/86 - Eighty Six S01E02 [tvdb-378609].lfe-1000hz.wav
@@ -157,10 +160,18 @@ def build_catalogue_index(catalogue: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def discover_media(roots: list[Path], catalogue_index: dict) -> tuple[list[dict], list[str]]:
+def discover_media(
+    roots: list[Path], catalogue_index: dict,
+) -> tuple[list[dict], list[str], list[dict]]:
     """Find .mkv files that have a DB ID tag AND a BEQ catalogue match.
 
-    Returns (results, missing_ids). Results sorted breadth-first.
+    Returns (results, missing_ids, all_media_with_ids).
+    - results: only catalogue-matched media (extractable)
+    - missing_ids: media files without any DB ID tag
+    - all_media_with_ids: every media file that had a DB ID, whether
+      catalogue-matched or not (used by acquisition recommender to know
+      what's already in the library)
+    Results sorted breadth-first.
     """
     by_tmdb = catalogue_index["by_tmdb"]
     by_title_year = catalogue_index["by_title_year"]
@@ -168,6 +179,7 @@ def discover_media(roots: list[Path], catalogue_index: dict) -> tuple[list[dict]
     results = []
     missing_ids = []
     no_catalogue = []
+    all_with_ids: list[dict] = []
     seen_keys = set()
 
     for root in roots:
@@ -217,6 +229,20 @@ def discover_media(roots: list[Path], catalogue_index: dict) -> tuple[list[dict]
             elif title and year:
                 if (title.lower().strip(), year) in by_title_year:
                     has_catalogue = True
+
+            # Record every media file with a DB ID, whether catalogue-matched
+            # or not.  Used by the acquisition recommender to know what's
+            # already in the library.
+            all_with_ids.append({
+                "path": str(f),
+                "media_id": media_id,
+                "id_type": id_type,
+                "id_value": id_value,
+                "title": title,
+                "year": year,
+                "has_catalogue": has_catalogue,
+            })
+
             if not has_catalogue:
                 no_catalogue.append(f"{media_id} {title} ({year}) — {f.name}")
                 continue
@@ -264,7 +290,7 @@ def discover_media(roots: list[Path], catalogue_index: dict) -> tuple[list[dict]
             log.info("  ... and %d more", len(no_catalogue) - 10)
 
     results = _breadth_first_sort(results)
-    return results, missing_ids
+    return results, missing_ids, all_with_ids
 
 
 def _breadth_first_sort(media: list[dict]) -> list[dict]:
@@ -578,13 +604,30 @@ def main(argv: list[str] | None = None):
     cat_index = build_catalogue_index(catalogue)
 
     # Discover media.
-    media, missing_ids = discover_media(media_roots, cat_index)
+    media, missing_ids, all_with_ids = discover_media(media_roots, cat_index)
     log.info("found %d extractable titles (sorted by size, smallest first)", len(media))
 
     if missing_ids:
         missing_file = beq_dir / "missing_ids.txt"
         missing_file.write_text("\n".join(sorted(set(missing_ids))) + "\n")
         log.info("missing TMDb IDs written to %s", missing_file)
+
+    # Persist the full media inventory (every file with a DB ID, whether
+    # catalogue-matched or not).  Used by scripts/nn_acquisition_recommender.py
+    # to filter out titles already in the library.
+    inventory_file = beq_dir / "media_inventory.json"
+    inventory_file.write_text(json.dumps({
+        "scanned_at": int(time.time()),
+        "media_roots": [str(r) for r in media_roots],
+        "n_total_with_ids": len(all_with_ids),
+        "n_catalogue_matched": sum(1 for m in all_with_ids if m["has_catalogue"]),
+        "media": all_with_ids,
+    }, indent=2) + "\n")
+    log.info(
+        "media inventory written to %s (%d files, %d catalogue-matched)",
+        inventory_file, len(all_with_ids),
+        sum(1 for m in all_with_ids if m["has_catalogue"]),
+    )
 
     if args.limit > 0:
         media = media[:args.limit]
