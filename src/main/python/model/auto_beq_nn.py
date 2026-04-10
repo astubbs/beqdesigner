@@ -1350,7 +1350,17 @@ def predict_alpha_from_metadata(
     indices are returned for diagnostic / per-sample logging.
     """
     X_no_author = strip_author_columns(X_full, n_audio)
-    probs = classifier.predict_proba(X_no_author)  # shape (n, N_AUTHOR)
+    raw_probs = classifier.predict_proba(X_no_author)  # shape (n, n_classes)
+
+    # XGBClassifier drops absent classes from training.  We need probs of
+    # shape (n, N_AUTHOR) aligned with _AUTHOR_VOCAB.  Pad missing columns
+    # with zero (those authors were never seen in training).
+    n_samples = raw_probs.shape[0]
+    probs = np.zeros((n_samples, N_AUTHOR), dtype=np.float64)
+    classes = list(getattr(classifier, "classes_", range(raw_probs.shape[1])))
+    for col_idx, class_label in enumerate(classes):
+        if 0 <= int(class_label) < N_AUTHOR:
+            probs[:, int(class_label)] = raw_probs[:, col_idx]
 
     author_alphas = np.array(
         [PER_AUTHOR_ALPHA.get(a, DEFAULT_PER_AUTHOR_ALPHA) for a in _AUTHOR_VOCAB],
