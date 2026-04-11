@@ -1,8 +1,10 @@
 # Auto-BEQ experiment log
 
 **Companion docs:**
-- [`auto_beq.md`](auto_beq.md) — vision + overall design
+- [`auto_beq.md`](auto_beq.md) — vision and overall design
 - [`auto_beq_plan.md`](auto_beq_plan.md) — current iteration plan
+- [`auto_beq_ml_experiments.md`](auto_beq_ml_experiments.md) — ML model experiment design
+- [`auto_beq_nn_future_experiments.md`](auto_beq_nn_future_experiments.md) — forward-looking ideas
 
 Running record of what we've tried, what worked, and why. This is
 append-only. Entries are dated (YYYY-MM-DD). Source of truth for
@@ -16,6 +18,74 @@ E15c — wrong codec), Mad Max: Fury Road (MM), John Wick (JW).
 Expanded corpus (E17+): 63 titles, 132 files from TV + kids' movies.
 See E17 baseline for full title list. Current sweep fixtures (WEBDL
 EAC3 5.1).
+
+---
+
+## Experiment families overview
+
+**Start here if you're new to the project.** This section is a
+navigation aid for the detailed per-experiment entries below.
+
+### Naming convention
+
+Every experiment has a permanent sequential `E<N>` identifier (E1, E2,
+…, E77+).  Experiments that share a research theme are grouped into a
+**family** with a letter prefix (F, G, H, I, J).  Letter-prefix IDs
+like `F1` or `G8` are convenience aliases used in commit messages and
+ad-hoc discussion — they always map to one or more `E<N>` IDs in this
+log.
+
+For example: `F1` = E41, `G8` = E59, `I1b` = E69 (variant b).  A
+single letter-ID can cover multiple experiments when the same idea is
+swept across sub-variants (e.g. `G2a` through `G2e` for the alpha
+sweep = E54a–E54e).
+
+### Family map
+
+| Family | E-range | Theme | Status | Key result |
+|---|---|---|---|---|
+| — | E1–E6 | Procedural heuristics (shelf + PEQ iterative fitter, rolloff classifier, advisor abstraction) | Dead end | Overfit to 3 fixtures; fitter math proven (E2, E6) |
+| — | E7–E13 | LLM-based tier classification (Ollama llama3.1:8b) | Dead end | Small LLMs too weak for numeric calibration |
+| — | E14–E17 | Pure-measurement advisor (deficit + slope extension, topology classes) | Kept | 41% non-FAIL ceiling; topology classifier adopted |
+| — | E18–E22 | Spectrum extraction (chunked STFT, blended Welch+chunked) | Adopted | `blend-a0.7-P90` default extraction strategy |
+| — | E25–E40 | Initial ML baseline (XGBoost, metadata encoding, late fusion, one-hot type) | Adopted | 2.45 dB on 220 titles (late fusion α=0.7 + one-hot) |
+| **F** | E41–E52 | NN accuracy improvements (augmentation, Option B, absolute dBFS, clustering, …) | Partial — F1 kept | **F1 = synthetic feature augmentation σ=0.5** was the breakthrough (-0.73 dB) |
+| **G** | E53–E59 | Combinations and hyperparameter tuning (alpha sweep, sigma sweep, XGB params, ensembles, per-author α lookup) | Adopted | **G8 per-author α** hits the oracle ceiling; G4b σ=0.3 is the best single-α |
+| **H** | E60–E67 | Multi-author resolution (response averaging, marginalization, quality filtering, response curve prediction) | Dead end | Key lesson: *multi-author disagreement is signal, not noise* — averaging regresses |
+| **I** | E68–E70 | Automated author selection via metadata classifier (hard / soft-blend / top-3) | Adopted | **I1b soft-blend is the production model** — 2.37 dB, fully automated, no user input |
+| **J** | (tools, no E-numbers) | Data acquisition tooling (bias analysis, acquisition recommender) | Tools | Scripts live in `scripts/nn_cache_bias_report.py`, `scripts/nn_acquisition_recommender.py` — not model experiments |
+| — | E71–E74 | 932-WAV scale-up re-validation | Current baseline | Honest measurement on the full catalogue distribution; rankings preserved, numbers +0.3–0.5 dB |
+
+### Current production model
+
+**`I1b-soft-blend`** — automated author selection via metadata classifier,
+soft-blended per-author alpha at inference.
+
+- **Mean loss**: 2.37 dB on 932 real-audio validation titles (E74)
+- **Verdict**: 561 PASS / 232 MARGINAL / 157 FAIL (60% PASS, 85%
+  within practical tolerance)
+- **User input required**: **none** — the model uses only the film's
+  metadata to pick the right author-specific blend
+- **Code**: `LateFusionModel` + `train_author_classifier` +
+  `predict_alpha_from_metadata(method="soft_blend")` in
+  `src/main/python/model/auto_beq_nn.py`
+
+**`G8-perauth`** is the oracle ceiling at 2.27 dB but requires a known
+author — use it only for catalogue titles where the author is known
+upstream (e.g. regenerating an existing catalogue entry).
+
+### Going deeper
+
+- **Chronological reading order**: sections are dated and roughly in
+  family order — E1–E40, then F (E41–E52), G (E53–E59), H (E60–E67),
+  I (E68–E70), scale-up (E71–E74).
+- **Progression table**: see `## Full experiment history (E1–E21)`
+  below for the pre-F milestones.
+- **F-series detail**: `## 2026-04-10: F-experiment batch (E41–E52)`
+- **G-series detail**: `## 2026-04-10: G-experiment batch (E53–E59)`
+- **H-series detail**: `## 2026-04-10: H-experiment batch (E60–E67)`
+- **I-series detail**: `## 2026-04-10: I-experiment batch (E68–E70)`
+- **Scale-up results**: `## 2026-04-11: Scale-up to 932-WAV validation set (E71–E74)`
 
 ---
 
