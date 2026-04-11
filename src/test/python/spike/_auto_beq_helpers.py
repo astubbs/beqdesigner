@@ -695,27 +695,158 @@ def load_measured(
 _ID_RE = __import__("re").compile(r"\[(tmdb|tvdb|imdb)-([^\]]+)\]")
 
 
+def _latest_wav_mtime(cache_root: Path) -> float:
+    """Return the max mtime across all WAV files in the cache, or 0.0."""
+    latest = 0.0
+    for p in cache_root.rglob("*.lfe-1000hz.wav"):
+        try:
+            m = p.stat().st_mtime
+            if m > latest:
+                latest = m
+        except OSError:
+            pass
+    return latest
+
+
+def ensure_analysis_reports_current(
+    repo_root: Path | None = None,
+    force: bool = False,
+) -> list[str]:
+    """Regenerate analysis reports when they're stale vs the WAV cache.
+
+    Checks ``docs/wav_cache_bias.md``, ``docs/acquisition_recommendations.md``
+    and ``docs/author_patterns.md`` against the max mtime of any WAV in
+    the cache.  Regenerates (via subprocess) any report whose mtime is
+    older than the newest WAV.
+
+    Called at the start of experiment harness runs so downstream analysis
+    docs always reflect the current training set without a manual step.
+
+    Returns the list of reports that were (re)generated — useful for
+    logging and tests.
+    """
+    import subprocess
+
+    if repo_root is None:
+        repo_root = Path(__file__).resolve().parents[4]
+
+    cache_root = wav_cache_dir()
+    cache_mtime = _latest_wav_mtime(cache_root)
+    if cache_mtime == 0.0:
+        log.info("WAV cache is empty; skipping analysis report refresh")
+        return []
+
+    reports = [
+        (
+            repo_root / "docs" / "wav_cache_bias.md",
+            repo_root / "scripts" / "nn_cache_bias_report.py",
+            ["-o"],
+        ),
+        (
+            repo_root / "docs" / "author_patterns.md",
+            repo_root / "scripts" / "nn_author_pattern_report.py",
+            ["-o"],
+        ),
+        (
+            repo_root / "docs" / "acquisition_recommendations.md",
+            repo_root / "scripts" / "nn_acquisition_recommender.py",
+            ["-n", "50", "-o"],
+        ),
+    ]
+
+    regenerated: list[str] = []
+    for report_path, script_path, extra_args in reports:
+        stale = (
+            force
+            or not report_path.exists()
+            or report_path.stat().st_mtime < cache_mtime
+        )
+        if not stale:
+            log.debug("report up to date: %s", report_path.name)
+            continue
+
+        log.info("regenerating stale report: %s", report_path.name)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            "python3", str(script_path),
+            *extra_args, str(report_path),
+        ]
+        env = {**os.environ}
+        env.setdefault(
+            "PYTHONPATH",
+            f"{repo_root / 'src/main/python'}:{repo_root / 'src/test/python'}",
+        )
+        env.setdefault("QT_QPA_PLATFORM", "offscreen")
+        try:
+            subprocess.run(
+                cmd, check=True, env=env, cwd=str(repo_root),
+                capture_output=True, text=True, timeout=120,
+            )
+            regenerated.append(report_path.name)
+        except subprocess.CalledProcessError as e:
+            log.warning(
+                "failed to regenerate %s: %s\nstderr:\n%s",
+                report_path.name, e, e.stderr[-500:] if e.stderr else "",
+            )
+        except subprocess.TimeoutExpired:
+            log.warning("timeout regenerating %s", report_path.name)
+
+    return regenerated
+
+
 def wav_cache_dir() -> Path:
     """Return the portable WAV cache directory.
 
-    Single source of truth for where extracted LFE WAVs live. Reads from
-    ``wav_cache_dir`` in settings.json, falls back to
+    Single source of truth for where extracted LFE WAVs live.  Resolution
+    order: ``BEQ_WAV_CACHE`` env var → ``wav_cache_dir`` in
+    ``~/.config/beqdesigner/settings.json`` → default
     ``~/Downloads/beqdesigner/wav-cache``.
+
+    **Fail-fast semantics**: if an explicit path is configured (env var
+    or settings.json) and it does not exist, raise ``FileNotFoundError``
+    immediately rather than silently creating an empty directory.  This
+    prevents the common footgun of a stale mount or wrong path producing
+    a silent "0 WAVs" result that masquerades as an empty cache.  Only
+    the default fallback path is auto-created.
     """
+    explicit_source: str | None = None
     raw = os.environ.get("BEQ_WAV_CACHE")
-    if not raw:
+    if raw:
+        explicit_source = "BEQ_WAV_CACHE env var"
+    else:
         cfg_path = Path.home() / ".config" / "beqdesigner" / "settings.json"
         if cfg_path.exists():
             with cfg_path.open() as _f:
                 try:
                     data = __import__("json").load(_f)
                     raw = data.get("wav_cache_dir")
+                    if raw:
+                        explicit_source = f"wav_cache_dir in {cfg_path}"
                 except Exception:
                     pass
     if not raw:
         raw = str(Path.home() / "Downloads" / "beqdesigner" / "wav-cache")
+
     path = Path(raw).expanduser()
-    path.mkdir(parents=True, exist_ok=True)
+
+    if explicit_source is not None:
+        # User explicitly configured this path — fail fast if it doesn't
+        # exist (e.g. network mount dropped, typo in the path).
+        if not path.exists():
+            raise FileNotFoundError(
+                f"configured WAV cache does not exist: {path} "
+                f"(from {explicit_source}). "
+                f"Check that the path is correct and, if on a network "
+                f"mount, that the mount is active.",
+            )
+        if not path.is_dir():
+            raise NotADirectoryError(
+                f"configured WAV cache path is not a directory: {path} "
+                f"(from {explicit_source}).",
+            )
+    else:
+        # Default fallback path — auto-create for first-time users.
+        path.mkdir(parents=True, exist_ok=True)
     return path
 
 

@@ -557,7 +557,22 @@ def _run_experiment_batch(
     from model.auto_beq_metadata import fetch_metadata_batch, load_cache
     from model.auto_beq_nn import deduplicate_by_title
 
-    from spike._auto_beq_helpers import discover_wav_catalogue_pairs
+    from spike._auto_beq_helpers import (
+        discover_wav_catalogue_pairs,
+        ensure_analysis_reports_current,
+    )
+
+    # Auto-refresh stale analysis reports (bias, author patterns,
+    # acquisition) before running experiments.  Skipped if opted out via
+    # env var (e.g. for tight iteration loops where the reports are
+    # intentionally stale).
+    if os.environ.get("AUTO_BEQ_SKIP_REPORT_REFRESH", "0") != "1":
+        regenerated = ensure_analysis_reports_current()
+        if regenerated:
+            log.info(
+                "refreshed %d stale analysis report(s): %s",
+                len(regenerated), ", ".join(regenerated),
+            )
 
     pairs = discover_wav_catalogue_pairs()
     if not pairs:

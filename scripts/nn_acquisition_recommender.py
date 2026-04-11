@@ -126,12 +126,25 @@ def _load_library_inventory(
     be excluded from acquisition recommendations.  The missing-ID list is
     surfaced separately so the user knows which library files need
     their tmdb tags fixed.
+
+    **Fail-fast semantics**: if the caller explicitly passes an
+    ``inventory_path``, the file must exist — a stale or wrong path
+    raises ``FileNotFoundError`` immediately.  Only the default fallback
+    path (``~/Downloads/beqdesigner/media_inventory.json``) is tolerated
+    as missing (first-time users won't have run the extractor yet).
     """
+    explicit = inventory_path is not None
     if inventory_path is None:
         # Default location next to the WAV cache.
         beq_dir = Path.home() / "Downloads" / "beqdesigner"
         inventory_path = beq_dir / "media_inventory.json"
     if not inventory_path.exists():
+        if explicit:
+            raise FileNotFoundError(
+                f"configured media inventory does not exist: {inventory_path}. "
+                f"Check that the path is correct and, if on a network mount, "
+                f"that the mount is active.",
+            )
         print(
             f"warning: media inventory not found at {inventory_path} — "
             "recommendations will not exclude already-owned titles. "

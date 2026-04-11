@@ -89,10 +89,23 @@ def _bias_table(
 
 
 def _load_inventory(inventory_path: Path | None) -> dict | None:
-    """Load media_inventory.json if present.  Returns None if absent."""
+    """Load media_inventory.json if present.
+
+    **Fail-fast semantics**: if the caller explicitly passes an
+    ``inventory_path``, the file must exist.  Only the default fallback
+    path (``~/Downloads/beqdesigner/media_inventory.json``) is tolerated
+    as missing (returns ``None``).
+    """
+    explicit = inventory_path is not None
     if inventory_path is None:
         inventory_path = Path.home() / "Downloads" / "beqdesigner" / "media_inventory.json"
     if not inventory_path.exists():
+        if explicit:
+            raise FileNotFoundError(
+                f"configured media inventory does not exist: {inventory_path}. "
+                f"Check that the path is correct and, if on a network mount, "
+                f"that the mount is active.",
+            )
         return None
     return json.loads(inventory_path.read_text())
 
