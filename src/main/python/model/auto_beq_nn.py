@@ -2010,20 +2010,84 @@ def train_augmented_ensemble(
 # ---------------------------------------------------------------------------
 
 
-def save_model(model: object, path: str) -> None:
-    """Serialise a trained model to disk via joblib."""
-    import joblib
+_XGB_NATIVE_MARKER = b"XGB_NATIVE:"
 
+
+def save_model(model: object, path: str) -> None:
+    """Serialise a trained model to disk.
+
+    **Plain XGBRegressor** → xgboost's native UBJ format (version-portable
+    binary). The canonical path written by the caller is the ``.joblib``
+    file, which becomes a small marker text file pointing at a sibling
+    ``.ubj`` containing the actual weights. Sidesteps Python pickle and
+    C-extension ``__setstate__``, which means torch + xgboost can coexist
+    in the same venv without the ABI conflict that segfaulted
+    `test_trained_advisor_pipeline` after a whisper pip install.
+
+    **Any other model type** (LateFusionModel, ensembles, PyTorch
+    modules) → joblib pickle as before.
+    """
+    from pathlib import Path as _Path
+
+    # Late import to avoid a top-of-file xgboost hit for callers who
+    # never touch XGBRegressor.
+    try:
+        from xgboost import XGBRegressor
+    except ImportError:
+        XGBRegressor = None  # type: ignore[assignment]
+
+    if XGBRegressor is not None and isinstance(model, XGBRegressor):
+        marker = _Path(path)
+        native = marker.with_suffix(".ubj")
+        model.save_model(str(native))
+        marker.write_bytes(_XGB_NATIVE_MARKER + native.name.encode() + b"\n")
+        log.info("Model saved (native xgboost UBJ) to %s", native)
+        return
+
+    import joblib
     joblib.dump(model, path)
-    log.info("Model saved to %s", path)
+    log.info("Model saved (joblib pickle) to %s", path)
 
 
 def load_model(path: str) -> object:
-    """Load a model serialised by ``save_model``."""
-    import joblib
+    """Load a model serialised by :func:`save_model`.
 
+    Auto-detects native vs joblib via a 1-line marker the saver wrote.
+    Backward-compatible: any existing ``.joblib`` file that doesn't
+    carry the marker loads via joblib as before.
+    """
+    from pathlib import Path as _Path
+
+    marker_path = _Path(path)
+    # Peek at the first few bytes: if it's our sentinel string, take
+    # the native path; otherwise fall through to joblib pickle.
+    try:
+        head = marker_path.read_bytes()[: len(_XGB_NATIVE_MARKER) + 256]
+    except FileNotFoundError:
+        head = b""
+
+    if head.startswith(_XGB_NATIVE_MARKER):
+        try:
+            from xgboost import XGBRegressor
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError(
+                "native xgboost model found but xgboost is not installed",
+            ) from exc
+        # Extract the sidecar filename from the marker content.
+        native_name = head[len(_XGB_NATIVE_MARKER):].split(b"\n", 1)[0].decode()
+        native_path = marker_path.parent / native_name
+        if not native_path.exists():
+            raise FileNotFoundError(
+                f"native xgboost sidecar missing: {native_path}",
+            )
+        model = XGBRegressor()
+        model.load_model(str(native_path))
+        log.info("Model loaded (native xgboost UBJ) from %s", native_path)
+        return model
+
+    import joblib
     model = joblib.load(path)
-    log.info("Model loaded from %s", path)
+    log.info("Model loaded (joblib pickle) from %s", path)
     return model
 
 
