@@ -1761,6 +1761,164 @@ def train_author_ensemble(
 
 
 # ---------------------------------------------------------------------------
+# I4 (E76) — Per-author dedicated late-fusion models with classifier routing
+# ---------------------------------------------------------------------------
+
+
+class AuthorEnsembleV2Model:
+    """Late-fusion per-author ensemble routed by the I1b metadata classifier.
+
+    Addresses the failure mode of F12/E50: that experiment trained
+    per-author models but routed by the ground-truth author at
+    inference.  At production time the author is unknown, so the
+    approach didn't generalise.
+
+    I4 fixes this by using the metadata classifier (same infrastructure
+    as I1b) to *predict* which author's style the film belongs to, then
+    routing to that author's dedicated late-fusion model.  For authors
+    without enough training data (<MIN_SAMPLES), the fallback is the
+    shared multi-author model.
+
+    The dedicated models are full late-fusion (audio + metadata
+    sub-models), trained on their author's subset with augmentation
+    applied to the audio branch.  Author columns are zeroed in the
+    training metadata since the model IS that author.
+
+    Supports per-author alpha (like G8) — each dedicated model can use
+    its own optimal alpha from PER_AUTHOR_ALPHA.
+    """
+
+    # Minimum training samples required to train a dedicated model.
+    # Below this, the fallback handles the author.
+    MIN_SAMPLES = 100
+
+    def __init__(
+        self,
+        dedicated: dict[str, "LateFusionModel"],
+        fallback: "LateFusionModel",
+        classifier: object,
+        n_audio: int = N_AUDIO_FEATURES,
+    ) -> None:
+        self.dedicated = dedicated
+        self.fallback = fallback
+        self.classifier = classifier
+        self._n_audio = n_audio
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """Predict by routing each row to the classifier-chosen author.
+
+        For each row:
+          1. Strip the author columns from the feature vector.
+          2. Ask the classifier which author this film most resembles.
+          3. If that author has a dedicated model, use it; else fallback.
+        """
+        X_no_author = strip_author_columns(X, self._n_audio)
+        raw_probs = self.classifier.predict_proba(X_no_author)
+        author_index_map = getattr(self.classifier, "_author_index_map", None)
+
+        # Determine predicted author per row (as _AUTHOR_VOCAB index).
+        if author_index_map is not None:
+            contig_argmax = raw_probs.argmax(axis=1)
+            predicted = np.array(
+                [author_index_map[i] for i in contig_argmax], dtype=int,
+            )
+        else:
+            predicted = raw_probs.argmax(axis=1)
+
+        # First dry run to discover Y shape (use fallback on row 0).
+        y_shape = self.fallback.predict(X[:1]).shape[1]
+        Y = np.empty((len(X), y_shape), dtype=np.float32)
+
+        for i in range(len(X)):
+            author_idx = int(predicted[i])
+            author = _AUTHOR_VOCAB[author_idx] if 0 <= author_idx < N_AUTHOR else "unknown"
+            model = self.dedicated.get(author, self.fallback)
+            Y[i] = model.predict(X[i : i + 1])[0]
+        return Y
+
+
+def train_author_ensemble_v2(
+    X_train: np.ndarray,
+    Y_train: np.ndarray,
+    entries: list[dict],
+    alpha: float = 0.5,
+    n_audio: int = N_AUDIO_FEATURES,
+    augmentation: "AugmentationConfig | None" = None,
+    dedicated_authors: list[str] | None = None,
+) -> AuthorEnsembleV2Model:
+    """Train an author-routed late-fusion ensemble (I4 / E76).
+
+    Trains dedicated late-fusion models for each author in
+    *dedicated_authors* that has at least ``MIN_SAMPLES`` training
+    examples.  Uses the same augmentation and alpha settings as the
+    shared fallback model.
+
+    Also trains an author classifier (reusing the I1 infrastructure)
+    which routes inference to the appropriate dedicated model.
+
+    *dedicated_authors* defaults to the three authors with the largest
+    WAV counts on the current 932-WAV cache: mobe1969 (305),
+    aron7awol (304), kaelaria (181).
+    """
+    if dedicated_authors is None:
+        dedicated_authors = ["mobe1969", "aron7awol", "kaelaria"]
+
+    author_col_start_idx = n_audio + AUTHOR_COL_OFFSET_IN_METADATA
+
+    # 1. Train the shared fallback model (handles authors without a
+    #    dedicated model, e.g. remixmark, halcyon888, t1g8rsfan).
+    log.info("I4: training shared fallback (late fusion α=%.1f)...", alpha)
+    fallback = train_late_fusion(
+        X_train, Y_train, alpha=alpha,
+        n_audio=n_audio, augmentation=augmentation,
+    )
+
+    # 2. Train the author classifier on the full training set.
+    log.info("I4: training author classifier for routing...")
+    classifier = train_author_classifier(X_train, entries, n_audio=n_audio)
+
+    # 3. Train dedicated late-fusion models per author.
+    dedicated: dict[str, LateFusionModel] = {}
+    for author in dedicated_authors:
+        mask = np.array([
+            str(e.get("author", "")).strip().lower() == author for e in entries
+        ])
+        n_samples = int(mask.sum())
+        if n_samples < AuthorEnsembleV2Model.MIN_SAMPLES:
+            log.info(
+                "I4: skipping %s dedicated model: only %d samples "
+                "(need %d)",
+                author, n_samples, AuthorEnsembleV2Model.MIN_SAMPLES,
+            )
+            continue
+
+        X_author = X_train[mask].copy()
+        Y_author = Y_train[mask]
+        # Zero the author one-hot: the dedicated model IS this author.
+        X_author[:, author_col_start_idx : author_col_start_idx + N_AUTHOR] = 0.0
+
+        log.info(
+            "I4: training dedicated late-fusion for %s (%d samples, α=%.1f)...",
+            author, n_samples, alpha,
+        )
+        dedicated[author] = train_late_fusion(
+            X_author, Y_author, alpha=alpha,
+            n_audio=n_audio, augmentation=augmentation,
+        )
+
+    log.info(
+        "I4: ensemble ready — %d dedicated + 1 fallback + classifier router",
+        len(dedicated),
+    )
+    return AuthorEnsembleV2Model(
+        dedicated=dedicated,
+        fallback=fallback,
+        classifier=classifier,
+        n_audio=n_audio,
+    )
+
+
+# ---------------------------------------------------------------------------
 # G7 — Augmented model ensemble (average of multiple random-seed models)
 # ---------------------------------------------------------------------------
 

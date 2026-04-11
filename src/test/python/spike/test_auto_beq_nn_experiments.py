@@ -72,6 +72,8 @@ class ExperimentConfig:
     output_mode: str = "filter_params"  # filter_params | response_curve
     # I-series: predicted author selection at inference
     author_predictor: str | None = None  # None | hard | soft_blend | top3
+    # I4 (E76): per-author dedicated late-fusion models with classifier routing
+    use_author_ensemble_v2: bool = False
 
     @property
     def label(self) -> str:
@@ -277,6 +279,15 @@ I_EXPERIMENTS: list[ExperimentConfig] = [
     # I1c: Top-3 weighted average
     ExperimentConfig("I1c-top3", augmentation=_AUG_05,
                      author_predictor="top3"),
+
+    # I4 (E76): Per-author dedicated late-fusion models, routed by the
+    # I1b metadata classifier.  Dedicated models trained on each of the
+    # top-3 authors (mobe1969, aron7awol, kaelaria) + fallback shared
+    # model for everyone else.
+    ExperimentConfig("I4-dedicated-α0.5", augmentation=_AUG_05, alpha=0.5,
+                     use_author_ensemble_v2=True),
+    ExperimentConfig("I4-dedicated-α0.7", augmentation=_AUG_05, alpha=0.7,
+                     use_author_ensemble_v2=True),
 ]
 
 
@@ -507,6 +518,16 @@ def _train_model(
 
     if exp.use_author_ensemble:
         return train_author_ensemble(X_train, Y_train, entries_train)
+
+    # I4 (E76): per-author dedicated late-fusion models with classifier routing
+    if exp.use_author_ensemble_v2:
+        from model.auto_beq_nn import train_author_ensemble_v2
+        return train_author_ensemble_v2(
+            X_train, Y_train, entries_train,
+            alpha=exp.alpha,
+            n_audio=n_audio,
+            augmentation=exp.augmentation,
+        )
 
     # G7: augmented ensemble (multiple random seeds, averaged)
     if exp.use_augmented_ensemble and exp.augmentation:
