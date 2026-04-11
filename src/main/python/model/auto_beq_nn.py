@@ -1029,6 +1029,15 @@ def train_xgboost(
         tree_method="hist",
         multi_strategy="multi_output_tree",
         random_state=42,
+        # Pin to single-threaded (E75 determinism fix).  When the
+        # experiment harness runs batches via ThreadPoolExecutor, each
+        # concurrent XGBoost call contending for the same cores produces
+        # non-deterministic histogram schedules — the same Baseline
+        # config produced 2.78/2.82/2.78/3.00 dB across four 932-WAV
+        # runs (±0.22 dB noise).  n_jobs=1 makes each training fully
+        # deterministic; parallelism is still handled at the batch level
+        # by the harness's ThreadPoolExecutor.
+        n_jobs=1,
         verbosity=1,
     )
     fit_kwargs: dict = {}
@@ -1335,6 +1344,7 @@ def train_author_classifier(
         objective="multi:softprob",
         num_class=len(unique_authors),
         random_state=42,
+        n_jobs=1,  # E75: determinism under ThreadPoolExecutor concurrency
         verbosity=0,
     )
     clf.fit(X_no_author, y)
