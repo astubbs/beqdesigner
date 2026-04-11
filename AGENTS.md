@@ -141,6 +141,7 @@ so the user can see results incrementally: `AUTO_BEQ_SWEEP_LIMIT=1`.
 | `scripts/win/Configure-LocalIntegration.ps1` | One-shot interactive bootstrap (30 s prompt timeout): persists `WAV_CACHE_DIR` + `BEQ_DIR` for the grumpy runner. Exit 2 if no TTY / timeout. | no (pwsh) | no |
 | `scripts/win/Assert-LocalIntegrationConfig.ps1` | Non-interactive config reader used by `.github/workflows/local-integration.yml`. Fails fast with a pointer to the Configure script. | no (pwsh) | no |
 | `scripts/win/Run-ExperimentBuild.ps1` | `docker compose build` + `run` wrapper for the `beq-test-runner` service. Accepts `-Scope unit\|integration\|all`. | no (pwsh) | no |
+| `scripts/ci_pr_perf_report.py` | Stdlib-only. Parses `.pytest_cache/spike_*.log` + `auto_beq_*.csv`, emits a compact markdown perf report used by the grumpy workflow's PR-comment step. Supports `--baseline <dir>` for Δ mean dB vs the latest main run (cache-restored). | yes | **yes** (stdlib) |
 
 ## Docker (NAS LFE extraction)
 

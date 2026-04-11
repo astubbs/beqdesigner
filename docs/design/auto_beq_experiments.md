@@ -3824,6 +3824,27 @@ Not algorithm experiments. Local-integration CI rig on grumpy
   troubleshooting + teardown) and a "Quick start (local CI on a
   Windows build box)" subsection in `readme.md`. Nav entry added to
   `mkdocs.yml`.
+- **Trigger scope broadened + PR perf reporting (2026-04-11, follow-up)**:
+  dropped the `branches: [div/local-integration]` filter from the
+  workflow so every push to every branch fires the suite on grumpy —
+  matches the "one user, one beefy box, full suite on every commit"
+  mental model. Added `scripts/ci_pr_perf_report.py` (stdlib-only,
+  19 unit tests in `test_ci_pr_perf_report.py`) which parses
+  `.pytest_cache/spike_*.log` pytest summary lines and
+  `auto_beq_*.csv` loss columns into a compact markdown report. The
+  workflow upserts this report as a PR comment via
+  `actions/github-script@v7` (hidden `<!-- grumpy-perf-report -->`
+  marker so repeated pushes update the same comment rather than
+  appending). Baseline for the Δ mean dB column comes from the
+  GitHub Actions cache, keyed on `grumpy-perf-baseline-main-<sha>`:
+  main pushes save the current run's CSVs, all other pushes restore
+  the most recent via prefix match. First-run degrades gracefully
+  to "no baseline available" without crashing. Concurrency group
+  renamed `grumpy-full-suite-${{ github.ref }}` to match the new
+  scope. Workflow now runs with
+  `continue-on-error: true` on the test step so the perf report /
+  PR comment run even when the suite fails, then a final step
+  reasserts the job exit code so branch protection keeps working.
 
 **Lesson (anticipated, pending the W5 smoke test)**: offloading the
 experiment suite to dedicated GPU hardware on a push-triggered rig
@@ -3831,4 +3852,8 @@ should unblock rapid iteration on real-audio training regimes
 without blocking the dev laptop. Self-hosted runner + Docker is
 strictly less moving parts than a Jenkins/Woodpecker/Drone setup
 for a one-user one-machine loop — and GitHub handles build history,
-log streaming, and concurrency cancellation for free.
+log streaming, concurrency cancellation, and PR commenting for free.
+The PR perf comment (with baseline delta) turns every PR into a
+free mini-experiment entry: reviewer sees the accuracy delta
+inline, doesn't have to download the logs artifact to know if a
+refactor regressed a metric.

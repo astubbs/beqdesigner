@@ -1,9 +1,12 @@
 # Local integration CI on a Windows build box
 
-This page documents the optional push-triggered CI rig that runs the
-**full** spike test + experiment suite — unit + integration +
-experiment, in sequence — on a dedicated Windows machine whenever a
-commit lands on the `div/local-integration` branch.
+This page documents the push-triggered CI rig that runs the **full**
+spike test + experiment suite — unit + integration + experiment, in
+sequence — on a dedicated Windows machine, **on every push** to any
+branch of `astubbs/beqdesigner`. After each run, a compact perf
+report is upserted as a comment on any PR associated with the pushed
+commit, including a Δ mean dB column diffing against the latest
+successful `main` baseline.
 
 The reference hardware is a Windows + RTX box called `grumpy`. Any
 Windows machine with Docker Desktop + WSL2 will work the same way —
@@ -12,8 +15,10 @@ from the GitHub Actions workflow.
 
 ## What this is
 
-- **Trigger**: GitHub Actions `push` event on `div/local-integration`
-  (plus `workflow_dispatch` for manual retriggers).
+- **Trigger**: GitHub Actions `push` event — **no branch filter**, so
+  every push to every branch of the repo fires the workflow. Includes
+  `workflow_dispatch` for manual retriggers with a scope override
+  (`unit`, `integration`, or `all`).
 - **Runtime**: a Docker image (`docker/Dockerfile.test`) built from a
   `python:3.13-slim` base, carrying the full Poetry dev dependency
   closure (scipy, xgboost, scikit-learn, pytest, PyQt6 in offscreen
@@ -26,10 +31,19 @@ from the GitHub Actions workflow.
   log files and propagating the worst exit code so a unit-test
   failure doesn't mask whether the experiment suite also broke.
 - **Concurrency**: the workflow uses
-  `concurrency.cancel-in-progress: true`, so a rapid burst of pushes
-  cancels older runs and only the newest SHA gets built. Cleaner than
-  a 30-second client-side debounce because in-flight builds don't run
-  to completion on superseded SHAs.
+  `concurrency.cancel-in-progress: true` grouped per ref, so a rapid
+  burst of pushes to the same branch cancels older runs and only the
+  newest SHA gets built. Cleaner than a 30-second client-side debounce
+  because in-flight builds don't run to completion on superseded SHAs.
+  Multiple branches can queue in parallel, but grumpy's single runner
+  slot serialises them in practice.
+- **PR performance report**: after every run, the workflow generates
+  a compact markdown summary (`scripts/ci_pr_perf_report.py`) from
+  `.pytest_cache/spike_*.log` + `auto_beq_*.csv` and upserts it as a
+  comment on any PR associated with the commit. Baseline CSVs from
+  the latest successful `main` run are restored from the GitHub
+  Actions cache, so the report's Δ mean dB column shows whether the
+  PR regressed or improved each experiment metric.
 
 ## Prerequisites on the build box
 
@@ -39,6 +53,13 @@ from the GitHub Actions workflow.
   for orchestration and bash only inside the container).
 - **PowerShell 7+** (`pwsh`). Windows PowerShell 5.1 is *not* enough —
   some cmdlets used by the helper scripts are PS7-only.
+- **Python 3.11+** on `PATH` (just the interpreter — no pip install,
+  no Poetry needed on the host). Used only by the perf-report step
+  to parse `.pytest_cache/auto_beq_*.csv` into a PR comment;
+  [`scripts/ci_pr_perf_report.py`](../scripts/ci_pr_perf_report.py)
+  is deliberately stdlib-only so it runs under whatever Python the
+  runner picks up. Install via `winget install Python.Python.3.13`
+  if you don't already have one.
 - **GitHub account with Admin on `astubbs/beqdesigner`**. Needed once,
   to register the self-hosted runner.
 - **Enough free disk**: first build pulls `python:3.13-slim` (~50 MB),
@@ -172,24 +193,73 @@ the paths.
 
 ### 6. Trigger a real workflow run
 
-Push a trivial commit (or open a PR from a feature branch into
-`div/local-integration`):
+Push a trivial commit to **any** branch — the workflow has no branch
+filter, so every push fires it:
 
 ```powershell
-git commit --allow-empty -m "ci: trigger local-integration run"
-git push origin div/local-integration
+git commit --allow-empty -m "ci: trigger grumpy run"
+git push
 ```
 
 Watch the **Actions** tab on GitHub. You should see a new
-`local-integration full suite` run queue up, then transition to
-in-progress on your grumpy runner. Logs stream live to the Actions
-UI. The `.pytest_cache/spike_*.log` files get uploaded as a
-`spike-logs-<sha>` artifact on completion, regardless of pass/fail.
+`grumpy full suite` run queue up, then transition to in-progress on
+your grumpy runner. Logs stream live to the Actions UI. Two
+artifacts get uploaded on completion, regardless of pass/fail:
+
+- `spike-logs-<sha>` — the raw `.pytest_cache/spike_*.log` files
+- `perf-report-<sha>` — the markdown perf summary used for the PR
+  comment (handy for eyeballing the report without scrolling back
+  through the PR thread)
 
 To confirm real-audio fixtures are reachable, look for a line like
 `test_real_audio_roundtrip PASSED` in the `spike-experiments` stage
 output — if the WAV cache mount didn't work, those tests would skip
 instead of run.
+
+## Performance reporting on PRs
+
+After every run, the workflow runs
+[`scripts/ci_pr_perf_report.py`](../scripts/ci_pr_perf_report.py) to
+parse the spike logs + experiment CSVs and generate a compact
+markdown summary. If the commit is associated with an open PR, the
+summary is posted as a comment on that PR — **upserted** via a hidden
+`<!-- grumpy-perf-report -->` marker, so repeated pushes update the
+same comment rather than spamming a new one every time.
+
+The report has two tables:
+
+1. **Suite status** — pass / fail / skip / error counts + duration
+   for each of `spike-unit`, `spike-integration`, `spike-experiments`,
+   pulled from the pytest summary line in each `spike_*.log` file.
+2. **Experiment metrics** — aggregate mean/max `loss_db` (or
+   `mean_err_db` for the library sweep) + PASS/MARGINAL/FAIL counts
+   for every `.pytest_cache/auto_beq_*.csv` file. When baseline
+   metrics are available, this table also gets a **Δ mean dB** column
+   showing how each metric moved relative to the last successful run
+   on `main`.
+
+Baseline storage works via the GitHub Actions cache:
+
+- The **"Restore baseline perf metrics"** step pulls the most recent
+  `grumpy-perf-baseline-main-*` cache entry into `ci-perf-baseline/`
+  before the suite runs. Uses `restore-keys` prefix matching so the
+  first-run case degrades gracefully (empty dir → no delta column).
+- On `main` pushes only, the **"Stage current metrics as next
+  baseline"** and **"Save baseline cache for next run"** steps snapshot
+  the current run's `auto_beq_*.csv` files into a new cache entry
+  keyed on the commit SHA. The next run's restore step will pick it
+  up via the prefix match.
+- Non-main branches never write to the cache, so a PR full of
+  regressions can't poison the baseline for the next round of PRs.
+
+If you see a PR comment that says **"No baseline metrics available
+for this run"**, that's normal on the very first run. A subsequent
+push to `main` will populate the cache, and the next round of PR
+comments will include the delta column.
+
+To force-refresh a baseline (e.g. after a big rebase of main), use
+`workflow_dispatch` on the `main` branch with scope `all` and let it
+complete successfully — that's enough to write a new cache entry.
 
 ## Environment variables
 

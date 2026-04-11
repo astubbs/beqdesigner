@@ -251,15 +251,18 @@ compares the output to the catalogue's expert-authored filters.
 
 If you have a spare beefy Windows machine (the reference one is
 called `grumpy`: Windows + RTX GPU) and want it to automatically run
-the **full** spike test + experiment suite whenever you push to a
-branch called `div/local-integration`, there's a push-triggered
-GitHub Actions workflow wired up for it. Trigger is push-based (no
-polling), runtime is Docker-based (`docker/Dockerfile.test`), and
-concurrency control means a rapid push burst just cancels the older
-in-flight run instead of queueing up N builds.
+the **full** spike test + experiment suite on **every push to every
+branch**, there's a push-triggered GitHub Actions workflow wired up
+for it. Trigger is push-based (no polling), runtime is Docker-based
+(`docker/Dockerfile.test`), and concurrency control means a rapid
+push burst on the same branch just cancels the older in-flight run
+instead of queueing up N builds. After the suite finishes, a
+performance-delta report is upserted as a comment on any PR
+associated with the pushed commit — including a Δ mean dB column vs.
+the latest successful `main` baseline.
 
 **Prerequisites on the Windows box**: Docker Desktop with WSL2
-backend, Git for Windows, PowerShell 7.
+backend, Git for Windows, PowerShell 7, Python 3.11+ on PATH.
 
 ```powershell
 # 1. Clone the repo anywhere convenient
@@ -286,12 +289,14 @@ pwsh scripts/win/Configure-LocalIntegration.ps1
 pwsh scripts/win/Run-ExperimentBuild.ps1 -Scope unit
 ```
 
-After that, every push to `div/local-integration` triggers the
-`local-integration full suite` workflow on your runner. Spike logs
-upload as GitHub artifacts so you can read failures from the Actions
-UI without RDP-ing into the box. See
+After that, **every push to any branch** triggers the
+`grumpy full suite` workflow on your runner. Spike logs upload as
+GitHub artifacts so you can read failures from the Actions UI
+without RDP-ing into the box, and PRs get a rolling perf report
+comment so reviewers can see accuracy deltas at a glance. See
 [`docs/local_integration.md`](docs/local_integration.md) for the
-full walkthrough, troubleshooting, and teardown.
+full walkthrough, the perf-reporting baseline cache story,
+troubleshooting, and teardown.
 
 ### Scripts
 

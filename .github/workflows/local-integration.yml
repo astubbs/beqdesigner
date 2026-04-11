@@ -1,27 +1,38 @@
-# Local integration CI: full spike test + experiment suite on grumpy.
+# Grumpy full suite: full spike test + experiment suite on every push.
 #
-# Triggered on every push to div/local-integration. Runs on a self-
-# hosted GitHub Actions runner (the Windows machine called `grumpy`)
-# inside the beq-test Docker image, so the host doesn't need a full
-# Python/Poetry dev setup.
+# Fires on *any* push to *any* branch of astubbs/beqdesigner — the
+# workflow is intentionally unscoped so that every commit gets the
+# same treatment, whether it's a feature branch, a PR, or a direct
+# push to main. Runs on a self-hosted GitHub Actions runner (the
+# Windows machine called `grumpy`) inside the beq-test Docker image,
+# so the host doesn't need a full Python/Poetry dev setup.
+#
+# After the suite finishes, a compact markdown report is generated
+# from .pytest_cache/spike_*.log + auto_beq_*.csv and posted as a
+# PR comment (upserted, not appended) on any PR associated with the
+# pushed commit. The report includes a "Δ mean dB" column diffing
+# against the baseline CSVs restored from the Actions cache (keyed on
+# the most recent successful run on main).
 #
 # Setup is documented in docs/local_integration.md. The short version:
-#   1. Install Docker Desktop (WSL2 backend) + Git for Windows + PowerShell 7
+#   1. Install Docker Desktop (WSL2 backend) + Git for Windows +
+#      PowerShell 7 + Python 3.11+ (stdlib-only, no pip install needed)
 #   2. pwsh scripts/win/Configure-LocalIntegration.ps1   # interactive
 #   3. Register grumpy as a self-hosted runner with label `grumpy`
-#   4. Push to div/local-integration and watch this workflow run
+#   4. Push any commit and watch this workflow run
 #
 # This workflow is intentionally the *only* thing that runs the
 # full experiment suite in CI. The default `test.yaml` workflow stays
 # on GitHub-hosted runners and skips integration + experiment markers
 # (see .github/workflows/test.yaml:104-108).
 
-name: local-integration full suite
+name: grumpy full suite
 
 on:
+  # No `branches:` filter — every push to every branch triggers a run.
+  # Concurrency below ensures only one in-flight build per ref, and
+  # the PR-comment step at the end upserts a single comment per PR.
   push:
-    branches:
-      - div/local-integration
   # Manual retrigger from the GitHub Actions UI (useful if a build
   # failed for infra reasons like docker build cache corruption — you
   # can re-run without having to push an empty commit).
@@ -37,12 +48,22 @@ on:
           - integration
           - all
 
+permissions:
+  # Needed by the PR-comment step below (`actions/github-script`).
+  # `contents: read` is kept explicit for clarity even though it's
+  # the workflow default.
+  contents: read
+  pull-requests: write
+  issues: write
+
 concurrency:
   # Cancel an in-flight run the moment a newer commit arrives on the
-  # branch. Replaces the "30 s quiet period" debounce from the
+  # same ref. Replaces the "30 s quiet period" debounce from the
   # rejected polling-watcher design: instead of coalescing bursts on
   # the client, we let GitHub cancel the older run on the server.
-  group: local-integration-${{ github.ref }}
+  # Grouped per ref so multiple branches can still run in parallel,
+  # but a single runner slot on grumpy serialises them in practice.
+  group: grumpy-full-suite-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -74,11 +95,139 @@ jobs:
         shell: pwsh
         run: ./scripts/win/Assert-LocalIntegrationConfig.ps1
 
+      - name: Restore baseline perf metrics from cache
+        # Pull the auto_beq_*.csv files produced by the most recent
+        # successful main run so the perf report can compute a delta
+        # vs baseline. `restore-keys` prefix match handles the "first
+        # run ever" case gracefully — the step succeeds with an empty
+        # cache hit and the report falls back to "no baseline".
+        id: restore-baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: ci-perf-baseline
+          key: grumpy-perf-baseline-main-${{ github.sha }}
+          restore-keys: |
+            grumpy-perf-baseline-main-
+
       - name: Build + run full suite in Docker
+        id: run-suite
         shell: pwsh
         env:
           TEST_SCOPE: ${{ github.event.inputs.scope || 'all' }}
+        # Keep going even if the suite fails — we still want the perf
+        # report generated and posted to the PR so reviewers can see
+        # *which* suite broke without downloading the logs artifact.
+        # The "Propagate suite exit code" step at the end of the job
+        # re-fails the job once the reporting is done.
+        continue-on-error: true
         run: ./scripts/win/Run-ExperimentBuild.ps1 -Scope $env:TEST_SCOPE
+
+      - name: Generate perf report
+        # Pure-stdlib Python script, uses whatever `python` is on PATH
+        # on the runner host (grumpy has Python 3.11+ installed per
+        # docs/local_integration.md prereqs). Runs `if: always()` so
+        # even a total suite wipeout still produces a PR comment with
+        # "no metrics captured in this run".
+        if: always()
+        shell: pwsh
+        run: |
+          $scriptArgs = @(
+            'scripts/ci_pr_perf_report.py',
+            '--cache-dir', '.pytest_cache',
+            '--output', 'ci-perf-report.md',
+            '--commit-sha', $env:GITHUB_SHA,
+            '--run-url', "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          )
+          if (Test-Path 'ci-perf-baseline') {
+            $scriptArgs += @('--baseline', 'ci-perf-baseline')
+          }
+          python @scriptArgs
+
+      - name: Upload perf report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-report-${{ github.sha }}
+          path: ci-perf-report.md
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Stage current metrics as next baseline (main only)
+        # On main, copy the current run's CSVs to a staging directory
+        # so the cache-save step can persist them for the next run to
+        # restore. On non-main branches this step is skipped entirely.
+        if: github.ref == 'refs/heads/main' && steps.run-suite.outcome == 'success'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path ci-perf-baseline-next | Out-Null
+          $csvs = Get-ChildItem -Path .pytest_cache -Filter auto_beq_*.csv -ErrorAction SilentlyContinue
+          if ($csvs) {
+            $csvs | Copy-Item -Destination ci-perf-baseline-next -Force
+            Write-Host "Staged $($csvs.Count) CSV file(s) for baseline cache"
+          } else {
+            Write-Host "No auto_beq_*.csv files to stage"
+          }
+
+      - name: Save baseline cache for next run (main only)
+        if: github.ref == 'refs/heads/main' && steps.run-suite.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ci-perf-baseline-next
+          key: grumpy-perf-baseline-main-${{ github.sha }}
+
+      - name: Upsert PR comment with perf report
+        # Find any PR associated with the pushed SHA and either update
+        # an existing grumpy-perf comment (identified by a hidden HTML
+        # marker in the body) or create a new one. Runs on every push
+        # event, skipping silently if no PR matches the commit.
+        if: always() && github.event_name == 'push'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('ci-perf-report.md')) {
+              core.info('No ci-perf-report.md produced — skipping PR comment');
+              return;
+            }
+            const body = fs.readFileSync('ci-perf-report.md', 'utf8');
+            const marker = '<!-- grumpy-perf-report -->';
+
+            const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+            });
+            if (prs.length === 0) {
+              core.info(`No PR associated with ${context.sha} — skipping comment`);
+              return;
+            }
+
+            for (const pr of prs) {
+              const { data: comments } = await github.rest.issues.listComments({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                per_page: 100,
+              });
+              const existing = comments.find((c) => c.body && c.body.includes(marker));
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                  body,
+                });
+                core.info(`Updated comment ${existing.id} on PR #${pr.number}`);
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pr.number,
+                  body,
+                });
+                core.info(`Created new comment on PR #${pr.number}`);
+              }
+            }
 
       - name: Upload spike logs
         # `if: always()` so we get logs even when the suite failed —
@@ -92,3 +241,14 @@ jobs:
           path: .pytest_cache/spike_*.log
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Propagate suite exit code
+        # `Run-ExperimentBuild.ps1` ran with `continue-on-error: true`
+        # so the perf report / PR comment could run unconditionally.
+        # Reassert the failure here so the job overall is red when the
+        # tests are red — required for status checks / branch protection.
+        if: always() && steps.run-suite.outcome == 'failure'
+        shell: pwsh
+        run: |
+          Write-Host "::error::Test suite failed — see the 'Build + run full suite in Docker' step for details"
+          exit 1
