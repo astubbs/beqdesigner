@@ -794,6 +794,16 @@ def ensure_analysis_reports_current(
     return regenerated
 
 
+def beq_dir() -> Path:
+    """Return the BEQ working directory — parent of the WAV cache.
+
+    Holds the wav-cache, beq_catalogue.json, media_inventory.json, and
+    production_model.joblib.  Derived from ``wav_cache_dir().parent`` so
+    it honours all the same env var / settings.json resolution rules.
+    """
+    return wav_cache_dir().parent
+
+
 def wav_cache_dir() -> Path:
     """Return the portable WAV cache directory.
 

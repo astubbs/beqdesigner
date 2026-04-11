@@ -1545,6 +1545,46 @@ class OllamaAdvisor:
 # ---------------------------------------------------------------------------
 
 
+def _production_model_default_path() -> "Path | None":
+    """Return the default location for the E82 production model.
+
+    Looks at ``{beq-dir}/production_model.joblib`` where ``beq-dir`` is
+    derived from ``BEQ_WAV_CACHE`` / settings.json / the default
+    ``~/Downloads/beqdesigner`` (the same resolution used by the WAV
+    cache helpers).
+
+    Returns ``None`` if the spike helpers aren't importable (e.g. in
+    a minimal install) or if the path simply doesn't exist yet.
+    """
+    try:
+        from spike._auto_beq_helpers import beq_dir
+        candidate = beq_dir() / "production_model.joblib"
+        return candidate if candidate.exists() else None
+    except Exception:
+        return None
+
+
+def _warn_if_stale_production_model(model_path: "Path") -> None:
+    """Warn if the production model is older than 7 days.
+
+    Reminds the user to re-run ``scripts/train_production_model.py``
+    when the WAV cache has grown significantly since training.
+    """
+    try:
+        import time as _time
+        age_s = _time.time() - model_path.stat().st_mtime
+        age_days = age_s / 86400
+        if age_days > 7:
+            log.warning(
+                "production model is %.0f days old (%s). Consider re-running "
+                "`scripts/train_production_model.py` if your WAV cache has "
+                "grown since then.",
+                age_days, model_path.name,
+            )
+    except Exception:
+        pass
+
+
 def get_advisor(name: str | None = None) -> Advisor:
     """Return an Advisor by name. Falls back to AUTO_BEQ_ADVISOR env var,
     then to HeuristicAdvisor.
@@ -1552,8 +1592,9 @@ def get_advisor(name: str | None = None) -> Advisor:
     Supported names: ``heuristic``, ``measurement``, ``topology``,
     ``slope_extension``, ``mock``, ``ollama``, ``trained_model``.
 
-    For ``trained_model``: requires ``AUTO_BEQ_MODEL_PATH`` env var pointing
-    to a joblib file written by ``auto_beq_nn.save_model()``.
+    For ``trained_model``: looks at ``AUTO_BEQ_MODEL_PATH`` env var first;
+    if unset, falls back to ``{beq-dir}/production_model.joblib`` (the
+    E82 production model trained by ``scripts/train_production_model.py``).
     """
     resolved = (name or os.environ.get("AUTO_BEQ_ADVISOR") or "heuristic").lower()
     if resolved == "heuristic":
@@ -1572,10 +1613,20 @@ def get_advisor(name: str | None = None) -> Advisor:
         from model.auto_beq_nn import TrainedModelAdvisor
         path = os.environ.get("AUTO_BEQ_MODEL_PATH")
         if not path:
-            raise ValueError(
-                "AUTO_BEQ_MODEL_PATH env var required for 'trained_model' advisor — "
-                "set it to the path of a model saved by auto_beq_nn.save_model()"
-            )
+            # Fall back to the E82 production model at the default
+            # location — trained by scripts/train_production_model.py.
+            default_path = _production_model_default_path()
+            if default_path is None:
+                raise ValueError(
+                    "AUTO_BEQ_MODEL_PATH env var required for 'trained_model' "
+                    "advisor when no model exists at the default location.  "
+                    "Either set AUTO_BEQ_MODEL_PATH, or run "
+                    "`scripts/train_production_model.py` to populate "
+                    "{beq-dir}/production_model.joblib.",
+                )
+            path = str(default_path)
+            log.info("trained_model: using default production model at %s", path)
+            _warn_if_stale_production_model(default_path)
         return TrainedModelAdvisor.load(path)
     if resolved == "late_fusion":
         from model.auto_beq_nn import LateFusionAdvisor

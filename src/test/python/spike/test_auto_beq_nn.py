@@ -701,3 +701,97 @@ def test_compute_agreement_weights_disagreement_penalised():
     assert weights.shape == (2,)
     assert weights[0] < 1.0
     assert weights[0] == weights[1]
+
+
+# ---------------------------------------------------------------------------
+# E82 — train_production_weighted_hybrid
+# ---------------------------------------------------------------------------
+
+
+def test_train_production_weighted_hybrid_returns_model_and_metadata(tmp_path):
+    """E82 production training: real + synth + sample weights + metadata.
+
+    Verifies the training function:
+    - Accepts pre-extracted real samples + synth catalogue entries
+    - Builds a sample_weight array with real_weight for real rows and
+      1.0 for synth rows
+    - Returns a fitted model with .predict() and 48-dim output
+    - Returns a metadata dict with the expected provenance keys
+    - The saved model can be reloaded via save_model/load_model
+    """
+    from model.auto_beq_nn import (
+        load_model,
+        save_model,
+        train_production_weighted_hybrid,
+    )
+
+    entries = _load_snapshot()
+    trainable = [e for e in entries if e.get("filters")]
+    assert len(trainable) >= 5, "snapshot needs at least 5 entries with filters"
+
+    # Split the snapshot into "real" (first 3) and "synth" (remainder).
+    # Real samples are (entry, features) tuples — features from the
+    # synthetic inverse of the catalogue filters, used as a stand-in for
+    # actual WAV-derived features.  That's fine for this unit test: we're
+    # checking the plumbing, not the synthetic-vs-real gap.
+    real_entries = trainable[:3]
+    synth_entries = trainable[3:]
+
+    real_samples = [
+        (e, _synthetic_features_for_entry(e, DEFAULT_GRID))
+        for e in real_entries
+    ]
+
+    # Empty TMDb cache — enrich_media_metadata handles missing data
+    # gracefully (fields default to None).
+    tmdb_cache: dict[str, dict] = {}
+
+    model, metadata = train_production_weighted_hybrid(
+        real_samples=real_samples,
+        synth_entries=synth_entries,
+        tmdb_cache=tmdb_cache,
+        freqs_hz=DEFAULT_GRID,
+        fs=_DEFAULT_FS,
+        real_weight=50.0,
+    )
+
+    # Metadata sanity checks.
+    assert metadata["n_real"] == 3
+    # synth count excludes entries already covered by real samples via tmdb_id
+    # (for this snapshot the real entries don't overlap the synth entries so
+    # all synth_entries pass through — but depending on how many have
+    # filters, the count may be ≤ len(synth_entries)).
+    assert metadata["n_synth"] >= 1
+    assert metadata["n_synth"] <= len(synth_entries)
+    assert metadata["real_weight"] == 50.0
+    assert "trained_at" in metadata and metadata["trained_at"] > 0
+    assert "xgb_params" in metadata
+    assert metadata["xgb_params"]["n_jobs"] == 1  # E75 determinism fix
+
+    # Model has .predict and produces a (1, N_OUTPUT) output.
+    X_sample = np.random.RandomState(0).randn(1, N_FEATURES).astype(np.float32)
+    Y_pred = model.predict(X_sample)
+    assert Y_pred.shape == (1, N_OUTPUT)
+
+    # Model round-trips via save/load.
+    model_path = tmp_path / "test_production.joblib"
+    save_model(model, str(model_path))
+    assert model_path.exists()
+    loaded = load_model(str(model_path))
+    Y_pred_loaded = loaded.predict(X_sample)
+    np.testing.assert_array_almost_equal(Y_pred, Y_pred_loaded)
+
+
+def test_train_production_weighted_hybrid_rejects_empty_real_samples():
+    """The function fails fast when given no usable real samples."""
+    import pytest as _pytest
+
+    from model.auto_beq_nn import train_production_weighted_hybrid
+
+    with _pytest.raises(ValueError, match="no usable real samples"):
+        train_production_weighted_hybrid(
+            real_samples=[],
+            synth_entries=[],
+            tmdb_cache={},
+            freqs_hz=DEFAULT_GRID,
+        )
