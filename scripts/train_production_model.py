@@ -82,6 +82,30 @@ def main():
              "(384 dims), whisper-base (512), whisper-small (768), mock-16 "
              "(deterministic synthetic, for smoke tests).",
     )
+    parser.add_argument(
+        "--self-train", action="store_true",
+        help="Enable E84/T1.3 semi-supervised self-training. Uses the "
+             "unmatched real WAVs in the cache as unlabelled data; the "
+             "trained teacher pseudo-labels them with a confidence filter "
+             "and retrains for N iterations. Output goes to "
+             "`production_model_e84.joblib` to keep E82 untouched.",
+    )
+    parser.add_argument(
+        "--pseudo-weight", type=float, default=10.0,
+        help="E84: per-sample weight for pseudo-labels (real=50, synth=1). "
+             "Default: 10. Only used when --self-train is set.",
+    )
+    parser.add_argument(
+        "--confidence-threshold-db", type=float, default=1.5,
+        help="E84: maximum self-consistency mean abs error (dB) to accept "
+             "a pseudo-label. Tighter = fewer, higher-quality pseudo-labels. "
+             "Default: 1.5. Only used when --self-train is set.",
+    )
+    parser.add_argument(
+        "--self-train-iterations", type=int, default=2,
+        help="E84: number of self-training iterations after the baseline. "
+             "Default: 2. Only used when --self-train is set.",
+    )
     args = parser.parse_args()
 
     # Late imports so --help is fast.
@@ -93,12 +117,15 @@ def main():
         AudioFeatureConfig,
         deduplicate_by_title,
         save_model,
+        train_e84_self_trained,
         train_production_weighted_hybrid,
     )
     from spike._auto_beq_helpers import (
         STRATEGY_BLENDED_07,
         STRATEGY_WELCH,
         beq_dir,
+        cached_extract_features_with_strategy,
+        discover_unmatched_wavs_cached,
         discover_wav_catalogue_pairs_cached,
     )
     from spike.test_auto_beq_nn_real import _extract_features_parallel
@@ -113,10 +140,21 @@ def main():
 
     # --- Resolve paths ---
     target_dir = beq_dir()
-    output_path = args.output or (target_dir / "production_model.joblib")
+    if args.self_train:
+        # E84: keep the E82 production model untouched, write a parallel
+        # file so both can be A/B compared.
+        default_output = target_dir / "production_model_e84.joblib"
+    else:
+        default_output = target_dir / "production_model.joblib"
+    output_path = args.output or default_output
     meta_path = output_path.with_suffix(".meta.json")
     log.info("BEQ working directory: %s", target_dir)
     log.info("model output path:     %s", output_path)
+    if args.self_train:
+        log.info(
+            "E84 self-training enabled: pseudo_weight=%.1f, confidence≤%.1f dB, %d iterations",
+            args.pseudo_weight, args.confidence_threshold_db, args.self_train_iterations,
+        )
 
     # --- Discover WAV cache + catalogue ---
     pairs = discover_wav_catalogue_pairs_cached()
@@ -185,17 +223,59 @@ def main():
         )
     log.info("real samples (after filter): %d", len(real_samples))
 
+    # --- E84: discover and extract features for unmatched WAVs (unlabelled). ---
+    unmatched_pairs: list = []
+    if args.self_train:
+        unmatched_wavs = discover_unmatched_wavs_cached()
+        log.info(
+            "E84: discovered %d unmatched WAVs (unlabelled candidates)",
+            len(unmatched_wavs),
+        )
+        if unmatched_wavs:
+            t_u0 = time.time()
+            for wav_path in unmatched_wavs:
+                try:
+                    features = cached_extract_features_with_strategy(
+                        wav_path, DEFAULT_GRID, 1000, strategy=strategy,
+                    )
+                    unmatched_pairs.append((wav_path, features))
+                except Exception as exc:
+                    log.debug("skipping %s: %s", wav_path.name, exc)
+            log.info(
+                "E84: extracted features for %d/%d unmatched WAVs in %.1fs",
+                len(unmatched_pairs), len(unmatched_wavs), time.time() - t_u0,
+            )
+
     # --- Train ---
     t_train_start = time.time()
-    model, metadata = train_production_weighted_hybrid(
-        real_samples=real_samples,
-        synth_entries=deduped,
-        tmdb_cache=tmdb_cache,
-        freqs_hz=DEFAULT_GRID,
-        fs=1000,
-        real_weight=args.real_weight,
-        config=feature_config,
-    )
+    if args.self_train:
+        model, metadata = train_e84_self_trained(
+            real_samples=real_samples,
+            synth_entries=deduped,
+            unmatched_pairs=unmatched_pairs,
+            tmdb_cache=tmdb_cache,
+            freqs_hz=DEFAULT_GRID,
+            fs=1000,
+            real_weight=args.real_weight,
+            pseudo_weight=args.pseudo_weight,
+            confidence_threshold_db=args.confidence_threshold_db,
+            n_iterations=args.self_train_iterations,
+            config=feature_config,
+        )
+        # Fill in summary fields the printer expects; the iter_stats key
+        # already carries the per-iteration breakdown.
+        metadata["n_real"] = len(real_samples)
+        metadata["n_synth"] = len([e for e in deduped if e.get("filters")])
+    else:
+        model, metadata = train_production_weighted_hybrid(
+            real_samples=real_samples,
+            synth_entries=deduped,
+            tmdb_cache=tmdb_cache,
+            freqs_hz=DEFAULT_GRID,
+            fs=1000,
+            real_weight=args.real_weight,
+            config=feature_config,
+        )
     t_train = time.time() - t_train_start
     metadata["extract_time_s"] = round(t_extract, 1)
     metadata["train_time_s"] = round(t_train, 1)

@@ -1932,3 +1932,274 @@ def test_e83_foundation_features(tmp_path, caplog):
             f"{delta:+.3f}",
         ])
     log.info("E83 CSV row appended: %s", csv_path)
+
+
+# ---------------------------------------------------------------------------
+# E84 / T1.3 — Semi-supervised pseudo-labelling
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")
+def test_e84_self_trained(tmp_path, caplog):
+    """E84: iterative self-training atop the E82 weighted hybrid.
+
+    Apples-to-apples on the E82 test split. For each iteration 0..N:
+      * iter 0 = baseline E82 (should match 1.99 dB ± 0.05 dB)
+      * iter i = retrained with pseudo-labels from iter i-1 as a
+        new "pseudo" training-data channel, weight between real and synth.
+
+    Prints per-iteration mean/max + per-author breakdown. Writes CSV
+    row to ``.pytest_cache/e84_self_trained.csv``. No hard assertions —
+    the CSV is the result.
+    """
+    import csv
+    from collections import defaultdict
+
+    from model.auto_beq_catalogue import _fetch_or_cache
+    from model.auto_beq_nn import (
+        AudioFeatureConfig,
+        pseudo_label_unmatched,
+        train_production_weighted_hybrid,
+    )
+    from sklearn.model_selection import train_test_split
+    from spike._auto_beq_helpers import (
+        cached_extract_features_with_strategy,
+        discover_unmatched_wavs_cached,
+    )
+
+    caplog.set_level(logging.INFO, logger="auto_beq_nn_real")
+    log.info("=== E84 self-training via pseudo-labels ===")
+
+    # --- Pass 1: curve features for matched WAVs (same as E82 baseline). ---
+    all_real = _extract_features_parallel(
+        _PAIRS, DEFAULT_GRID, _DEFAULT_FS, strategy=STRATEGY_BLENDED_07,
+    )
+    if len(all_real) < 200:
+        pytest.skip(f"need ≥200 real pairs for E84, got {len(all_real)}")
+
+    tmdb_cache = load_cache()
+    tmdb_cache = fetch_metadata_batch(
+        [p["catalogue_entry"] for p, _ in all_real], cache=tmdb_cache,
+    )
+
+    real_entries = [p["catalogue_entry"] for p, _ in all_real]
+
+    # Stratified split identical to E82/E83 (random_state=42, severity).
+    severity = [
+        "heavy" if sum(abs(float(f.get("gain", 0))) for f in e.get("filters", [])) >= 20
+        else "moderate" if sum(abs(float(f.get("gain", 0))) for f in e.get("filters", [])) >= 10
+        else "gentle"
+        for e in real_entries
+    ]
+    indices = np.arange(len(all_real))
+    train_idx, test_idx = train_test_split(
+        indices, test_size=0.2, random_state=42,
+        stratify=severity if len(set(severity)) > 1 else None,
+    )
+    train_samples = [
+        (all_real[i][0]["catalogue_entry"], all_real[i][1]) for i in train_idx
+    ]
+    test_samples = [
+        (all_real[i][0]["catalogue_entry"], all_real[i][1]) for i in test_idx
+    ]
+    test_entries = [e for e, _ in test_samples]
+    log.info("E84 split: %d train / %d test", len(train_samples), len(test_samples))
+
+    # --- Unmatched WAVs + their curve features (cached). ---
+    unmatched_wav_paths = discover_unmatched_wavs_cached()
+    log.info("E84 unmatched: %d WAVs available for pseudo-labelling",
+             len(unmatched_wav_paths))
+
+    unmatched_pairs: list[tuple] = []
+    t_unm = time.time()
+    for wav_path in unmatched_wav_paths:
+        try:
+            features = cached_extract_features_with_strategy(
+                wav_path, DEFAULT_GRID, _DEFAULT_FS, strategy=STRATEGY_BLENDED_07,
+            )
+            unmatched_pairs.append((wav_path, features))
+        except Exception as exc:
+            log.debug("E84 skipping unmatched %s: %s", wav_path.name, exc)
+    log.info(
+        "E84 unmatched features: %d/%d in %.1fs",
+        len(unmatched_pairs), len(unmatched_wav_paths), time.time() - t_unm,
+    )
+
+    # Synthetic set (same rule as E82/E83).
+    catalogue = _fetch_or_cache()
+    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
+    train_tmdb_ids = {str(e.get("theMovieDB", "")).strip() for e, _ in train_samples}
+    test_tmdb_ids = {str(e.get("theMovieDB", "")).strip() for e, _ in test_samples}
+    synth_entries = [
+        e for e in deduped
+        if str(e.get("theMovieDB", "")).strip() not in train_tmdb_ids
+        and str(e.get("theMovieDB", "")).strip() not in test_tmdb_ids
+    ]
+
+    cfg = AudioFeatureConfig()  # E82 baseline — no foundation features
+
+    def _eval(model, label: str) -> tuple[float, float, dict]:
+        X_test = np.array([
+            build_feature_vector(
+                f, enrich_media_metadata(e, tmdb_cache), config=cfg,
+            )
+            for e, f in test_samples
+        ], dtype=np.float32)
+        Y_pred = model.predict(X_test)
+        per_title = [
+            downstream_loss(
+                labels_to_filters(Y_pred[i]), e["filters"], DEFAULT_GRID,
+            )
+            for i, e in enumerate(test_entries)
+        ]
+        mean = float(np.mean(per_title))
+        max_ = float(np.max(per_title))
+        by_auth: dict[str, list[float]] = defaultdict(list)
+        for e, loss in zip(test_entries, per_title, strict=True):
+            by_auth[e.get("author", "unknown")].append(loss)
+        per_author = {a: float(np.mean(v)) for a, v in by_auth.items()}
+        log.info("E84 %-15s: mean=%.2f dB max=%.2f dB", label, mean, max_)
+        return mean, max_, per_author
+
+    # --- Iteration 0: baseline (matches E82). ---
+    baseline_model, baseline_meta = train_production_weighted_hybrid(
+        real_samples=train_samples,
+        synth_entries=synth_entries,
+        tmdb_cache=tmdb_cache,
+        freqs_hz=DEFAULT_GRID,
+        fs=_DEFAULT_FS,
+        real_weight=50.0,
+        config=cfg,
+    )
+    baseline_mean, baseline_max, baseline_author = _eval(baseline_model, "iter0-baseline")
+
+    # --- Iteration 1: teacher=baseline, add pseudo-labels, retrain. ---
+    # Parameters tuned per the plan's defaults.
+    pseudo_weight = 10.0
+    confidence_threshold_db = 1.5
+
+    current_model = baseline_model
+    iter_results = [("iter0-baseline", baseline_mean, baseline_max, baseline_author, 0)]
+
+    for iteration in range(1, 3):  # iterations 1 and 2
+        pseudo_samples, pseudo_stats = pseudo_label_unmatched(
+            teacher_model=current_model,
+            unmatched_pairs=unmatched_pairs,
+            tmdb_cache=tmdb_cache,
+            freqs_hz=DEFAULT_GRID,
+            fs=_DEFAULT_FS,
+            confidence_threshold_db=confidence_threshold_db,
+            config=cfg,
+        )
+        log.info(
+            "E84 iter %d: %d/%d pseudo-labels passed confidence gate "
+            "(mean %.2f dB)",
+            iteration, pseudo_stats["n_kept"], pseudo_stats["n_total"],
+            pseudo_stats["mean_confidence_db"],
+        )
+
+        # Training pass: real (weight 50) + synth (1) + pseudo (pseudo_weight).
+        # We build the combined set by calling train_production_weighted_hybrid
+        # with real_samples = real + pseudo (via weight trick).
+        # Cleaner: let train_production_weighted_hybrid handle real+synth,
+        # then manually add pseudo rows with their own weight. For the test
+        # we use train_e84_self_trained's internal logic directly via a
+        # simpler path: concat pseudo into real_samples with a SHIM that
+        # re-uses the train_production_weighted_hybrid weighting.
+        #
+        # Here we keep it simple: call train_production_weighted_hybrid
+        # twice with different weight ratios to approximate the effect.
+        # But that's wrong — real and pseudo need DIFFERENT weights.
+        #
+        # Instead: use train_e84_self_trained for the combined pass with
+        # n_iterations=1 starting from a fresh baseline — but that re-trains
+        # the baseline internally. Wasteful but correct.
+        #
+        # Simplest correct approach: inline the combined training.
+        from model.auto_beq import evaluate_filter_chain
+        from model.auto_beq_advisor import extract_curve_features
+        from model.auto_beq_nn import (
+            catalogue_entry_to_labels as _l2l,
+            train_xgboost as _train_xgb,
+        )
+        X_r, Y_r = [], []
+        for entry, features in train_samples:
+            metadata = enrich_media_metadata(entry, tmdb_cache)
+            X_r.append(build_feature_vector(features, metadata, config=cfg))
+            Y_r.append(_l2l(entry))
+
+        X_s, Y_s = [], []
+        anchor_idx = int(np.argmin(np.abs(DEFAULT_GRID - 80.0)))
+        for entry in synth_entries:
+            try:
+                correction = evaluate_filter_chain(entry["filters"], DEFAULT_GRID, fs=_DEFAULT_FS)
+                rolloff = -correction
+                rolloff = rolloff - rolloff[anchor_idx]
+                feats = extract_curve_features(rolloff, DEFAULT_GRID)
+            except Exception:
+                continue
+            metadata = enrich_media_metadata(entry, tmdb_cache)
+            X_s.append(build_feature_vector(feats, metadata, config=cfg))
+            Y_s.append(_l2l(entry))
+
+        X_p, Y_p = [], []
+        for entry, features in pseudo_samples:
+            metadata = enrich_media_metadata(entry, tmdb_cache)
+            X_p.append(build_feature_vector(features, metadata, config=cfg))
+            Y_p.append(_l2l(entry))
+
+        X_combined = np.array(X_r + X_s + X_p, dtype=np.float32)
+        Y_combined = np.array(Y_r + Y_s + Y_p, dtype=np.float32)
+        sw = np.concatenate([
+            np.full(len(X_r), 50.0, dtype=np.float32),
+            np.ones(len(X_s), dtype=np.float32),
+            np.full(len(X_p), pseudo_weight, dtype=np.float32),
+        ])
+        current_model = _train_xgb(X_combined, Y_combined, sample_weight=sw)
+
+        mean_i, max_i, author_i = _eval(current_model, f"iter{iteration}")
+        iter_results.append((f"iter{iteration}", mean_i, max_i, author_i, pseudo_stats["n_kept"]))
+
+    # --- Report ---
+    print(f"\n{'='*80}")
+    print(f"  E84 — SELF-TRAINING (pseudo_weight={pseudo_weight}, "
+          f"threshold={confidence_threshold_db} dB)")
+    print(f"  Split: {len(train_samples)} train / {len(test_samples)} test / "
+          f"{len(unmatched_pairs)} unmatched pool")
+    print(f"{'='*80}\n")
+    print(f"  {'iter':<16s}  {'mean dB':>10s}  {'max dB':>10s}  {'n_pseudo':>10s}")
+    print(f"  {'-'*52}")
+    for label, mean_i, max_i, _per_auth, n_pseudo in iter_results:
+        print(f"  {label:<16s}  {mean_i:8.2f}    {max_i:8.2f}    {n_pseudo:10d}")
+    print()
+    print(f"  Per-author (iter0 baseline → final):")
+    authors = sorted(set(iter_results[0][3]) | set(iter_results[-1][3]))
+    for author in authors:
+        b = iter_results[0][3].get(author, float("nan"))
+        f = iter_results[-1][3].get(author, float("nan"))
+        d = f - b if not (np.isnan(b) or np.isnan(f)) else float("nan")
+        print(f"  {author:<15s}  {b:8.2f}  →  {f:8.2f}    {d:+7.2f}")
+    print()
+
+    # --- CSV row ---
+    csv_path = Path(".pytest_cache") / "e84_self_trained.csv"
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    is_new = not csv_path.exists()
+    with csv_path.open("a", newline="") as f:
+        w = csv.writer(f)
+        if is_new:
+            w.writerow([
+                "timestamp", "pseudo_weight", "confidence_threshold_db",
+                "n_train", "n_test", "n_unmatched",
+                "iter0_mean", "iter1_mean", "iter2_mean",
+                "final_delta_vs_baseline",
+            ])
+        w.writerow([
+            int(time.time()), pseudo_weight, confidence_threshold_db,
+            len(train_samples), len(test_samples), len(unmatched_pairs),
+            f"{iter_results[0][1]:.3f}",
+            f"{iter_results[1][1]:.3f}" if len(iter_results) > 1 else "",
+            f"{iter_results[2][1]:.3f}" if len(iter_results) > 2 else "",
+            f"{iter_results[-1][1] - iter_results[0][1]:+.3f}",
+        ])
+    log.info("E84 CSV row appended: %s", csv_path)

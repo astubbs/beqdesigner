@@ -1062,6 +1062,135 @@ def discover_wav_catalogue_pairs_cached() -> list[dict]:
     return pairs
 
 
+def discover_unmatched_wavs() -> list[Path]:
+    """Find all cached LFE WAVs that have NO matching BEQ catalogue entry.
+
+    Inverse of ``discover_wav_catalogue_pairs``: walks the same cache
+    and returns the WAVs that fall through without a catalogue match.
+    These are titles we have audio for but no ground-truth filter
+    chain — usable as unlabelled data for E84 self-training
+    (``pseudo_label_unmatched`` in ``auto_beq_nn``).
+
+    Returns sorted list of WAV paths (no wrapping dict — these rows
+    have no catalogue entry by definition).
+    """
+    cache_root = wav_cache_dir()
+    if not cache_root.exists():
+        log.warning("WAV cache does not exist: %s", cache_root)
+        return []
+
+    from model.auto_beq_catalogue import _fetch_or_cache
+    catalogue = _fetch_or_cache()
+
+    by_tmdb: dict[str, list[dict]] = {}
+    by_title_year: dict[tuple[str, str], list[dict]] = {}
+    for e in catalogue:
+        tid = str(e.get("theMovieDB", "")).strip()
+        if tid:
+            by_tmdb.setdefault(tid, []).append(e)
+        key = (e.get("title", "").lower().strip(), str(e.get("year", "")))
+        by_title_year.setdefault(key, []).append(e)
+
+    _title_year_re = __import__("re").compile(r"^(.+?)\s*\((\d{4})\)")
+
+    wav_files = sorted(cache_root.rglob("*.lfe-1000hz.wav"))
+    unmatched: list[Path] = []
+
+    for wav in wav_files:
+        m = _ID_RE.search(str(wav))
+        if not m:
+            # No ID tag at all — not a training candidate either way.
+            continue
+        id_type, id_value = m.group(1), m.group(2)
+
+        # Replicate the lookup logic from discover_wav_catalogue_pairs.
+        entry = None
+        if id_type == "tmdb":
+            entries = by_tmdb.get(id_value)
+            if entries:
+                entry = entries[0]
+        if entry is None:
+            for dirname in (wav.parent.name, wav.parent.parent.name, wav.parent.parent.parent.name):
+                m2 = _title_year_re.match(dirname)
+                if m2:
+                    key = (m2.group(1).strip().lower(), m2.group(2))
+                    entries = by_title_year.get(key)
+                    if entries:
+                        entry = entries[0]
+                        break
+
+        if entry is None:
+            unmatched.append(wav)
+
+    log.info(
+        "discovered %d unmatched WAVs (no catalogue entry) from %d WAVs in %s",
+        len(unmatched), len(wav_files), cache_root,
+    )
+    return unmatched
+
+
+_UNMATCHED_CACHE_FILENAME = "unmatched_wavs.pkl"
+
+
+def discover_unmatched_wavs_cached() -> list[Path]:
+    """Cached wrapper around ``discover_unmatched_wavs``.
+
+    Uses the same lightweight signature (wav-cache root mtime +
+    catalogue cache mtime) as ``discover_wav_catalogue_pairs_cached``.
+    Both caches are independent but share invalidation triggers, so
+    they refresh in lockstep after a fresh extract_lfe.py run or a
+    catalogue refetch.
+    """
+    if not _cache_enabled(_DISCOVERY_CACHE_ENABLED_ENV):
+        log.info("discovery cache disabled via %s=0", _DISCOVERY_CACHE_ENABLED_ENV)
+        return discover_unmatched_wavs()
+
+    import pickle as _pickle
+    try:
+        cache_file = beq_dir() / _UNMATCHED_CACHE_FILENAME
+    except Exception as exc:
+        log.warning("beq_dir unavailable for unmatched cache: %s", exc)
+        return discover_unmatched_wavs()
+
+    signature = _discovery_cache_signature()
+    if signature is not None and cache_file.exists():
+        try:
+            with cache_file.open("rb") as f:
+                blob = _pickle.load(f)
+            if isinstance(blob, dict) and blob.get("signature") == signature:
+                wavs = blob.get("wavs", [])
+                log.info(
+                    "discover_unmatched_wavs: cache hit — %d unmatched WAVs",
+                    len(wavs),
+                )
+                return wavs
+            log.info("discover_unmatched_wavs: cache signature mismatch, re-walking")
+        except Exception as exc:
+            log.warning("corrupt unmatched cache %s: %s — re-walking", cache_file, exc)
+
+    wavs = discover_unmatched_wavs()
+
+    if signature is not None:
+        tmp_file = cache_file.with_suffix(".pkl.tmp")
+        try:
+            with tmp_file.open("wb") as f:
+                _pickle.dump(
+                    {"signature": signature, "wavs": wavs},
+                    f,
+                    protocol=_pickle.HIGHEST_PROTOCOL,
+                )
+            tmp_file.replace(cache_file)
+            log.info("discover_unmatched_wavs: wrote cache (%d WAVs)", len(wavs))
+        except Exception as exc:
+            log.warning("failed to write unmatched cache %s: %s", cache_file, exc)
+            try:
+                tmp_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    return wavs
+
+
 def discover_wav_catalogue_pairs() -> list[dict]:
     """Find all cached LFE WAVs that match a BEQ catalogue entry.
 

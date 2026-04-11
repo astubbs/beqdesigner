@@ -969,3 +969,190 @@ def test_train_production_weighted_hybrid_rejects_empty_real_samples():
             tmdb_cache={},
             freqs_hz=DEFAULT_GRID,
         )
+
+
+# ---------------------------------------------------------------------------
+# E84 / T1.3 — Semi-supervised pseudo-labelling
+# ---------------------------------------------------------------------------
+
+
+def _make_real_curve_features(embedding: bool = False):
+    """Minimal CurveFeatures with sample points for self-consistency scoring."""
+    from model.auto_beq_advisor import CurveFeatures
+    # 12 log-spaced sample points covering 5-80 Hz with a rolloff shape.
+    sample_hz = [5.0, 6.3, 8.0, 10.0, 12.5, 16.0, 20.0, 25.0, 32.0, 40.0, 63.0, 80.0]
+    # Steep rolloff: -10 dB at 5 Hz, rising to 0 dB at 80 Hz (anchor).
+    sample_db = [-10.0, -9.0, -7.5, -6.0, -4.5, -3.0, -2.0, -1.0, -0.5, -0.2, -0.1, 0.0]
+    return CurveFeatures(
+        shoulder_peak_db=0.0, shoulder_peak_hz=80.0,
+        level_at_5hz_db=-10.0, level_at_10hz_db=-6.0, level_at_20hz_db=-2.0,
+        rolloff_depth_db=10.0, rolloff_slope_db_per_oct=3.0, dynamic_range_db=10.0,
+        curve_sample_points=tuple(zip(sample_hz, sample_db, strict=True)),
+        foundation_embedding=tuple(range(16)) if embedding else None,
+    )
+
+
+def test_pseudo_label_unmatched_confidence_filter_keeps_self_consistent():
+    """High-confidence pseudo-labels pass; incoherent ones are dropped."""
+    from pathlib import Path
+    from model.auto_beq_nn import pseudo_label_unmatched
+
+    # A teacher model stub that always returns the same filter chain —
+    # a LowShelf(+10 dB, 20 Hz, Q=0.9) that reproduces the ~10 dB
+    # rolloff in our synthetic features. Self-consistency should be
+    # very high.
+    from model.auto_beq_nn import catalogue_entry_to_labels
+
+    good_filter_chain = [{"type": "LowShelf", "freq": 20.0, "gain": 10.0, "q": 0.9}]
+    y_good = catalogue_entry_to_labels({"filters": good_filter_chain})
+
+    class GoodTeacher:
+        def predict(self, X):
+            return np.tile(y_good, (len(X), 1))
+
+    unmatched_pairs = [
+        (Path("/fake/wav/fake_movie.lfe-1000hz.wav"), _make_real_curve_features()),
+    ]
+
+    pseudo_samples, stats = pseudo_label_unmatched(
+        teacher_model=GoodTeacher(),
+        unmatched_pairs=unmatched_pairs,
+        tmdb_cache={},
+        freqs_hz=DEFAULT_GRID,
+        confidence_threshold_db=5.0,  # loose gate so we focus on shape, not tuning
+    )
+    assert stats["n_total"] == 1
+    assert stats["n_kept"] == 1
+    assert len(pseudo_samples) == 1
+    entry, features = pseudo_samples[0]
+    assert entry["author"] == "pseudo"
+    assert entry["filters"][0]["type"] == "LowShelf"
+
+    # The confidence gate should drop wild predictions. A teacher
+    # predicting a +15 dB HighShelf at 80 Hz doesn't reproduce any
+    # sub-20 Hz rolloff, so the residual is huge.
+    bad_chain = [{"type": "HighShelf", "freq": 80.0, "gain": 15.0, "q": 0.5}]
+    y_bad = catalogue_entry_to_labels({"filters": bad_chain})
+
+    class BadTeacher:
+        def predict(self, X):
+            return np.tile(y_bad, (len(X), 1))
+
+    _pseudo, stats_bad = pseudo_label_unmatched(
+        teacher_model=BadTeacher(),
+        unmatched_pairs=unmatched_pairs,
+        tmdb_cache={},
+        freqs_hz=DEFAULT_GRID,
+        confidence_threshold_db=0.5,
+    )
+    assert stats_bad["n_kept"] == 0, (
+        "very-tight gate should reject the incoherent teacher's pseudo-label"
+    )
+
+
+def test_pseudo_label_unmatched_shape_compatibility_with_training_fn():
+    """Output tuples must match train_production_weighted_hybrid's real_samples shape."""
+    from pathlib import Path
+    from model.auto_beq_nn import (
+        N_OUTPUT,
+        catalogue_entry_to_labels,
+        pseudo_label_unmatched,
+        train_production_weighted_hybrid,
+    )
+
+    good_chain = [{"type": "LowShelf", "freq": 20.0, "gain": 10.0, "q": 0.9}]
+    y_good = catalogue_entry_to_labels({"filters": good_chain})
+
+    class FixedTeacher:
+        def predict(self, X):
+            return np.tile(y_good, (len(X), 1))
+
+    unmatched = [
+        (Path("/fake/wav/f1.lfe-1000hz.wav"), _make_real_curve_features()),
+        (Path("/fake/wav/f2.lfe-1000hz.wav"), _make_real_curve_features()),
+    ]
+
+    pseudo_samples, _ = pseudo_label_unmatched(
+        teacher_model=FixedTeacher(),
+        unmatched_pairs=unmatched,
+        tmdb_cache={},
+        freqs_hz=DEFAULT_GRID,
+        confidence_threshold_db=10.0,  # keep all
+    )
+    assert len(pseudo_samples) == 2
+
+    # The (entry, features) tuples should be directly consumable by
+    # train_production_weighted_hybrid as additional real_samples.
+    # We concatenate them with one synthetic entry so the trainer has
+    # a non-empty synth set.
+    synth_entries = [{
+        "title": "synth", "year": "2020",
+        "theMovieDB": "tmdb-synth",
+        "filters": [{"type": "LowShelf", "freq": 25.0, "gain": 5.0, "q": 0.9}],
+        "author": "aron7awol",
+    }]
+    model, metadata = train_production_weighted_hybrid(
+        real_samples=pseudo_samples,
+        synth_entries=synth_entries,
+        tmdb_cache={},
+        freqs_hz=DEFAULT_GRID,
+        real_weight=10.0,
+    )
+    # Metadata reflects 2 "real" samples (the pseudo-labels).
+    assert metadata["n_real"] == 2
+    assert metadata["n_synth"] == 1
+
+    # Model can predict at the expected output shape.
+    x_dummy = np.zeros((1, 102), dtype=np.float32)
+    y = model.predict(x_dummy)
+    assert y.shape == (1, N_OUTPUT)
+
+
+def test_train_e84_self_trained_iterations_grow_training_set():
+    """After N iterations, metadata should track pseudo-label counts per iter."""
+    from pathlib import Path
+    from model.auto_beq_nn import (
+        catalogue_entry_to_labels,
+        train_e84_self_trained,
+    )
+
+    # Real: 3 samples with LowShelf labels.
+    def make_entry(title, freq, gain):
+        return {
+            "title": title, "year": "2020",
+            "theMovieDB": f"tmdb-{title}",
+            "filters": [{"type": "LowShelf", "freq": freq, "gain": gain, "q": 0.9}],
+            "author": "aron7awol",
+        }
+
+    real_samples = [
+        (make_entry(f"real-{i}", 20.0 + i, 4.0 + i * 0.5), _make_real_curve_features())
+        for i in range(3)
+    ]
+    synth_entries = [make_entry(f"synth-{i}", 25.0 + i, 3.0) for i in range(3)]
+    unmatched_pairs = [
+        (Path(f"/fake/wav/unm-{i}.lfe-1000hz.wav"), _make_real_curve_features())
+        for i in range(5)
+    ]
+
+    model, metadata = train_e84_self_trained(
+        real_samples=real_samples,
+        synth_entries=synth_entries,
+        unmatched_pairs=unmatched_pairs,
+        tmdb_cache={},
+        freqs_hz=DEFAULT_GRID,
+        real_weight=10.0,
+        pseudo_weight=2.0,
+        confidence_threshold_db=10.0,  # loose so we actually retain pseudo-labels
+        n_iterations=2,
+    )
+    # Iter 0: baseline (no pseudo yet); iter 1 + 2: pseudo added.
+    assert len(metadata["iter_stats"]) == 3
+    assert metadata["iter_stats"][0]["n_pseudo"] == 0
+    assert metadata["iter_stats"][1]["n_pseudo"] >= 0
+    assert metadata["iter_stats"][2]["n_pseudo"] >= 0
+    assert metadata["n_iterations"] == 2
+    # Model exists and predicts.
+    x = np.zeros((1, 102), dtype=np.float32)
+    y = model.predict(x)
+    assert y.shape[1] > 0

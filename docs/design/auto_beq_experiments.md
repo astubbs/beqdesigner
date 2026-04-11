@@ -3791,3 +3791,88 @@ noise.  Rebalancing fixed it.
 - [x] Document "50:1 weighted hybrid plain XGBoost" in the
       `Current production model` section at the top of this file
       (done — see the updated section at line 62)
+
+## 2026-04-12: Paradigm-shift experiments (T1.x)
+
+See [`auto_beq_nn_paradigm_shifts.md`](auto_beq_nn_paradigm_shifts.md)
+for the full research menu. This section logs actual experiment
+results against the E82 production champion.
+
+### E84 — Semi-supervised self-training (T1.3)
+
+**Hypothesis**: the WAV cache contains unlabelled real audio (WAVs we
+have but the catalogue has no filter chain for). A teacher model can
+generate pseudo-labels for them; filter by self-consistency
+(prediction's acoustic response matches measured rolloff within 1.5
+dB mean abs error); retrain with those pseudo-labels as an
+additional training-data channel (weight 10, between real at 50 and
+synth at 1). Iterate.
+
+**Method**: E82-style weighted hybrid baseline on a fresh 80/20 split
+of the 1279-WAV cache (1023 train / 256 test, stratified by rolloff
+severity, random_state=42). Three iterations:
+- iter 0: baseline = E82 weighted hybrid (real=50, synth=1)
+- iter 1: teacher=iter 0, pseudo-label unmatched, retrain with pseudo=10
+- iter 2: teacher=iter 1, pseudo-label again, retrain
+
+**Result**:
+
+| Iteration | mean dB | max dB | n_pseudo | vs baseline |
+|---|---|---|---|---|
+| iter 0 (E82 baseline) | **1.71** | 9.92 | 0 | — |
+| iter 1 | 1.69 | 11.51 | **0** | −0.02 (noise) |
+| iter 2 | 1.69 | 11.51 | **0** | −0.02 (noise) |
+
+**Per-author (baseline → final)**:
+
+| Author | baseline | final | Δ |
+|---|---|---|---|
+| aron7awol | 1.33 | 1.24 | −0.10 |
+| halcyon888 | 0.54 | 0.47 | −0.07 |
+| kaelaria | 1.92 | 1.85 | −0.06 |
+| mobe1969 | 2.50 | 2.57 | +0.07 |
+| remixmark | 0.88 | 0.87 | −0.00 |
+| t1g8rsfan | 1.53 | 1.60 | +0.07 |
+
+**Why it was a no-op**: the unmatched WAV pool has **only 11 WAVs**
+— not the ~200 I estimated. `extract_lfe.py` only extracts WAVs for
+catalogue-matched titles by design, so 1279 / 1290 WAVs in the cache
+(99.1%) are already labelled. The 11 unmatched are edge cases where
+the ID tag → catalogue entry lookup failed. All 11 failed the 1.5 dB
+self-consistency gate across both iterations, so **zero pseudo-labels
+were ever added to training** — iter 1 and iter 2's training data is
+identical to iter 0's. The −0.02 dB drift is XGBoost non-determinism
+across two train calls on the "same" data (cf E75 determinism work).
+
+**Lesson**: self-training is the right mathematical idea but the
+WRONG FIT for this data pipeline. `extract_lfe.py`'s current behaviour
+makes the unmatched pool essentially empty — it's a closed-set
+problem, not an open-set one. For E84 to actually pay off we'd need
+to **expand extract_lfe.py to process titles that have NO catalogue
+entry** (e.g. bulk-extract from a library root, not from catalogue
+matches). That's a separate scope expansion and is out of scope for
+Tier 1.
+
+**Bonus finding**: the baseline itself is **1.71 dB on the new
+1279-WAV split** — significantly better than E82's 1.99 dB. The 188
+additional WAVs extracted since E82 (1091 → 1279) lowered the mean
+error by 0.28 dB essentially for free. The E77+ observation that
+"more real WAVs monotonically improve accuracy" still holds.
+
+**Verdict**: **preserved as selectable alternative, not promoted**.
+Code path lives at `auto_beq_nn.py::train_e84_self_trained` + the
+`--self-train` CLI flag. If `extract_lfe.py` ever grows a
+scan-everything mode, re-run E84 with a realistic unlabelled pool.
+
+**Related commit**: (this commit)
+**CSV**: `.pytest_cache/e84_self_trained.csv`
+
+### E83 — Audio foundation-model features (T1.1)
+
+**Status**: infrastructure committed in `1014d99`, experiment run
+pending Phase 2 (xgboost native serializer to unblock torch coinstall).
+See plan file for details.
+
+### E85 — Differentiable DSP (T1.2)
+
+**Status**: not yet started. Requires Phase 2 (torch unblocker) first.

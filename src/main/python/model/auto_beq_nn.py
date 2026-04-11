@@ -2190,6 +2190,374 @@ def train_production_weighted_hybrid(
 
 
 # ---------------------------------------------------------------------------
+# E84 / T1.3 — Semi-supervised pseudo-labelling on unmatched real WAVs
+# ---------------------------------------------------------------------------
+
+
+def pseudo_label_unmatched(
+    teacher_model: object,
+    unmatched_pairs: "list[tuple[object, object]]",
+    tmdb_cache: dict,
+    freqs_hz: np.ndarray,
+    fs: int = 1000,
+    confidence_threshold_db: float = 1.5,
+    config: "AudioFeatureConfig" = DEFAULT_AUDIO_CONFIG,
+) -> "tuple[list[tuple[dict, object]], dict]":
+    """Use a teacher model to generate pseudo-labels for unmatched real WAVs.
+
+    For each unmatched WAV (a path we have real audio for but no
+    catalogue entry), the teacher predicts a filter chain.  We then
+    compute a **self-consistency score**: evaluate the predicted chain
+    on the freq grid and compare it to the measured curve via
+    ``compute_match_metrics``.  If the model's own prediction reproduces
+    the measured rolloff within ``confidence_threshold_db`` mean abs
+    error, we trust the pseudo-label and add it to the return list.
+    Wildly-off predictions are self-inconsistent and get filtered out.
+
+    Parameters
+    ----------
+    teacher_model
+        A trained ``.predict(X)``-compatible model (typically the E82
+        or E83 weighted hybrid XGBoost).
+    unmatched_pairs
+        List of ``(wav_path, curve_features)`` tuples — the path is a
+        ``pathlib.Path`` and the features are ``CurveFeatures``.  The
+        caller extracts these via the spike helpers (same pipeline as
+        the matched-pair path, just without a catalogue entry).
+    tmdb_cache
+        TMDb metadata cache for the metadata feature encoder.  Queried
+        by title; unmatched WAVs are looked up via filename parsing
+        (no catalogue fallback available).
+    freqs_hz
+        Frequency grid (usually ``DEFAULT_GRID``).
+    fs
+        Filter-chain sample rate (default 1000 Hz).
+    confidence_threshold_db
+        Maximum acceptable self-consistency mean absolute error, in dB,
+        to accept a pseudo-label.  Default 1.5 dB is deliberately
+        tight — we trust only predictions the model itself is very
+        confident about.
+    config
+        Audio feature configuration (must match the teacher's).
+
+    Returns
+    -------
+    pseudo_samples
+        List of ``(pseudo_catalogue_entry, curve_features)`` tuples in
+        the same shape as ``train_production_weighted_hybrid``'s
+        ``real_samples`` argument.  The pseudo catalogue entry
+        synthesises minimal metadata (title from the WAV filename,
+        author "pseudo", content_type heuristic) and carries the
+        teacher's predicted filter chain.
+    stats
+        Dict with keys:
+          * ``n_total`` — unmatched WAVs considered
+          * ``n_kept`` — pseudo-labels that passed the confidence gate
+          * ``mean_confidence_db`` — mean self-consistency error on
+            the KEPT samples (higher = looser gate)
+          * ``decile_hist`` — list of 10 ints, how many unmatched
+            WAVs fell in each confidence decile (0=best, 9=worst)
+    """
+    from model.auto_beq import compute_match_metrics, evaluate_filter_chain
+    from model.auto_beq_metadata import enrich_media_metadata
+    from model.auto_beq_advisor import MediaMetadata
+
+    kept: list[tuple[dict, object]] = []
+    confidences: list[float] = []
+    decile_hist = [0] * 10
+
+    for wav_path, features in unmatched_pairs:
+        # Build the same feature vector the teacher was trained on.
+        # Metadata fields default-encode to zeros when we don't know them.
+        title = _title_from_wav_path(wav_path)
+        pseudo_meta = MediaMetadata(
+            title=title,
+            year=2020,  # unknown — centred on the training distribution
+            author="pseudo",
+        )
+        metadata_for_features = enrich_media_metadata(
+            {"title": title, "year": "2020", "author": "pseudo"}, tmdb_cache,
+        )
+        x = build_feature_vector(features, metadata_for_features, config=config)
+        y_pred = teacher_model.predict(x.reshape(1, -1))[0]
+        predicted_filters = labels_to_filters(y_pred)
+
+        if not predicted_filters:
+            # Model predicts empty chain → no pseudo-label useful.
+            continue
+
+        # Self-consistency: synthesise the rolloff the teacher's filter
+        # chain would produce, compare against the measured rolloff the
+        # features came from.
+        try:
+            predicted_response = evaluate_filter_chain(
+                predicted_filters, freqs_hz, fs=fs,
+            )
+        except Exception as exc:
+            log.debug("pseudo-label skipped (eval failed) %s: %s", wav_path.name, exc)
+            continue
+
+        # The teacher's features encode the measured rolloff at a
+        # 9-bin subset of freqs_hz.  Use the same 12-point sample
+        # representation from CurveFeatures to reconstruct a rough
+        # "measured rolloff curve" on the full grid.
+        measured_curve = _curve_from_sample_points(
+            getattr(features, "curve_sample_points", ()),
+            freqs_hz,
+        )
+        if measured_curve is None:
+            # No sample points → can't self-consistency-check.
+            continue
+
+        # The teacher's prediction is a CORRECTION (what to add). The
+        # measured rolloff is the INVERSE of the correction. So the
+        # residual is: measured - (-predicted_response) = measured + predicted_response.
+        # A perfect self-consistency gives residual ≈ 0 at every bin.
+        target_curve = -predicted_response
+        metrics = compute_match_metrics(
+            target_curve, predicted_filters, freqs_hz, fs=fs,
+        )
+        # compute_match_metrics compares the predicted chain vs the
+        # target, so a low mean_abs_err means the chain reproduces the
+        # rolloff we'd expect from its own prediction.  We additionally
+        # check that the measured_curve at the anchor bins is close to
+        # what the predicted chain would produce.
+        residual = np.abs(measured_curve - target_curve)
+        band_mask = (freqs_hz >= 5.0) & (freqs_hz <= 80.0)
+        mean_err = float(residual[band_mask].mean())
+
+        # Decile bucket (0..9, clamped at 9 dB).
+        bucket = min(9, int(mean_err))
+        decile_hist[bucket] += 1
+
+        if mean_err > confidence_threshold_db:
+            continue
+
+        confidences.append(mean_err)
+
+        pseudo_entry = {
+            "title": title,
+            "year": "2020",
+            "author": "pseudo",
+            "filters": predicted_filters,
+            "content_type": "film",
+            "theMovieDB": "",  # no TMDb ID; prevents dedup collisions
+        }
+        kept.append((pseudo_entry, features))
+
+    stats = {
+        "n_total": len(unmatched_pairs),
+        "n_kept": len(kept),
+        "mean_confidence_db": float(np.mean(confidences)) if confidences else float("nan"),
+        "decile_hist": decile_hist,
+    }
+    log.info(
+        "E84 pseudo-labelling: %d/%d WAVs passed (≤%.1f dB), mean confidence %.2f dB",
+        stats["n_kept"], stats["n_total"], confidence_threshold_db,
+        stats["mean_confidence_db"],
+    )
+    return kept, stats
+
+
+def _title_from_wav_path(wav_path) -> str:
+    """Derive a pseudo title from a WAV cache path.
+
+    The portable WAV cache path typically looks like::
+        wav-cache/TV/S/Show Name (2020) [tvdb-X]/Season 01/S01E02.lfe-1000hz.wav
+        wav-cache/Movies/M/Movie Name (2020) [tmdb-X]/Movie Name.lfe-1000hz.wav
+
+    We walk up to the first ancestor directory that matches
+    ``Title (YYYY)`` and return the title.  Falls back to the bare
+    stem if nothing matches.
+    """
+    import re as _re
+    _title_re = _re.compile(r"^(.+?)\s*\(\d{4}\)")
+    for ancestor in (wav_path.parent, wav_path.parent.parent, wav_path.parent.parent.parent):
+        m = _title_re.match(ancestor.name)
+        if m:
+            return m.group(1).strip()
+    return wav_path.stem.replace(".lfe-1000hz", "")
+
+
+def _curve_from_sample_points(
+    sample_points: "tuple[tuple[float, float], ...]",
+    freqs_hz: np.ndarray,
+) -> "np.ndarray | None":
+    """Reconstruct a per-bin dB curve from CurveFeatures.curve_sample_points.
+
+    CurveFeatures stores 12 (Hz, dB) samples sufficient to describe the
+    bass-band shape.  Linear interpolation back onto ``freqs_hz`` gives
+    a full-resolution curve suitable for self-consistency scoring.
+    """
+    if not sample_points:
+        return None
+    pts = sorted(sample_points, key=lambda p: p[0])
+    hz = np.array([p[0] for p in pts], dtype=np.float64)
+    db = np.array([p[1] for p in pts], dtype=np.float64)
+    return np.interp(freqs_hz, hz, db).astype(np.float32)
+
+
+def train_e84_self_trained(
+    real_samples: "list[tuple[dict, object]]",
+    synth_entries: "list[dict]",
+    unmatched_pairs: "list[tuple[object, object]]",
+    tmdb_cache: dict,
+    freqs_hz: np.ndarray,
+    fs: int = 1000,
+    real_weight: float = 50.0,
+    pseudo_weight: float = 10.0,
+    confidence_threshold_db: float = 1.5,
+    n_iterations: int = 2,
+    config: "AudioFeatureConfig" = DEFAULT_AUDIO_CONFIG,
+) -> "tuple[object, dict]":
+    """E84: iterative self-training atop the E82 weighted hybrid.
+
+    Iteration 0: train baseline E82 on (real_samples, synth_entries).
+    Iteration i: teacher = iter (i-1); generate pseudo-labels for
+    unmatched_pairs; retrain with
+    ``[real * real_weight, synth * 1, pseudo * pseudo_weight]``.
+
+    Returns final model plus metadata: per-iteration pseudo-label counts,
+    confidence histograms, training samples per source.
+    """
+    import time as _time
+
+    iter_stats: list[dict] = []
+    current_model: object | None = None
+    current_pseudo: list[tuple[dict, object]] = []
+    t_start = _time.time()
+
+    for iteration in range(n_iterations + 1):
+        if iteration == 0:
+            model, base_meta = train_production_weighted_hybrid(
+                real_samples=real_samples,
+                synth_entries=synth_entries,
+                tmdb_cache=tmdb_cache,
+                freqs_hz=freqs_hz,
+                fs=fs,
+                real_weight=real_weight,
+                config=config,
+            )
+            iter_stats.append({
+                "iteration": 0,
+                "n_real": int(base_meta["n_real"]),
+                "n_synth": int(base_meta["n_synth"]),
+                "n_pseudo": 0,
+                "pseudo_confidence_mean_db": None,
+                "pseudo_decile_hist": None,
+            })
+            current_model = model
+            continue
+
+        # Generate pseudo-labels from the previous iteration's model.
+        current_pseudo, pseudo_stats = pseudo_label_unmatched(
+            teacher_model=current_model,
+            unmatched_pairs=unmatched_pairs,
+            tmdb_cache=tmdb_cache,
+            freqs_hz=freqs_hz,
+            fs=fs,
+            confidence_threshold_db=confidence_threshold_db,
+            config=config,
+        )
+
+        # Build X/Y/weight vectors for the combined hybrid.  Reuse the
+        # E82 hybrid trainer's logic for real+synth, then append pseudo
+        # rows with pseudo_weight.
+        from model.auto_beq_metadata import enrich_media_metadata
+
+        X_real_list: list[np.ndarray] = []
+        Y_real_list: list[np.ndarray] = []
+        real_tmdb_ids: set[str] = set()
+        for entry, features in real_samples:
+            if not entry.get("filters"):
+                continue
+            metadata = enrich_media_metadata(entry, tmdb_cache)
+            X_real_list.append(build_feature_vector(features, metadata, config=config))
+            Y_real_list.append(catalogue_entry_to_labels(entry))
+            tid = str(entry.get("theMovieDB", "")).strip()
+            if tid:
+                real_tmdb_ids.add(tid)
+
+        X_real = np.array(X_real_list, dtype=np.float32) if X_real_list else np.empty((0, config.n_features), dtype=np.float32)
+        Y_real = np.array(Y_real_list, dtype=np.float32) if Y_real_list else np.empty((0, N_OUTPUT), dtype=np.float32)
+
+        from model.auto_beq import evaluate_filter_chain
+        from model.auto_beq_advisor import extract_curve_features
+
+        X_synth_list: list[np.ndarray] = []
+        Y_synth_list: list[np.ndarray] = []
+        anchor_idx = int(np.argmin(np.abs(freqs_hz - 80.0)))
+        for entry in synth_entries:
+            if not entry.get("filters"):
+                continue
+            tid = str(entry.get("theMovieDB", "")).strip()
+            if tid and tid in real_tmdb_ids:
+                continue
+            try:
+                correction = evaluate_filter_chain(entry["filters"], freqs_hz, fs=fs)
+                rolloff = -correction
+                rolloff = rolloff - rolloff[anchor_idx]
+                features = extract_curve_features(rolloff, freqs_hz)
+            except Exception:
+                continue
+            metadata = enrich_media_metadata(entry, tmdb_cache)
+            X_synth_list.append(build_feature_vector(features, metadata, config=config))
+            Y_synth_list.append(catalogue_entry_to_labels(entry))
+
+        X_synth = np.array(X_synth_list, dtype=np.float32) if X_synth_list else np.empty((0, config.n_features), dtype=np.float32)
+        Y_synth = np.array(Y_synth_list, dtype=np.float32) if Y_synth_list else np.empty((0, N_OUTPUT), dtype=np.float32)
+
+        X_pseudo_list: list[np.ndarray] = []
+        Y_pseudo_list: list[np.ndarray] = []
+        for entry, features in current_pseudo:
+            metadata = enrich_media_metadata(entry, tmdb_cache)
+            X_pseudo_list.append(build_feature_vector(features, metadata, config=config))
+            Y_pseudo_list.append(catalogue_entry_to_labels(entry))
+
+        X_pseudo = np.array(X_pseudo_list, dtype=np.float32) if X_pseudo_list else np.empty((0, config.n_features), dtype=np.float32)
+        Y_pseudo = np.array(Y_pseudo_list, dtype=np.float32) if Y_pseudo_list else np.empty((0, N_OUTPUT), dtype=np.float32)
+
+        X_combined = np.vstack([X_real, X_synth, X_pseudo])
+        Y_combined = np.vstack([Y_real, Y_synth, Y_pseudo])
+
+        sample_weight = np.concatenate([
+            np.full(len(X_real), float(real_weight), dtype=np.float32),
+            np.ones(len(X_synth), dtype=np.float32),
+            np.full(len(X_pseudo), float(pseudo_weight), dtype=np.float32),
+        ])
+
+        log.info(
+            "E84 iter %d: %d real + %d synth + %d pseudo (weights %.0f:1:%.0f)",
+            iteration, len(X_real), len(X_synth), len(X_pseudo),
+            real_weight, pseudo_weight,
+        )
+        model = train_xgboost(X_combined, Y_combined, sample_weight=sample_weight)
+        current_model = model
+
+        iter_stats.append({
+            "iteration": iteration,
+            "n_real": len(X_real),
+            "n_synth": len(X_synth),
+            "n_pseudo": len(X_pseudo),
+            "pseudo_confidence_mean_db": pseudo_stats["mean_confidence_db"],
+            "pseudo_decile_hist": pseudo_stats["decile_hist"],
+        })
+
+    metadata = {
+        "trained_at": int(_time.time()),
+        "train_time_s": round(_time.time() - t_start, 1),
+        "real_weight": float(real_weight),
+        "pseudo_weight": float(pseudo_weight),
+        "confidence_threshold_db": float(confidence_threshold_db),
+        "n_iterations": n_iterations,
+        "iter_stats": iter_stats,
+        "feature_config": config.label,
+        "n_features": int(config.n_features),
+    }
+    return current_model, metadata
+
+
+# ---------------------------------------------------------------------------
 # TrainedModelAdvisor — Advisor protocol implementation
 # ---------------------------------------------------------------------------
 
