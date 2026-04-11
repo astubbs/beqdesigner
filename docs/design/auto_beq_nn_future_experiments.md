@@ -7,6 +7,17 @@ This doc captures ideas not yet tried, derived from cross-referencing the
 original experiment plan (`auto_beq_plan.md`) against the experiment log
 (`auto_beq_experiments.md`, E1–E40). Ranked by expected impact.
 
+> **Update 2026-04-11**: The F-series ideas below are the **within-paradigm**
+> brainstorm from the era when XGBoost + hand-crafted features was the only
+> model family we'd tried. Most have been implemented (E41–E82) and the
+> within-paradigm race is now at 1.99 dB (E82 50:1 weighted hybrid).
+>
+> **Post-E82 paradigm-shift ideas** (foundation models, differentiable DSP,
+> self-training, uncertainty gating, RL, diffusion, large LLMs, GNNs) live in
+> [`auto_beq_nn_paradigm_shifts.md`](auto_beq_nn_paradigm_shifts.md). Read
+> that doc for any new experiment that goes beyond hand-crafted features
+> + tabular GBM.
+
 ---
 
 ## Coverage gap: plan experiments never attempted
