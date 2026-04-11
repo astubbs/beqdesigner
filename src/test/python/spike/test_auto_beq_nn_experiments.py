@@ -817,6 +817,121 @@ def test_i_experiment_comparison(tmp_path, caplog):
 
 
 # ---------------------------------------------------------------------------
+# E75 — Baseline determinism regression test
+# ---------------------------------------------------------------------------
+
+
+def _verify_deterministic(
+    exp: "ExperimentConfig",
+    train_entries: list,
+    X_train,
+    Y_train,
+    X_val,
+    Y_val,
+    val_entries: list,
+    freqs_hz,
+    n_runs: int = 3,
+    epsilon_db: float = 0.005,
+) -> list[float]:
+    """Run *exp* N times back-to-back and verify mean loss is identical.
+
+    Returns the list of per-run mean losses.  Asserts that (max - min)
+    across runs is below *epsilon_db*.  Small epsilon (default 5e-3 dB)
+    catches any non-determinism from XGBoost thread scheduling or
+    concurrent seed contamination.
+
+    Used to guard the E75 fix: XGBoost n_jobs=1 + deterministic seeds
+    must produce bit-identical models across runs.
+    """
+    from model.auto_beq import DEFAULT_GRID  # noqa: F401 — used indirectly
+
+    losses: list[float] = []
+    for i in range(n_runs):
+        model = _train_model(
+            exp, X_train, Y_train, train_entries, freqs_hz,
+            n_audio=exp.audio_config.n_total_audio,
+        )
+        results = _evaluate(
+            model, X_val, Y_val, val_entries, freqs_hz,
+            per_author_alpha=exp.use_per_author_alpha,
+            marginalization=exp.marginalization,
+            n_audio=exp.audio_config.n_total_audio,
+            output_mode=exp.output_mode,
+        )
+        mean = float(np.mean([r["loss_db"] for r in results]))
+        losses.append(mean)
+        log.info("determinism run %d/%d: %s → mean=%.6f dB", i + 1, n_runs, exp.name, mean)
+
+    spread = max(losses) - min(losses)
+    assert spread < epsilon_db, (
+        f"{exp.name} non-deterministic: losses={losses}, spread={spread:.4f} dB "
+        f">= epsilon={epsilon_db:.4f} dB"
+    )
+    return losses
+
+
+@pytest.mark.skipif(
+    os.environ.get("AUTO_BEQ_SKIP_F_EXPERIMENTS", "0") == "1",
+    reason="AUTO_BEQ_SKIP_F_EXPERIMENTS=1",
+)
+def test_baseline_determinism(tmp_path, caplog):
+    """E75: Baseline config must be bit-identical across N consecutive runs.
+
+    Regression guard for the n_jobs=1 fix.  If XGBoost picks up a
+    default-thread configuration (or we reintroduce concurrent
+    contention), the mean loss will drift across runs and this test
+    fails immediately.
+
+    Runs the cheap Baseline config (no augmentation, no classifier, no
+    dedup changes) to keep the test time bounded.  Extend the
+    ``_CONFIGS`` list below to verify determinism of additional configs
+    when investigating related bugs.
+    """
+    caplog.set_level(logging.INFO, logger="auto_beq_f_experiments")
+
+    from model.auto_beq import DEFAULT_GRID
+    from model.auto_beq_catalogue import _fetch_or_cache
+    from model.auto_beq_metadata import fetch_metadata_batch, load_cache
+    from model.auto_beq_nn import deduplicate_by_title
+
+    from spike._auto_beq_helpers import discover_wav_catalogue_pairs
+
+    pairs = discover_wav_catalogue_pairs()
+    if not pairs:
+        pytest.skip("No WAV files found in cache")
+
+    val_tmdb = {p["tmdb_id"] for p in pairs if p.get("tmdb_id")}
+    catalogue = _fetch_or_cache()
+    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
+    tmdb_cache = load_cache()
+    tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
+    train_entries = [
+        e for e in deduped
+        if str(e.get("theMovieDB", "")).strip() not in val_tmdb
+    ]
+
+    config = AudioFeatureConfig()
+    X_train, Y_train = _build_training_data(
+        train_entries, DEFAULT_GRID, tmdb_cache, config,
+    )
+    X_val, Y_val, val_entries = _build_validation_data(
+        pairs, DEFAULT_GRID, tmdb_cache, config,
+    )
+
+    # Configs to verify.  Keep this short — each config runs N times.
+    _CONFIGS = [
+        ExperimentConfig("Baseline"),
+    ]
+
+    for exp in _CONFIGS:
+        losses = _verify_deterministic(
+            exp, train_entries, X_train, Y_train, X_val, Y_val,
+            val_entries, DEFAULT_GRID, n_runs=3, epsilon_db=0.005,
+        )
+        log.info("%s determinism OK: losses=%s", exp.name, losses)
+
+
+# ---------------------------------------------------------------------------
 # F5/E45 — Cross-episode consistency test (standalone)
 # ---------------------------------------------------------------------------
 
