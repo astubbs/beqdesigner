@@ -62,6 +62,15 @@ ignore = [
     "E741",  # ambiguous variable name (l, I, O)
 ]
 
+[tool.pytest.ini_options]
+# Test classification: tests are unit by default. Opt-in groups live behind
+# markers so CI and `run-spike-tests.sh` can skip them without scanning real
+# media libraries, hitting external APIs, or retraining models from scratch.
+markers = [
+    "integration: needs real external resources (media files, TMDb, Ollama, NAS mounts). Opt-in via run-spike-integration.sh.",
+    "experiment: long-running model training / sweep tests (minutes each). Opt-in via run-spike-experiments.sh.",
+]
+
 [tool.mypy]
 python_version = "3.13"
 ignore_missing_imports = true

@@ -43,6 +43,10 @@ log = logging.getLogger("auto_beq_nn_chunked")
 
 _DEFAULT_FS = 1000
 
+# E19 chunked-strategy comparison: trains and validates 4 strategies side-by-side
+# on the real WAV cache. Opt-in via `scripts/run-spike-experiments.sh`.
+pytestmark = pytest.mark.experiment
+
 # Strategies to compare: Welch baseline + the three best from E18b.
 _STRATEGIES = [
     STRATEGY_WELCH,

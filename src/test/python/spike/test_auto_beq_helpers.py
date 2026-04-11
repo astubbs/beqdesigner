@@ -110,6 +110,7 @@ class TestExtractLfeWavCachePath:
         assert wav_files == [], f"WAV written next to source: {wav_files}"
 
 
+@pytest.mark.integration
 @pytest.mark.skipif(
     not have_tool("ffmpeg") or not have_tool("ffprobe"),
     reason="ffmpeg/ffprobe not on PATH",

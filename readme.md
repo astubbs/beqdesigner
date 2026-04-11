@@ -253,7 +253,9 @@ compares the output to the catalogue's expert-authored filters.
 |---|---|
 | `scripts/run-sweep-discover.sh` | Discover media in your library, match against BEQ catalogue. Interactive: prompts for library paths on first run, remembers them after. |
 | `scripts/run-sweep-tests.sh` | Run the auto-BEQ pipeline on discovered media. Wraps pytest with correct env. Supports `AUTO_BEQ_SWEEP_LIMIT=N` to cap how many files to process. |
-| `scripts/run-spike-tests.sh` | Run the full spike test suite (unit + integration + sweep). Use `SPIKE_TEST=...` to select specific tests, `SPIKE_VERBOSE=1` for full output. |
+| `scripts/run-spike-tests.sh` | Run the fast unit-only spike suite (~1 min). Excludes `integration` + `experiment` markers by default. Use `SPIKE_TEST=...` to select specific tests, `SPIKE_VERBOSE=1` for full output. |
+| `scripts/run-spike-integration.sh` | Run spike tests marked `integration` — opt-in. Needs real media files / TMDb / Ollama / populated sweep config. Tests skip gracefully if their resources are missing. |
+| `scripts/run-spike-experiments.sh` | Run spike tests marked `experiment` — opt-in. Retrains F/G/H/I model batches and the real-audio training regime (E77/E82). Minutes to hours per test. Not for CI. |
 | `scripts/spike_auto_beq.py` | Interactive CLI playground for testing auto-BEQ on a single title. |
 | `scripts/extract_lfe.py` | Standalone LFE extractor — scans media roots, extracts LFE WAVs to portable cache. Used directly or via Docker (see below). |
 | `scripts/verify_wav_cache.py` | Validate WAV cache integrity (header + duration check). |
@@ -262,6 +264,8 @@ compares the output to the catalogue's expert-authored filters.
 | `scripts/nn_acquisition_recommender.py` | Recommend N missing catalogue titles to acquire (greedy bias correction). Excludes titles already in your library via `media_inventory.json`. |
 | `scripts/nn_author_pattern_report.py` | Per-author distribution analysis from the BEQ catalogue. |
 | `scripts/nn_comparison_report.py` | Compare NN-predicted vs hand-coded BEQ filters across your WAV cache. |
+| `scripts/train_production_model.py` | Train + save the production BEQ model (E82 50:1 weighted hybrid). Output: `{beq-dir}/production_model.joblib` + `.meta.json` sidecar. Run once per WAV cache update. |
+| `scripts/generate_beq_profile.py` | Generate complete BEQ profiles (filters + biquads + spectrographs + catalogue-compatible JSON) for uncatalogued media. Loads the saved production model; falls back to inline training if absent. |
 
 
 ### Environment variables
@@ -271,13 +275,15 @@ compares the output to the catalogue's expert-authored filters.
 | `AUTO_BEQ_ADVISOR` | Which advisor: `measurement` (signal-only), `ollama` (LLM), `mock`, `heuristic` | `measurement` |
 | `AUTO_BEQ_SWEEP_LIMIT` | Max media files to process in sweep | `10` |
 | `OLLAMA_MODEL` | Ollama model name | `qwen:14b` |
-| `SPIKE_TEST` | Pytest selector for run-spike-tests.sh | all spike tests |
+| `SPIKE_TEST` | Pytest selector for run-spike-*.sh wrappers | all spike tests |
+| `SPIKE_MARKERS` | Override default marker filter in `run-spike-tests.sh` | `not integration and not experiment` |
 | `SPIKE_VERBOSE` | `1` to show stdout from tests | `0` |
+| `AUTO_BEQ_MODEL_PATH` | Override path for the trained XGBoost model loaded by `AUTO_BEQ_ADVISOR=trained_model`. Falls back to `{beq-dir}/production_model.joblib`. | (auto-discover) |
 
 ### Design docs
 
 - [`docs/design/auto_beq.md`](docs/design/auto_beq.md) — vision + architecture
-- [`docs/design/auto_beq_experiments.md`](docs/design/auto_beq_experiments.md) — experiment log (E1–E17)
+- [`docs/design/auto_beq_experiments.md`](docs/design/auto_beq_experiments.md) — experiment log (ongoing, current champion: E82 50:1 weighted hybrid)
 - [`docs/design/auto_beq_library_sweep_plan.md`](docs/design/auto_beq_library_sweep_plan.md) — sweep quick-start
 - [`branch-plans/plan-sharp-goldberg.md`](branch-plans/plan-sharp-goldberg.md) — current branch plan
 

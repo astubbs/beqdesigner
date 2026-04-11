@@ -197,6 +197,7 @@ def _load_media_manifest() -> list[dict]:
 MEDIA_MANIFEST = _load_media_manifest()
 
 
+@pytest.mark.integration
 @pytest.mark.skipif(not MEDIA_MANIFEST, reason="no media manifest / no files on disk")
 @pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
 @pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")
@@ -366,6 +367,7 @@ def test_real_media_roundtrip(catalogue_snapshot, caplog, manifest_entry):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.integration
 @pytest.mark.skipif(not MEDIA_MANIFEST, reason="no media manifest / no files on disk")
 @pytest.mark.skipif(not _have_tool("ffmpeg"), reason="ffmpeg not on PATH")
 @pytest.mark.skipif(not _have_tool("ffprobe"), reason="ffprobe not on PATH")

@@ -27,6 +27,10 @@ import pytest
 
 log = logging.getLogger("auto_beq_f_experiments")
 
+# F/G/H/I experiment batches — each test retrains multiple model variants
+# from scratch. Minutes per test. Opt-in via `scripts/run-spike-experiments.sh`.
+pytestmark = pytest.mark.experiment
+
 # ---------------------------------------------------------------------------
 # Experiment configuration
 # ---------------------------------------------------------------------------

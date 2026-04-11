@@ -28,6 +28,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -49,15 +50,45 @@ from model.auto_beq_nn import (
     catalogue_entry_to_labels,
     deduplicate_by_title,
     labels_to_filters,
+    load_model,
     train_late_fusion,
 )
 from model.iir import HighShelf, LowShelf, PeakingEQ
-from spike._auto_beq_helpers import extract_lfe_wav, STRATEGY_WELCH, extract_features_with_strategy
+from spike._auto_beq_helpers import beq_dir
 from spike.sweep_discover import parse_media_filename
 
 log = logging.getLogger("generate_beq_profile")
 
 _BIQUAD_FS = 96000  # Sample rate for biquad coefficients (catalogue standard)
+
+
+# ---------------------------------------------------------------------------
+# ffprobe JSON parsing
+# ---------------------------------------------------------------------------
+
+
+def _parse_ffprobe_streams(probe_json: str) -> dict:
+    """Extract the first audio stream dict from an ffprobe JSON output.
+
+    ffprobe with ``-select_streams a:0`` populates either the top-level
+    ``streams`` key (standalone mkv/mp4 files) or the nested
+    ``programs[0].streams`` key (container formats like MPEG-TS).  Both
+    may also be present but with one of them empty.
+
+    Returns ``{}`` when no audio stream is found or when the JSON is
+    malformed.
+    """
+    import json as _json
+    try:
+        parsed = _json.loads(probe_json)
+    except (ValueError, TypeError):
+        return {}
+    streams = parsed.get("streams") or []
+    if not streams:
+        programs = parsed.get("programs") or []
+        if programs:
+            streams = programs[0].get("streams") or []
+    return streams[0] if streams else {}
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +188,70 @@ def _generate_spectrographs(
 
 
 # ---------------------------------------------------------------------------
+# Model loading / fallback training
+# ---------------------------------------------------------------------------
+
+
+def _load_or_train_model() -> "tuple[object, str]":
+    """Load the production BEQ model, or train a legacy fallback inline.
+
+    Resolution order:
+      1. ``AUTO_BEQ_MODEL_PATH`` env var (explicit override)
+      2. ``{beq-dir}/production_model.joblib`` (auto-discover)
+      3. Inline late-fusion α=0.3 training (legacy fallback + warning)
+
+    The preferred path is the E82 50:1 weighted hybrid plain XGBoost
+    model (mean 1.99 dB per-title test error).
+
+    Returns ``(model, source)`` where ``source`` is ``"production"`` or
+    ``"inline-late-fusion"`` for provenance in the profile note.
+    """
+    override = os.environ.get("AUTO_BEQ_MODEL_PATH")
+    if override:
+        prod_path = Path(override)
+        if not prod_path.exists():
+            raise FileNotFoundError(
+                f"AUTO_BEQ_MODEL_PATH={override} does not exist",
+            )
+        log.info("loading production model (via AUTO_BEQ_MODEL_PATH): %s", prod_path)
+        return load_model(str(prod_path)), "production"
+
+    prod_path = beq_dir() / "production_model.joblib"
+    if prod_path.exists():
+        log.info("loading production model: %s", prod_path)
+        return load_model(str(prod_path)), "production"
+
+    log.warning(
+        "production model not found at %s — falling back to inline training. "
+        "Run `poetry run python3 scripts/train_production_model.py` to train "
+        "and save the production model (E82 50:1 weighted hybrid, 1.99 dB).",
+        prod_path,
+    )
+    log.info("training inline fallback (late fusion α=0.3)...")
+    catalogue = _fetch_or_cache()
+    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
+    tmdb_cache = fetch_metadata_batch(deduped, cache=load_cache())
+
+    def _synthetic_features(entry, freqs):
+        correction = evaluate_filter_chain(entry["filters"], freqs, fs=1000)
+        rolloff = -correction
+        a = int(np.argmin(np.abs(freqs - 80.0)))
+        rolloff -= rolloff[a]
+        return extract_curve_features(rolloff, freqs)
+
+    X_train, Y_train = [], []
+    for e in deduped:
+        f = _synthetic_features(e, DEFAULT_GRID)
+        m = enrich_media_metadata(e, tmdb_cache)
+        X_train.append(build_feature_vector(f, m))
+        Y_train.append(catalogue_entry_to_labels(e))
+    X_train = np.array(X_train, dtype=np.float32)
+    Y_train = np.array(Y_train, dtype=np.float32)
+
+    return train_late_fusion(X_train, Y_train, alpha=0.3), "inline-late-fusion"
+
+
+# ---------------------------------------------------------------------------
 # Profile assembly
 # ---------------------------------------------------------------------------
 
@@ -175,11 +270,17 @@ def _compute_mv_adjust(filters: list[dict], freqs: np.ndarray) -> float:
 
 def generate_profile(
     media_path: Path,
+    model: object,
     author: str = "auto",
     output_path: Path | None = None,
     output_dir: Path | None = None,
+    model_source: str = "production",
 ) -> dict:
     """Generate a complete BEQ profile for a media file.
+
+    ``model`` must be a pre-loaded NN model compatible with ``.predict(X)``
+    returning a ``(1, N_OUTPUT)`` label vector — typically the saved
+    production model from ``_load_or_train_model()``.
 
     Returns the profile dict (also saved to output_path if specified).
     """
@@ -221,11 +322,7 @@ def generate_profile(
     ]
     probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
     if probe_result.returncode == 0:
-        import json as _json
-        streams = _json.loads(probe_result.stdout).get("programs", [{}])[0].get("streams", [])
-        if not streams:
-            streams = _json.loads(probe_result.stdout).get("streams", [])
-        stream = streams[0] if streams else {}
+        stream = _parse_ffprobe_streams(probe_result.stdout)
     else:
         stream = {}
 
@@ -291,36 +388,8 @@ def generate_profile(
         author=author if author != "auto" else None,
     )
 
-    # Fetch TMDb metadata for richer profile.
-    tmdb_cache = load_cache()
-    # TODO: TMDb lookup by title+year for full metadata
-
-    # Train model (or load cached).
-    log.info("  training model...")
-    catalogue = _fetch_or_cache()
-    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
-    tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
-
-    def _synthetic_features(entry, freqs):
-        correction = evaluate_filter_chain(entry["filters"], freqs, fs=1000)
-        rolloff = -correction
-        a = int(np.argmin(np.abs(freqs - 80.0)))
-        rolloff -= rolloff[a]
-        return extract_curve_features(rolloff, freqs)
-
-    X_train, Y_train = [], []
-    for e in deduped:
-        f = _synthetic_features(e, DEFAULT_GRID)
-        m = enrich_media_metadata(e, tmdb_cache)
-        X_train.append(build_feature_vector(f, m))
-        Y_train.append(catalogue_entry_to_labels(e))
-    X_train = np.array(X_train, dtype=np.float32)
-    Y_train = np.array(Y_train, dtype=np.float32)
-
-    model = train_late_fusion(X_train, Y_train, alpha=0.3)
-
-    # Predict.
-    log.info("  predicting filters...")
+    # Predict with the pre-loaded model (loaded once in main()).
+    log.info("  predicting filters (model: %s)...", model_source)
     x = build_feature_vector(features, metadata)
     y_pred = model.predict(x.reshape(1, -1))[0]
     filters = labels_to_filters(y_pred)
@@ -356,7 +425,7 @@ def generate_profile(
         "mv": str(mv),
         "sortTitle": title.lower(),
         "edition": "",
-        "note": f"Auto-generated by NN model (late fusion α=0.3, style={author})",
+        "note": f"Auto-generated by NN model ({model_source}, style={author})",
         "language": "Japanese",
         "source": metadata.source or "",
         "overview": "",  # TODO: TMDb lookup
@@ -407,26 +476,34 @@ def main():
         datefmt="%H:%M:%S",
     )
 
+    if not args.media and not args.media_dir:
+        parser.error("specify --media or --media-dir")
+
+    # Load the production model once; batch mode reuses it for every file.
+    model, model_source = _load_or_train_model()
+
     if args.media:
-        profile = generate_profile(
+        generate_profile(
             args.media,
+            model=model,
             author=args.author,
             output_path=args.output or Path(f"{args.media.stem}_beq.json"),
+            model_source=model_source,
         )
-    elif args.media_dir:
+    else:
         output_dir = args.output_dir or Path("profiles")
         for mkv in sorted(args.media_dir.glob("*.mkv")):
             try:
-                profile = generate_profile(
+                generate_profile(
                     mkv,
+                    model=model,
                     author=args.author,
                     output_path=output_dir / f"{mkv.stem}_beq.json",
                     output_dir=output_dir,
+                    model_source=model_source,
                 )
             except Exception as exc:
                 log.error("failed: %s — %s", mkv.name, exc)
-    else:
-        parser.error("specify --media or --media-dir")
 
 
 if __name__ == "__main__":

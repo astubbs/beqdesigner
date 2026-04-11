@@ -3770,9 +3770,24 @@ noise.  Rebalancing fixed it.
 
 ### Next steps
 
-- [ ] Deploy the 50:1 weighted hybrid as the production model
-- [ ] Re-run JJK profile generation with the new model to verify
-      inference quality on uncatalogued content
+- [x] **Deploy the 50:1 weighted hybrid as the production model** —
+      done: `train_production_weighted_hybrid()` in `auto_beq_nn.py`,
+      `scripts/train_production_model.py` CLI wrapper,
+      `get_advisor("trained_model")` auto-discovers
+      `{beq-dir}/production_model.joblib`. `generate_beq_profile.py`
+      loads the saved model in `main()` instead of retraining per
+      episode (was a 3-minute-per-episode script, now sub-second).
+- [x] Re-run JJK profile generation with the new model to verify
+      inference quality on uncatalogued content — done: 47 episodes
+      (S1: 24, S2: 23), 0 failures. Consistent 4–6 filter chains,
+      gains in the 2.7–4.4 dB range, MV +7 to +12.5 dB. Compared to
+      pre-port S02E01 output: new model is ~4 dB more aggressive
+      on MV, filters concentrated in 17–35 Hz band rather than spread
+      5–46 Hz — consistent with the real-audio training regime
+      learning steeper rolloffs. See
+      [`profiles/jjk_v2_comparison_report.md`](../../profiles/jjk_v2_comparison_report.md)
+      for the full breakdown.
 - [ ] E78 baseline variance debug — still open, hygiene work
-- [ ] Document "50:1 weighted hybrid plain XGBoost" in the
+- [x] Document "50:1 weighted hybrid plain XGBoost" in the
       `Current production model` section at the top of this file
+      (done — see the updated section at line 62)

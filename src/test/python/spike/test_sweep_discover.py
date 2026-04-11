@@ -22,6 +22,15 @@ _FIXTURE_ROOT = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _allow_zero_byte_fixtures(monkeypatch):
+    """Fake-library .mkv files are zero-byte placeholders (filename-only
+    fixtures — discovery never reads contents). Bypass the 500 MB "not a
+    feature-length file" filter so the fixtures actually get inventoried.
+    Real sweeps keep the filter; only these tests relax it."""
+    monkeypatch.setattr(sd, "_MIN_FEATURE_SIZE_BYTES", 0)
+
+
 # ---------------------------------------------------------------------------
 # Filename parsing
 # ---------------------------------------------------------------------------

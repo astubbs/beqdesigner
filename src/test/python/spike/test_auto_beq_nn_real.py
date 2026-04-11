@@ -44,6 +44,11 @@ log = logging.getLogger("auto_beq_nn_real")
 
 _DEFAULT_FS = 1000
 
+# E77/E82 real-audio training regime: extracts features from the full WAV
+# cache and trains multi-config XGBoost models per test. Minutes to hours.
+# Opt-in via `scripts/run-spike-experiments.sh`.
+pytestmark = pytest.mark.experiment
+
 
 def _print_per_title_breakdown(Y_pred: np.ndarray, val_entries: list[dict], model_name: str):
     """Print per-title results sorted by loss, grouped by verdict."""
@@ -1110,14 +1115,16 @@ def test_real_audio_training(tmp_path):
     e79_results.append(("I1b-soft-blend", i1b_mean, i1b_pred))
 
     # Reference rows from E77 for context.
+    # results_table rows are (name, plain_loss, lf_loss, lf_aug_loss).
+    real_only_plain = results_table[1][1]
     print()
     print(f"  {'— E77 reference rows on same split —'}")
-    print(f"  {'Real-only plain XGB':35s} {results_table[1][0]:10.2f} dB")
+    print(f"  {'Real-only plain XGB':35s} {real_only_plain:10.2f} dB")
     print(f"  {'Synthetic LF+aug':35s} {synth_lf_aug:10.2f} dB")
 
     # Deltas table.
-    print(f"\n  Delta vs Real-only plain XGB ({results_table[1][0]:.2f} dB):")
-    real_only = results_table[1][0]
+    print(f"\n  Delta vs Real-only plain XGB ({real_only_plain:.2f} dB):")
+    real_only = real_only_plain
     for name, mean, _pred in e79_results:
         delta = mean - real_only
         sign = "+" if delta > 0 else ""

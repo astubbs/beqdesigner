@@ -93,8 +93,8 @@ plan/intent to `branch-plans/plan-<branch-name>.md` (project root).
 Also keep experiment logs and living design docs updated and committed
 alongside code — these are gold for resuming work across sessions.
 
-Current branch plan: [`branch-plans/plan-audio-chunks-strat.md`](branch-plans/plan-audio-chunks-strat.md)
-Parent branch plan: [`branch-plans/plan-sharp-goldberg.md`](branch-plans/plan-sharp-goldberg.md)
+Current branch plan: [`branch-plans/plan-neural-net-strat.md`](branch-plans/plan-neural-net-strat.md)
+Parent branch plans: [`branch-plans/plan-audio-chunks-strat.md`](branch-plans/plan-audio-chunks-strat.md), [`branch-plans/plan-sharp-goldberg.md`](branch-plans/plan-sharp-goldberg.md)
 
 ## Ollama model usage
 
@@ -118,7 +118,9 @@ so the user can see results incrementally: `AUTO_BEQ_SWEEP_LIMIT=1`.
 |---|---|---|---|
 | `scripts/run-sweep-discover.sh` | Discover media + match catalogue | yes | no |
 | `scripts/run-sweep-tests.sh` | Run auto-BEQ pipeline on discovered media | yes | no |
-| `scripts/run-spike-tests.sh` | Full spike test suite (unit + integration) | yes | no |
+| `scripts/run-spike-tests.sh` | Spike test suite — default excludes `integration` + `experiment` markers (fast unit only, ~1 min) | yes | no |
+| `scripts/run-spike-integration.sh` | Spike tests marked `integration` — needs real media / TMDb / Ollama. Opt-in | yes | no |
+| `scripts/run-spike-experiments.sh` | Spike tests marked `experiment` — F/G/H/I batches, real-audio training (minutes-to-hours). Opt-in | yes | no |
 | `scripts/spike_auto_beq.py` | Interactive single-title CLI playground | no (run via poetry) | no |
 | `scripts/sweep_report.py` | Generate unified sweep report + session summary | yes | no |
 | `scripts/extract_lfe.py` | Extract LFE WAVs to portable cache. **Standalone** — no project deps, scp to NAS | yes | **yes** |
@@ -129,7 +131,8 @@ so the user can see results incrementally: `AUTO_BEQ_SWEEP_LIMIT=1`.
 | `scripts/nn_author_pattern_report.py` | Per-author distribution analysis from BEQ catalogue | yes | no (reads JSON) |
 | `scripts/nn_cache_bias_report.py` | WAV cache vs catalogue distribution bias report | yes | no (imports helpers) |
 | `scripts/nn_acquisition_recommender.py` | Recommend N missing catalogue titles to acquire (greedy bias correction). Reads `media_inventory.json` to exclude already-owned titles. | yes | no (imports helpers) |
-| `scripts/generate_beq_profile.py` | Generate complete BEQ profiles for uncatalogued media | yes | no (imports model + helpers) |
+| `scripts/train_production_model.py` | Train + save the E82 50:1 weighted hybrid production model to `{beq-dir}/production_model.joblib` (+ metadata sidecar) | yes | no (imports model + helpers) |
+| `scripts/generate_beq_profile.py` | Generate complete BEQ profiles for uncatalogued media (loads `production_model.joblib`, falls back to inline late-fusion training if missing) | yes | no (imports model + helpers) |
 | `docker/Dockerfile` | Docker image: Python 3.13-slim + ffmpeg + project source | — | — |
 | `docker/docker-compose.example.yml` | Example compose config — copy, edit paths, run | — | — |
 
@@ -154,18 +157,38 @@ All `.sh` scripts must have the executable flag set (`chmod +x`).
 
 ## Running spike tests
 
-**Always use `bash scripts/run-spike-tests.sh` to run spike tests.** Never
-invoke `poetry run pytest` directly for spike tests. The wrapper exists
+**Always use the `scripts/run-spike-*.sh` wrappers to run spike tests.** Never
+invoke `poetry run pytest` directly for spike tests. The wrappers exist
 so that repeated runs share a single permission approval — each
 distinct `poetry run pytest ...` command line requires a fresh
 approval, which is disruptive during iteration.
 
-The wrapper honours these env vars (set them inline on the same line):
+### Three runner scripts, three test groups
+
+The spike suite is segregated by pytest markers. **CI runs only the
+default group**; the other two are opt-in.
+
+| Runner | Marker filter | Runtime | When to use |
+|---|---|---|---|
+| `bash scripts/run-spike-tests.sh` | `not integration and not experiment` (default) | ~1 min | Every iteration, CI, pre-commit. Hermetic — no media scans, no network, no model retraining. |
+| `bash scripts/run-spike-integration.sh` | `integration` | minutes | Verifying code that touches real external resources (media files, TMDb API, Ollama hosts, library sweep config). Tests skip if their resources aren't configured locally. |
+| `bash scripts/run-spike-experiments.sh` | `experiment` | **minutes to hours** | Reproducing or iterating on F/G/H/I experiment batches, real-audio training (E77/E82), chunked-strategy comparison. Not for CI. |
+
+### Marker rules
+
+- **Default** (no marker): unit tests. Must be hermetic, no filesystem/network/model-training side effects. The 500 MB media-size filter in `inventory_root` is automatically bypassed for tests via the `_allow_zero_byte_fixtures` autouse fixture in `test_sweep_discover.py`.
+- **`@pytest.mark.integration`**: needs real media files, TMDb, Ollama, or a populated `~/.config/beqdesigner/auto_beq_sweep.json`. Apply via file-level `pytestmark = pytest.mark.integration` when every test in the file needs external resources, or decorate individual tests when the file is mixed (e.g. `test_auto_beq.py::test_real_media_roundtrip`).
+- **`@pytest.mark.experiment`**: retrains one or more models from scratch. F/G/H/I/real/chunked/extract test files all carry `pytestmark = pytest.mark.experiment` at the top.
+
+Markers are registered in `pyproject.toml` under `[tool.pytest.ini_options]`. Adding a new marker needs both a `pytestmark = ...` in the test file and a registration entry in `pyproject.toml`.
+
+### Env vars honoured by all three wrappers
 
 | Var | Purpose | Default |
 |---|---|---|
 | `SPIKE_TEST` | pytest selector (file path or nodeid) | `src/test/python/spike/` (all) |
-| `AUTO_BEQ_ADVISOR` | advisor impl: heuristic / mock / ollama / measurement | `mock` |
+| `SPIKE_MARKERS` | override marker filter (`run-spike-tests.sh` only) | `not integration and not experiment` |
+| `AUTO_BEQ_ADVISOR` | advisor impl: heuristic / mock / ollama / measurement | `measurement` |
 | `SPIKE_VERBOSE` | `1` enables `-s` (no capture) | `0` |
 | Any test-specific env var | passed through to pytest | — |
 
@@ -183,14 +206,20 @@ SPIKE_TEST='src/test/python/spike/test_auto_beq.py::test_synthetic_roundtrip' \
   bash scripts/run-spike-tests.sh
 ```
 
-Stack env vars for configuration:
+Run a specific experiment (opt-in):
+
+```bash
+SPIKE_TEST='src/test/python/spike/test_auto_beq_nn_experiments.py::test_g_experiment_comparison' \
+  bash scripts/run-spike-experiments.sh
+```
+
+Run the library sweep with a custom config (opt-in integration):
 
 ```bash
 AUTO_BEQ_SWEEP_CONFIG=/tmp/sweep.json \
 AUTO_BEQ_SWEEP_LIMIT=3 \
-AUTO_BEQ_ADVISOR=measurement \
 SPIKE_TEST=src/test/python/spike/test_auto_beq_library_sweep.py \
-  bash scripts/run-spike-tests.sh
+  bash scripts/run-spike-integration.sh
 ```
 
 **Do not** invoke the venv python, `poetry run python`, or `poetry run
