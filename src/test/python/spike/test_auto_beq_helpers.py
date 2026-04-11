@@ -150,3 +150,197 @@ class TestExtractLfeWavReal:
         assert str(wav_path.parent) != str(source_dir), (
             "WAV was written next to source instead of cache dir"
         )
+
+
+# ---------------------------------------------------------------------------
+# Disk-backed caches for curve features + discovery
+# ---------------------------------------------------------------------------
+
+
+class TestCachedExtractFeatures:
+    """Unit tests for ``cached_extract_features_with_strategy``."""
+
+    def test_returns_same_result_on_cache_hit(self, monkeypatch, tmp_path):
+        """Second call returns the cached result instead of re-extracting."""
+        import numpy as np
+        from spike import _auto_beq_helpers as h
+        from spike._auto_beq_helpers import (
+            STRATEGY_WELCH,
+            cached_extract_features_with_strategy,
+        )
+
+        # Point beq_dir at a tmp cache.
+        monkeypatch.setattr(h, "beq_dir", lambda: tmp_path)
+
+        # Stub the uncached extractor to return a counter-tagged sentinel.
+        call_count = {"n": 0}
+
+        def fake_extract(wav_path, freqs_hz, fs, strategy):
+            call_count["n"] += 1
+            return ("sentinel", call_count["n"], str(wav_path))
+
+        monkeypatch.setattr(h, "extract_features_with_strategy", fake_extract)
+
+        wav = tmp_path / "fake.wav"
+        wav.write_bytes(b"\x00" * 1024)
+
+        freqs = np.array([20.0, 40.0, 80.0])
+        result1 = cached_extract_features_with_strategy(
+            wav, freqs, 1000, strategy=STRATEGY_WELCH,
+        )
+        result2 = cached_extract_features_with_strategy(
+            wav, freqs, 1000, strategy=STRATEGY_WELCH,
+        )
+
+        assert result1 == result2, "cache hit should return the same value"
+        assert call_count["n"] == 1, "uncached extractor should run only once"
+
+    def test_invalidates_on_mtime_change(self, monkeypatch, tmp_path):
+        """Touching the WAV bumps its mtime → new cache key → re-extract."""
+        import time
+        import numpy as np
+        from spike import _auto_beq_helpers as h
+        from spike._auto_beq_helpers import (
+            STRATEGY_WELCH,
+            cached_extract_features_with_strategy,
+        )
+
+        monkeypatch.setattr(h, "beq_dir", lambda: tmp_path)
+        call_count = {"n": 0}
+
+        def fake_extract(wav_path, freqs_hz, fs, strategy):
+            call_count["n"] += 1
+            return ("result", call_count["n"])
+
+        monkeypatch.setattr(h, "extract_features_with_strategy", fake_extract)
+
+        wav = tmp_path / "fake.wav"
+        wav.write_bytes(b"\x00" * 1024)
+
+        freqs = np.array([20.0, 40.0, 80.0])
+        r1 = cached_extract_features_with_strategy(wav, freqs, 1000, strategy=STRATEGY_WELCH)
+        assert r1 == ("result", 1)
+
+        # Bump the mtime explicitly (some filesystems have 1 s mtime
+        # resolution so we need to force a later timestamp).
+        new_time = wav.stat().st_mtime + 10
+        import os as _os
+        _os.utime(wav, (new_time, new_time))
+
+        r2 = cached_extract_features_with_strategy(wav, freqs, 1000, strategy=STRATEGY_WELCH)
+        assert call_count["n"] == 2, "mtime bump should invalidate the cache"
+        assert r2 == ("result", 2)
+
+    def test_env_var_disables_cache(self, monkeypatch, tmp_path):
+        """``AUTO_BEQ_FEATURE_CACHE=0`` bypasses the cache entirely."""
+        import numpy as np
+        from spike import _auto_beq_helpers as h
+        from spike._auto_beq_helpers import (
+            STRATEGY_WELCH,
+            cached_extract_features_with_strategy,
+        )
+
+        monkeypatch.setattr(h, "beq_dir", lambda: tmp_path)
+        monkeypatch.setenv("AUTO_BEQ_FEATURE_CACHE", "0")
+
+        call_count = {"n": 0}
+
+        def fake_extract(wav_path, freqs_hz, fs, strategy):
+            call_count["n"] += 1
+            return ("result", call_count["n"])
+
+        monkeypatch.setattr(h, "extract_features_with_strategy", fake_extract)
+
+        wav = tmp_path / "fake.wav"
+        wav.write_bytes(b"\x00" * 1024)
+
+        freqs = np.array([20.0, 40.0, 80.0])
+        for _ in range(3):
+            cached_extract_features_with_strategy(wav, freqs, 1000, strategy=STRATEGY_WELCH)
+        assert call_count["n"] == 3, "disabled cache should always re-extract"
+
+
+class TestDiscoveryCache:
+    """Unit tests for ``discover_wav_catalogue_pairs_cached``."""
+
+    def test_cache_hit_returns_cached_pairs(self, monkeypatch, tmp_path):
+        """Second call returns the cached pair list without re-walking."""
+        from spike import _auto_beq_helpers as h
+        from spike._auto_beq_helpers import discover_wav_catalogue_pairs_cached
+
+        wav_root = tmp_path / "wav-cache"
+        wav_root.mkdir()
+        monkeypatch.setattr(h, "beq_dir", lambda: tmp_path)
+        monkeypatch.setattr(h, "wav_cache_dir", lambda: wav_root)
+
+        call_count = {"n": 0}
+
+        def fake_discover():
+            call_count["n"] += 1
+            return [
+                {"wav_path": wav_root / "a.wav", "catalogue_entry": {"title": "A"},
+                 "tmdb_id": "1", "media_id": "tmdb-1"},
+            ]
+
+        monkeypatch.setattr(h, "discover_wav_catalogue_pairs", fake_discover)
+
+        r1 = discover_wav_catalogue_pairs_cached()
+        r2 = discover_wav_catalogue_pairs_cached()
+
+        assert call_count["n"] == 1, "should walk only on the first call"
+        assert len(r1) == 1
+        # Pickle roundtrip equivalence (Path objects compare by value).
+        assert [p["tmdb_id"] for p in r2] == [p["tmdb_id"] for p in r1]
+
+    def test_cache_invalidates_on_wav_root_mtime_change(self, monkeypatch, tmp_path):
+        """Bumping the wav-cache root mtime (as extract_lfe.py does)
+        invalidates the discovery cache."""
+        import os as _os
+        from spike import _auto_beq_helpers as h
+        from spike._auto_beq_helpers import discover_wav_catalogue_pairs_cached
+
+        wav_root = tmp_path / "wav-cache"
+        wav_root.mkdir()
+        monkeypatch.setattr(h, "beq_dir", lambda: tmp_path)
+        monkeypatch.setattr(h, "wav_cache_dir", lambda: wav_root)
+
+        call_count = {"n": 0}
+
+        def fake_discover():
+            call_count["n"] += 1
+            return [{"wav_path": wav_root / "a.wav", "catalogue_entry": {}, "tmdb_id": "1"}]
+
+        monkeypatch.setattr(h, "discover_wav_catalogue_pairs", fake_discover)
+
+        discover_wav_catalogue_pairs_cached()
+        assert call_count["n"] == 1
+
+        # Bump the root mtime to simulate a fresh extract_lfe.py run.
+        new_time = wav_root.stat().st_mtime + 10
+        _os.utime(wav_root, (new_time, new_time))
+
+        discover_wav_catalogue_pairs_cached()
+        assert call_count["n"] == 2, "root mtime change should invalidate"
+
+    def test_env_var_disables_discovery_cache(self, monkeypatch, tmp_path):
+        """``AUTO_BEQ_DISCOVERY_CACHE=0`` bypasses the cache entirely."""
+        from spike import _auto_beq_helpers as h
+        from spike._auto_beq_helpers import discover_wav_catalogue_pairs_cached
+
+        wav_root = tmp_path / "wav-cache"
+        wav_root.mkdir()
+        monkeypatch.setattr(h, "beq_dir", lambda: tmp_path)
+        monkeypatch.setattr(h, "wav_cache_dir", lambda: wav_root)
+        monkeypatch.setenv("AUTO_BEQ_DISCOVERY_CACHE", "0")
+
+        call_count = {"n": 0}
+
+        def fake_discover():
+            call_count["n"] += 1
+            return []
+
+        monkeypatch.setattr(h, "discover_wav_catalogue_pairs", fake_discover)
+
+        for _ in range(3):
+            discover_wav_catalogue_pairs_cached()
+        assert call_count["n"] == 3, "disabled cache should always walk"

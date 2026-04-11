@@ -114,11 +114,11 @@ def generate_report(output=None, inventory_path: Path | None = None) -> None:
     pr = lambda s="": print(s, file=output or sys.stdout)
 
     from model.auto_beq_catalogue import _fetch_or_cache
-    from spike._auto_beq_helpers import discover_wav_catalogue_pairs
+    from spike._auto_beq_helpers import discover_wav_catalogue_pairs_cached
 
     catalogue = _fetch_or_cache()
     trainable = [e for e in catalogue if e.get("filters")]
-    pairs = discover_wav_catalogue_pairs()
+    pairs = discover_wav_catalogue_pairs_cached()
 
     # Match WAV pairs back to catalogue entries.
     wav_tmdb_ids = {p["tmdb_id"] for p in pairs if p.get("tmdb_id")}

@@ -74,13 +74,23 @@ def main():
         help="Audio feature extraction strategy for real WAVs "
              "(default: blend_07 = blended Welch+chunked P90, matches E82).",
     )
+    parser.add_argument(
+        "--foundation-model", default=None,
+        choices=[None, "whisper-tiny", "whisper-base", "whisper-small", "mock-16"],
+        help="Optional audio foundation model for additional features "
+             "(E83/T1.1). Default: None (E82 baseline). Values: whisper-tiny "
+             "(384 dims), whisper-base (512), whisper-small (768), mock-16 "
+             "(deterministic synthetic, for smoke tests).",
+    )
     args = parser.parse_args()
 
     # Late imports so --help is fast.
     from model.auto_beq import DEFAULT_GRID
+    from model.auto_beq_advisor import extract_foundation_embedding
     from model.auto_beq_catalogue import _fetch_or_cache
     from model.auto_beq_metadata import fetch_metadata_batch, load_cache
     from model.auto_beq_nn import (
+        AudioFeatureConfig,
         deduplicate_by_title,
         save_model,
         train_production_weighted_hybrid,
@@ -89,11 +99,17 @@ def main():
         STRATEGY_BLENDED_07,
         STRATEGY_WELCH,
         beq_dir,
-        discover_wav_catalogue_pairs,
+        discover_wav_catalogue_pairs_cached,
     )
     from spike.test_auto_beq_nn_real import _extract_features_parallel
 
     strategy = STRATEGY_BLENDED_07 if args.extraction_strategy == "blend_07" else STRATEGY_WELCH
+    feature_config = AudioFeatureConfig(foundation_model=args.foundation_model)
+    if args.foundation_model:
+        log.info(
+            "E83: foundation model = %s (+%d dims → %d total features)",
+            args.foundation_model, feature_config.foundation_dim, feature_config.n_features,
+        )
 
     # --- Resolve paths ---
     target_dir = beq_dir()
@@ -103,7 +119,7 @@ def main():
     log.info("model output path:     %s", output_path)
 
     # --- Discover WAV cache + catalogue ---
-    pairs = discover_wav_catalogue_pairs()
+    pairs = discover_wav_catalogue_pairs_cached()
     if not pairs:
         log.error(
             "no catalogue-matched WAVs found in cache.  Run "
@@ -131,12 +147,42 @@ def main():
     )
 
     # Build real_samples list: (catalogue_entry, features) tuples.
+    # E83: also attach a foundation model embedding to each CurveFeatures.
     real_samples = []
+    t_embed_start = time.time()
+    embed_cache_dir = target_dir / "foundation-embeddings" / (args.foundation_model or "none")
+    n_embed_failed = 0
     for pair, features in all_real:
         entry = pair.get("catalogue_entry")
         if entry is None or not entry.get("filters"):
             continue
+        if args.foundation_model:
+            import dataclasses
+            try:
+                emb = extract_foundation_embedding(
+                    pair["wav_path"],
+                    model_name=args.foundation_model,
+                    cache_dir=embed_cache_dir,
+                )
+                features = dataclasses.replace(
+                    features, foundation_embedding=tuple(float(x) for x in emb),
+                )
+            except Exception as exc:
+                log.warning(
+                    "foundation embedding failed for %s: %s",
+                    pair["wav_path"].name, exc,
+                )
+                n_embed_failed += 1
         real_samples.append((entry, features))
+    if args.foundation_model:
+        t_embed = time.time() - t_embed_start
+        log.info(
+            "foundation-model embedding: %d real samples in %.1fs "
+            "(%.1f WAVs/s), %d failed",
+            len(real_samples), t_embed,
+            len(real_samples) / t_embed if t_embed > 0 else 0,
+            n_embed_failed,
+        )
     log.info("real samples (after filter): %d", len(real_samples))
 
     # --- Train ---
@@ -148,6 +194,7 @@ def main():
         freqs_hz=DEFAULT_GRID,
         fs=1000,
         real_weight=args.real_weight,
+        config=feature_config,
     )
     t_train = time.time() - t_train_start
     metadata["extract_time_s"] = round(t_extract, 1)

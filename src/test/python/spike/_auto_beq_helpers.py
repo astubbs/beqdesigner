@@ -860,6 +860,208 @@ def wav_cache_dir() -> Path:
     return path
 
 
+# ---------------------------------------------------------------------------
+# Disk-backed caches for expensive NAS / feature-extraction work
+# ---------------------------------------------------------------------------
+#
+# Two small pickle caches to keep iteration fast when re-running experiments
+# against the same WAV cache + catalogue:
+#
+#   1. curve-features cache: one pickle per WAV, keyed on
+#      (stem, size, mtime, strategy.label). Skips ~2-3 min of Welch +
+#      chunked-percentile work per experiment re-run.
+#   2. discovery cache: single pickle holding the `discover_wav_catalogue_pairs`
+#      output, keyed on (wav_cache_root_mtime, catalogue_cache_mtime) so any
+#      fresh extract_lfe.py run or catalogue refresh invalidates it.
+#
+# Both caches are override-able via env var for safety.
+
+
+_CURVE_FEATURES_CACHE_ENABLED_ENV = "AUTO_BEQ_FEATURE_CACHE"
+_DISCOVERY_CACHE_ENABLED_ENV = "AUTO_BEQ_DISCOVERY_CACHE"
+_DISCOVERY_CACHE_FILENAME = "discovered_pairs.pkl"
+_CATALOGUE_CACHE_FILENAME = "beq_catalogue.json"
+
+
+def _cache_enabled(env_var: str) -> bool:
+    """Cache helpers honour env var opt-out. Default: enabled."""
+    return os.environ.get(env_var, "1") != "0"
+
+
+def _curve_features_cache_dir(strategy_label: str) -> Path:
+    """Per-strategy directory under ``{beq-dir}/curve-features/``."""
+    return beq_dir() / "curve-features" / strategy_label
+
+
+def _curve_features_cache_key(wav_path: Path) -> str | None:
+    """File-identity cache key — ``{stem}-{size}-{mtime_int}``.
+
+    Returns None if the WAV can't be stat'd (missing file). File-identity
+    keys auto-invalidate when extract_lfe.py re-extracts a WAV.
+    """
+    try:
+        st = wav_path.stat()
+    except FileNotFoundError:
+        return None
+    return f"{wav_path.stem}-{st.st_size}-{int(st.st_mtime)}"
+
+
+def cached_extract_features_with_strategy(
+    wav_path: Path,
+    freqs_hz: np.ndarray,
+    fs: int,
+    strategy: "ExtractionStrategy",
+):
+    """Disk-cached wrapper around ``extract_features_with_strategy``.
+
+    Cache hit path: one ``pickle.load`` from
+    ``{beq-dir}/curve-features/<strategy.label>/<key>.pkl`` — no WAV read,
+    no Welch, no chunked percentile, ~1 ms per call.
+
+    Cache miss path: runs the uncached extractor and atomically writes the
+    result to the cache. Subsequent callers see the hit.
+
+    Opt-out via ``AUTO_BEQ_FEATURE_CACHE=0``.
+    """
+    if not _cache_enabled(_CURVE_FEATURES_CACHE_ENABLED_ENV):
+        return extract_features_with_strategy(wav_path, freqs_hz, fs, strategy=strategy)
+
+    import pickle as _pickle
+    key = _curve_features_cache_key(wav_path)
+    if key is None:
+        return extract_features_with_strategy(wav_path, freqs_hz, fs, strategy=strategy)
+
+    try:
+        cache_dir = _curve_features_cache_dir(strategy.label)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        log.warning("curve-features cache dir unavailable: %s", exc)
+        return extract_features_with_strategy(wav_path, freqs_hz, fs, strategy=strategy)
+
+    cache_file = cache_dir / f"{key}.pkl"
+    if cache_file.exists():
+        try:
+            with cache_file.open("rb") as f:
+                return _pickle.load(f)
+        except Exception as exc:
+            log.warning("corrupt curve-features cache %s: %s — recomputing", cache_file, exc)
+
+    features = extract_features_with_strategy(wav_path, freqs_hz, fs, strategy=strategy)
+
+    # Atomic write: temp file + rename so concurrent workers never see half-written pickles.
+    tmp_file = cache_file.with_suffix(".pkl.tmp")
+    try:
+        with tmp_file.open("wb") as f:
+            _pickle.dump(features, f, protocol=_pickle.HIGHEST_PROTOCOL)
+        tmp_file.replace(cache_file)
+    except Exception as exc:
+        log.warning("failed to write curve-features cache %s: %s", cache_file, exc)
+        try:
+            tmp_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+    return features
+
+
+def _discovery_cache_signature() -> dict | None:
+    """Lightweight signature: two stat calls, no directory walk.
+
+    Invalidation sources:
+      * wav cache root mtime — bumped when extract_lfe.py writes
+        ``.status_last.json``, or when new top-level subdirs are added.
+      * catalogue cache file mtime — bumped when the BEQ catalogue is refetched.
+
+    Returns None if stats fail (cache miss forced).
+    """
+    try:
+        wav_root = wav_cache_dir()
+        if not wav_root.exists():
+            return None
+        root_mtime = wav_root.stat().st_mtime
+    except Exception:
+        return None
+
+    catalogue_mtime = 0.0
+    catalogue_cache = beq_dir() / _CATALOGUE_CACHE_FILENAME
+    if catalogue_cache.exists():
+        try:
+            catalogue_mtime = catalogue_cache.stat().st_mtime
+        except Exception:
+            catalogue_mtime = 0.0
+
+    return {
+        "wav_root_mtime": float(root_mtime),
+        "catalogue_mtime": float(catalogue_mtime),
+    }
+
+
+def discover_wav_catalogue_pairs_cached() -> list[dict]:
+    """Cached wrapper around ``discover_wav_catalogue_pairs``.
+
+    On a warm cache, returns the previous result after two stat calls
+    (no directory walk over the WAV cache root). On a cold cache or
+    mismatched signature, walks the cache and writes a fresh pickle.
+
+    Opt-out via ``AUTO_BEQ_DISCOVERY_CACHE=0``.
+
+    Signature captures the WAV cache root mtime and the catalogue cache
+    file mtime. Adding a new WAV inside an existing subdirectory does
+    NOT invalidate (root mtime unchanged), so if the user manually drops
+    a WAV deep in the tree they need to either re-run extract_lfe.py
+    (which refreshes ``.status_last.json`` in the root) or set
+    ``AUTO_BEQ_DISCOVERY_CACHE=0`` once.
+    """
+    if not _cache_enabled(_DISCOVERY_CACHE_ENABLED_ENV):
+        log.info("discovery cache disabled via %s=0", _DISCOVERY_CACHE_ENABLED_ENV)
+        return discover_wav_catalogue_pairs()
+
+    import pickle as _pickle
+    try:
+        cache_file = beq_dir() / _DISCOVERY_CACHE_FILENAME
+    except Exception as exc:
+        log.warning("beq_dir unavailable for discovery cache: %s", exc)
+        return discover_wav_catalogue_pairs()
+
+    signature = _discovery_cache_signature()
+    if signature is not None and cache_file.exists():
+        try:
+            with cache_file.open("rb") as f:
+                blob = _pickle.load(f)
+            if isinstance(blob, dict) and blob.get("signature") == signature:
+                pairs = blob.get("pairs", [])
+                log.info(
+                    "discover_wav_catalogue_pairs: cache hit — %d pairs "
+                    "(wav_root_mtime=%.0f, catalogue_mtime=%.0f)",
+                    len(pairs), signature["wav_root_mtime"], signature["catalogue_mtime"],
+                )
+                return pairs
+            log.info("discover_wav_catalogue_pairs: cache signature mismatch, re-walking")
+        except Exception as exc:
+            log.warning("corrupt discovery cache %s: %s — re-walking", cache_file, exc)
+
+    pairs = discover_wav_catalogue_pairs()
+
+    if signature is not None:
+        tmp_file = cache_file.with_suffix(".pkl.tmp")
+        try:
+            with tmp_file.open("wb") as f:
+                _pickle.dump(
+                    {"signature": signature, "pairs": pairs},
+                    f,
+                    protocol=_pickle.HIGHEST_PROTOCOL,
+                )
+            tmp_file.replace(cache_file)
+            log.info("discover_wav_catalogue_pairs: wrote cache (%d pairs)", len(pairs))
+        except Exception as exc:
+            log.warning("failed to write discovery cache %s: %s", cache_file, exc)
+            try:
+                tmp_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    return pairs
+
+
 def discover_wav_catalogue_pairs() -> list[dict]:
     """Find all cached LFE WAVs that match a BEQ catalogue entry.
 

@@ -190,8 +190,8 @@ def select_acquisitions(
     if catalogue is None:
         catalogue = _fetch_or_cache()
     if have_tmdb_ids is None:
-        from spike._auto_beq_helpers import discover_wav_catalogue_pairs
-        pairs = discover_wav_catalogue_pairs()
+        from spike._auto_beq_helpers import discover_wav_catalogue_pairs_cached
+        pairs = discover_wav_catalogue_pairs_cached()
         have_tmdb_ids = {p["tmdb_id"] for p in pairs if p.get("tmdb_id")}
     if library_tmdb_ids is None:
         library_tmdb_ids, _ = _load_library_inventory(None)
@@ -340,10 +340,10 @@ def generate_report(n: int, output=None, inventory_path: Path | None = None) -> 
     pr = lambda s="": print(s, file=output or sys.stdout)
 
     from model.auto_beq_catalogue import _fetch_or_cache
-    from spike._auto_beq_helpers import discover_wav_catalogue_pairs
+    from spike._auto_beq_helpers import discover_wav_catalogue_pairs_cached
 
     catalogue = _fetch_or_cache()
-    pairs = discover_wav_catalogue_pairs()
+    pairs = discover_wav_catalogue_pairs_cached()
     have_tmdb_ids = {p["tmdb_id"] for p in pairs if p.get("tmdb_id")}
     library_tmdb_ids, missing_ids = _load_library_inventory(inventory_path)
 

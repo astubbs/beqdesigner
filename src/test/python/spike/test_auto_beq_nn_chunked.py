@@ -34,8 +34,8 @@ from spike._auto_beq_helpers import (
     STRATEGY_CHUNKED_P90,
     STRATEGY_WELCH,
     build_training_dataset,
-    discover_wav_catalogue_pairs,
-    extract_features_with_strategy,
+    cached_extract_features_with_strategy,
+    discover_wav_catalogue_pairs_cached,
     synthetic_features,
 )
 
@@ -55,7 +55,7 @@ _STRATEGIES = [
     STRATEGY_CHUNKED_P90,
 ]
 
-_PAIRS = discover_wav_catalogue_pairs()
+_PAIRS = discover_wav_catalogue_pairs_cached()
 
 
 def _verdict_rank(verdict: str) -> int:
@@ -135,8 +135,8 @@ def test_nn_chunked_strategy_comparison(tmp_path):
             wav_path = p["wav_path"]
             log.info("  extracting [%s]: %s", label, wav_path.name[:60])
             from model.auto_beq_nn import catalogue_entry_to_labels
-            features = extract_features_with_strategy(
-                wav_path, DEFAULT_GRID, _DEFAULT_FS, strategy,
+            features = cached_extract_features_with_strategy(
+                wav_path, DEFAULT_GRID, _DEFAULT_FS, strategy=strategy,
             )
             metadata = enrich_media_metadata(entry, tmdb_cache)
             X_val.append(build_feature_vector(features, metadata))

@@ -36,7 +36,8 @@ from model.auto_beq_nn import (
 from spike._auto_beq_helpers import (
     STRATEGY_BLENDED_07,
     STRATEGY_WELCH,
-    discover_wav_catalogue_pairs,
+    cached_extract_features_with_strategy,
+    discover_wav_catalogue_pairs_cached,
     extract_features_with_strategy,
 )
 
@@ -168,10 +169,17 @@ def _extract_one_wav(args: tuple) -> tuple:
 
     Takes (wav_path, freqs_hz, fs, strategy) and returns (wav_path, features)
     or (wav_path, None) on failure. Runs in a separate process.
+
+    Uses ``cached_extract_features_with_strategy`` so repeat runs over
+    the same WAV cache skip the Welch + chunked-percentile work and
+    just unpickle the cached CurveFeatures. Auto-invalidates via
+    (size, mtime) in the cache key.
     """
     wav_path, freqs_hz, fs, strategy = args
     try:
-        features = extract_features_with_strategy(Path(wav_path), freqs_hz, fs, strategy=strategy)
+        features = cached_extract_features_with_strategy(
+            Path(wav_path), freqs_hz, fs, strategy=strategy,
+        )
         return (str(wav_path), features)
     except Exception as exc:
         return (str(wav_path), None)
@@ -235,7 +243,7 @@ def _synthetic_features(entry: dict, freqs_hz: np.ndarray):
 # ---------------------------------------------------------------------------
 
 
-_PAIRS = discover_wav_catalogue_pairs()
+_PAIRS = discover_wav_catalogue_pairs_cached()
 
 
 @pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")
@@ -1697,3 +1705,230 @@ def test_per_author_isolation(tmp_path):
             delta_str = f"{delta:+6.2f} dB"
 
         print(f"  {author:>12s} {len(items):4d} {len(author_train[0]):6d} {multi_loss:12.2f} dB {single_loss_str:>15s} {delta_str:>7s}")
+
+
+# ---------------------------------------------------------------------------
+# E83 / T1.1 — Foundation model audio embeddings (Whisper-tiny)
+# ---------------------------------------------------------------------------
+
+
+def _whisper_available() -> bool:
+    """True iff openai-whisper is importable in the current env."""
+    try:
+        import whisper  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+@pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")
+@pytest.mark.skipif(
+    not _whisper_available(),
+    reason="openai-whisper not installed — run `poetry install --with experiment`",
+)
+def test_e83_foundation_features(tmp_path, caplog):
+    """E83: Whisper-tiny encoder embeddings on top of the E82 weighted hybrid.
+
+    Apples-to-apples comparison on the E82 test split:
+      1. Baseline: 50:1 weighted hybrid plain XGB (= E82, 1.99 dB expected)
+      2. E83: same training, but every feature vector has an extra 384 dims
+         from a mean-pooled Whisper-tiny encoder embedding. Synthetic rows
+         get a zero-vector fallback (no raw audio to embed).
+
+    The LFE WAVs are upsampled 1 → 16 kHz before Whisper. The embedding
+    encodes the sub-500 Hz content (everything above that is zeros in the
+    upsampled signal), so we're asking Whisper to characterise the bass
+    band — exactly what BEQ cares about.
+
+    Prints mean/max per-title error + per-author breakdown for both models.
+    Writes a CSV row to ``.pytest_cache/e83_foundation.csv`` for aggregation.
+    No hard assertions — informational per E77+ conventions.
+    """
+    import csv
+    import dataclasses
+    from collections import defaultdict
+
+    from model.auto_beq_advisor import extract_foundation_embeddings_parallel
+    from model.auto_beq_catalogue import _fetch_or_cache
+    from model.auto_beq_nn import AudioFeatureConfig, train_production_weighted_hybrid
+    from sklearn.model_selection import train_test_split
+
+    caplog.set_level(logging.INFO, logger="auto_beq_nn_real")
+    log.info("=== E83 foundation-model features ===")
+
+    model_name = "whisper-tiny"
+    cache_dir = Path(".pytest_cache") / "foundation-embeddings" / model_name
+
+    # --- Pass 1: curve features from the cached 1 kHz LFE WAVs. ---
+    all_real = _extract_features_parallel(
+        _PAIRS, DEFAULT_GRID, _DEFAULT_FS, strategy=STRATEGY_BLENDED_07,
+    )
+    if len(all_real) < 200:
+        pytest.skip(f"need ≥200 real pairs for E83, got {len(all_real)}")
+
+    # --- Pass 2: foundation embeddings per WAV in parallel (thread pool
+    # because torch inference releases the GIL; model is shared across
+    # workers instead of being re-loaded per process). ---
+    wav_paths = [pair["wav_path"] for pair, _ in all_real]
+    t0 = time.time()
+
+    def _progress(done: int, total: int) -> None:
+        # Log every 10% so the experiment wrapper tail shows progress.
+        if done % max(1, total // 10) == 0 or done == total:
+            log.info("E83 foundation-embedding progress: %d/%d", done, total)
+
+    embed_results = extract_foundation_embeddings_parallel(
+        wav_paths,
+        model_name=model_name,
+        cache_dir=cache_dir,
+        progress_callback=_progress,
+    )
+    elapsed = time.time() - t0
+
+    pairs_with_embeddings = []
+    skipped = 0
+    for (pair, features), (wav_path_out, emb) in zip(all_real, embed_results, strict=True):
+        if emb is None:
+            skipped += 1
+            continue
+        features_with_emb = dataclasses.replace(
+            features, foundation_embedding=tuple(float(x) for x in emb),
+        )
+        pairs_with_embeddings.append((pair, features_with_emb))
+    log.info(
+        "E83 foundation-embedding extraction: %d/%d in %.1fs (%.1f WAVs/s), skipped=%d",
+        len(pairs_with_embeddings), len(all_real), elapsed,
+        len(pairs_with_embeddings) / elapsed if elapsed > 0 else 0, skipped,
+    )
+
+    if len(pairs_with_embeddings) < 200:
+        pytest.skip(
+            f"too few successful embeddings: {len(pairs_with_embeddings)}",
+        )
+
+    # --- Build the (entry, features) list for both baseline and E83. ---
+    tmdb_cache = load_cache()
+    tmdb_cache = fetch_metadata_batch(
+        [p["catalogue_entry"] for p, _ in pairs_with_embeddings], cache=tmdb_cache,
+    )
+
+    real_entries = [p["catalogue_entry"] for p, _ in pairs_with_embeddings]
+
+    # --- Stratified split on rolloff severity (matches E82). ---
+    severity = [
+        "heavy" if sum(abs(float(f.get("gain", 0))) for f in e.get("filters", [])) >= 20
+        else "moderate" if sum(abs(float(f.get("gain", 0))) for f in e.get("filters", [])) >= 10
+        else "gentle"
+        for e in real_entries
+    ]
+    indices = np.arange(len(pairs_with_embeddings))
+    train_idx, test_idx = train_test_split(
+        indices, test_size=0.2, random_state=42,
+        stratify=severity if len(set(severity)) > 1 else None,
+    )
+    train_samples = [pairs_with_embeddings[i] for i in train_idx]
+    test_samples = [pairs_with_embeddings[i] for i in test_idx]
+    test_entries = [p["catalogue_entry"] for p, _ in test_samples]
+
+    log.info("E83 split: %d train / %d test", len(train_samples), len(test_samples))
+
+    # Synthetic set: same rule as E82 — exclude any title already in real set.
+    catalogue = _fetch_or_cache()
+    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
+
+    def _eval(config: AudioFeatureConfig, label: str) -> tuple[float, float, dict]:
+        """Train + evaluate one config, return (mean, max, per_author)."""
+        # Build real_samples tuples, stripping the pair dict.
+        real_training = [
+            (p["catalogue_entry"], f) for p, f in train_samples
+        ]
+        model, _meta = train_production_weighted_hybrid(
+            real_samples=real_training,
+            synth_entries=deduped,
+            tmdb_cache=tmdb_cache,
+            freqs_hz=DEFAULT_GRID,
+            fs=_DEFAULT_FS,
+            real_weight=50.0,
+            config=config,
+        )
+        # Predict on the held-out test set, computing downstream loss per title.
+        X_test = np.array([
+            build_feature_vector(
+                f, enrich_media_metadata(p["catalogue_entry"], tmdb_cache),
+                config=config,
+            )
+            for p, f in test_samples
+        ], dtype=np.float32)
+        Y_pred = model.predict(X_test)
+        per_title = [
+            downstream_loss(
+                labels_to_filters(Y_pred[i]), e["filters"], DEFAULT_GRID,
+            )
+            for i, e in enumerate(test_entries)
+        ]
+        mean = float(np.mean(per_title))
+        max_ = float(np.max(per_title))
+
+        # Per-author mean.
+        by_auth: dict[str, list[float]] = defaultdict(list)
+        for e, loss in zip(test_entries, per_title, strict=True):
+            by_auth[e.get("author", "unknown")].append(loss)
+        per_author = {a: float(np.mean(v)) for a, v in by_auth.items()}
+
+        log.info("E83 %-20s: mean=%.2f dB max=%.2f dB", label, mean, max_)
+        return mean, max_, per_author
+
+    baseline_cfg = AudioFeatureConfig()
+    e83_cfg = AudioFeatureConfig(foundation_model=model_name)
+
+    baseline_mean, baseline_max, baseline_author = _eval(baseline_cfg, "baseline-E82")
+    e83_mean, e83_max, e83_author = _eval(e83_cfg, f"E83-{model_name}")
+
+    # --- Report ---
+    print(f"\n{'='*72}")
+    print(f"  E83 — FOUNDATION MODEL FEATURES ({model_name}, {e83_cfg.foundation_dim} dims)")
+    print(f"  Split: {len(train_samples)} train / {len(test_samples)} test")
+    print(f"{'='*72}\n")
+    print(f"  {'Model':<25s}  {'mean dB':>10s}  {'max dB':>10s}")
+    print(f"  {'-'*48}")
+    print(f"  {'baseline (E82)':<25s}  {baseline_mean:8.2f}    {baseline_max:8.2f}")
+    print(f"  {f'E83 + {model_name}':<25s}  {e83_mean:8.2f}    {e83_max:8.2f}")
+    delta = e83_mean - baseline_mean
+    sign = "+" if delta > 0 else ""
+    verdict = " ← BEATS baseline" if delta < -0.05 else (
+        " ← ties" if abs(delta) <= 0.05 else " ← regression"
+    )
+    print(f"  {'Δ mean':<25s}  {sign}{delta:8.2f}{verdict}")
+    print()
+    print(f"  Per-author:")
+    print(f"  {'author':<15s}  {'baseline':>10s}  {f'E83':>10s}  {'Δ':>8s}")
+    print(f"  {'-'*48}")
+    for author in sorted(set(baseline_author) | set(e83_author)):
+        b = baseline_author.get(author, float("nan"))
+        e = e83_author.get(author, float("nan"))
+        d = e - b if not (np.isnan(b) or np.isnan(e)) else float("nan")
+        print(f"  {author:<15s}  {b:8.2f}    {e:8.2f}    {d:+7.2f}")
+    print()
+
+    # --- CSV row for aggregation ---
+    csv_path = Path(".pytest_cache") / "e83_foundation.csv"
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    is_new = not csv_path.exists()
+    with csv_path.open("a", newline="") as f:
+        w = csv.writer(f)
+        if is_new:
+            w.writerow([
+                "timestamp", "foundation_model", "foundation_dim",
+                "n_train", "n_test",
+                "baseline_mean", "baseline_max",
+                "e83_mean", "e83_max",
+                "delta_mean",
+            ])
+        w.writerow([
+            int(time.time()), model_name, e83_cfg.foundation_dim,
+            len(train_samples), len(test_samples),
+            f"{baseline_mean:.3f}", f"{baseline_max:.3f}",
+            f"{e83_mean:.3f}", f"{e83_max:.3f}",
+            f"{delta:+.3f}",
+        ])
+    log.info("E83 CSV row appended: %s", csv_path)

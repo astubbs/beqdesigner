@@ -379,7 +379,7 @@ def _build_validation_data(
         catalogue_entry_to_response_labels,
     )
 
-    from spike._auto_beq_helpers import STRATEGY_WELCH, extract_features_with_strategy
+    from spike._auto_beq_helpers import STRATEGY_WELCH, cached_extract_features_with_strategy
 
     X, Y, entries = [], [], []
     for p in pairs:
@@ -387,7 +387,7 @@ def _build_validation_data(
         if not entry.get("filters"):
             continue
         try:
-            features = extract_features_with_strategy(
+            features = cached_extract_features_with_strategy(
                 p["wav_path"], freqs_hz, _DEFAULT_FS, strategy=STRATEGY_WELCH,
             )
         except Exception:
@@ -583,7 +583,7 @@ def _run_experiment_batch(
     from model.auto_beq_nn import deduplicate_by_title
 
     from spike._auto_beq_helpers import (
-        discover_wav_catalogue_pairs,
+        discover_wav_catalogue_pairs_cached,
         ensure_analysis_reports_current,
     )
 
@@ -599,7 +599,7 @@ def _run_experiment_batch(
                 len(regenerated), ", ".join(regenerated),
             )
 
-    pairs = discover_wav_catalogue_pairs()
+    pairs = discover_wav_catalogue_pairs_cached()
     if not pairs:
         pytest.skip("No WAV files found in cache")
 
@@ -919,9 +919,9 @@ def test_baseline_determinism(tmp_path, caplog):
     from model.auto_beq_metadata import fetch_metadata_batch, load_cache
     from model.auto_beq_nn import deduplicate_by_title
 
-    from spike._auto_beq_helpers import discover_wav_catalogue_pairs
+    from spike._auto_beq_helpers import discover_wav_catalogue_pairs_cached
 
-    pairs = discover_wav_catalogue_pairs()
+    pairs = discover_wav_catalogue_pairs_cached()
     if not pairs:
         pytest.skip("No WAV files found in cache")
 
@@ -987,9 +987,9 @@ def test_f5_cross_episode_consistency(tmp_path, caplog):
         train_late_fusion,
     )
 
-    from spike._auto_beq_helpers import STRATEGY_WELCH, discover_wav_catalogue_pairs
+    from spike._auto_beq_helpers import STRATEGY_WELCH, discover_wav_catalogue_pairs_cached
 
-    pairs = discover_wav_catalogue_pairs()
+    pairs = discover_wav_catalogue_pairs_cached()
     if not pairs:
         pytest.skip("No WAV files found")
 

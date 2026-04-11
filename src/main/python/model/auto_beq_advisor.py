@@ -118,6 +118,11 @@ class CurveFeatures:
     # F3: absolute dBFS levels at Option A bins, BEFORE 80 Hz normalisation.
     # Captures mastering-level information that normalisation strips out.
     absolute_dbfs: tuple[tuple[float, float], ...] | None = None
+    # T1.1/E83: pooled audio embedding from a foundation model (Whisper
+    # encoder / OpenL3 / EnCodec / BEATs). 1-D float vector; dim depends on
+    # the model. None for synthetic samples (no raw audio to embed) and
+    # for real samples extracted before foundation-feature support landed.
+    foundation_embedding: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -230,6 +235,361 @@ def extract_curve_features(
         dynamic_range_db=dynamic_range,
         curve_sample_points=samples,
     )
+
+
+# ---------------------------------------------------------------------------
+# T1.1/E83 — Audio foundation model embeddings
+# ---------------------------------------------------------------------------
+
+# Static dimensionality table for supported foundation models. Keeps
+# ``AudioFeatureConfig`` consistent at training + inference time without
+# having to load the model just to query its output size.
+FOUNDATION_MODEL_DIMS: dict[str, int] = {
+    "whisper-tiny": 384,
+    "whisper-base": 512,
+    "whisper-small": 768,
+    "openl3-mel128-music-512": 512,
+    "encodec-24khz-pool": 128,
+    # Mock entry for unit tests — lets us exercise the plumbing without
+    # installing a 500 MB package.
+    "mock-16": 16,
+}
+
+
+def foundation_embedding_dim(model_name: str) -> int:
+    """Return the pooled embedding dim for a supported foundation model."""
+    if model_name not in FOUNDATION_MODEL_DIMS:
+        raise ValueError(
+            f"unknown foundation model {model_name!r}; "
+            f"supported: {sorted(FOUNDATION_MODEL_DIMS)}",
+        )
+    return FOUNDATION_MODEL_DIMS[model_name]
+
+
+# Cache for lazily-loaded foundation model handles. Keyed by model_name
+# because loading any of these is slow (100s of MB of weights) and we
+# only want to pay the cost once per process.
+_FOUNDATION_MODEL_CACHE: dict[str, object] = {}
+
+# Lock protecting concurrent first-load of foundation models. Without it,
+# parallel workers all racing through extract_foundation_embedding on the
+# first call would each try to load + download the model weights.
+import threading as _threading
+_FOUNDATION_MODEL_LOCK = _threading.Lock()
+
+
+def _load_whisper_encoder(model_size: str = "tiny"):
+    """Lazy-load the Whisper encoder. Raises ImportError if not installed."""
+    try:
+        import whisper  # type: ignore
+    except ImportError as exc:
+        raise ImportError(
+            "openai-whisper is not installed. Install via "
+            "`poetry install --with experiment`.",
+        ) from exc
+    return whisper.load_model(model_size)
+
+
+def _run_whisper_encoder(model, audio: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Run the Whisper encoder on a 1-D audio array, return mean-pooled embedding."""
+    import whisper  # type: ignore
+    if sample_rate != 16000:
+        raise ValueError(
+            f"Whisper requires 16 kHz audio, got {sample_rate} Hz",
+        )
+    audio = audio.astype(np.float32)
+    # Whisper expects 30-second chunks (480k samples at 16 kHz). Pad or
+    # trim longer content in 30 s windows and average the resulting
+    # embeddings — one pooled vector per file.
+    chunk = whisper.audio.N_SAMPLES  # 480_000
+    n_chunks = max(1, (len(audio) + chunk - 1) // chunk)
+    pooled_chunks = []
+    for i in range(n_chunks):
+        piece = audio[i * chunk:(i + 1) * chunk]
+        piece = whisper.pad_or_trim(piece)
+        mel = whisper.log_mel_spectrogram(piece).to(model.device)
+        import torch  # type: ignore
+        with torch.no_grad():
+            encoded = model.encoder(mel.unsqueeze(0))  # (1, time, dim)
+        pooled_chunks.append(encoded.mean(dim=1).squeeze(0).cpu().numpy())
+    return np.mean(np.stack(pooled_chunks), axis=0).astype(np.float32)
+
+
+def _read_audio_to_target_sr(source_path: "Path", target_sr: int) -> np.ndarray:
+    """Read an audio source (mkv/mp4/iso/wav/...) as mono float32 at ``target_sr``.
+
+    Fast path: if ``source_path`` is a .wav, reads via scipy and resamples
+    (typical case for the 1 kHz LFE cache). Slow path: uses ffmpeg pipe to
+    decode any other container, picking the LFE channel if present and
+    downmixing to mono otherwise (mirrors generate_beq_profile.py).
+    """
+    import subprocess
+    if source_path.suffix.lower() == ".wav":
+        # Cached LFE WAV path — scipy is faster than spawning ffmpeg.
+        try:
+            from scipy.io import wavfile
+            from scipy.signal import resample_poly
+        except ImportError as exc:
+            raise ImportError("scipy is required to read WAV sources") from exc
+        native_sr, samples = wavfile.read(str(source_path))
+        if samples.ndim > 1:
+            samples = samples.mean(axis=1)
+        samples = samples.astype(np.float32)
+        # Normalise int16 → float32 [-1, 1] so Whisper's mel doesn't clip.
+        if np.issubdtype(samples.dtype, np.integer) or samples.max() > 2.0:
+            samples = samples / 32768.0
+        if native_sr != target_sr:
+            # Rational-factor polyphase resampling.
+            from math import gcd
+            g = gcd(native_sr, target_sr)
+            up, down = target_sr // g, native_sr // g
+            samples = resample_poly(samples, up, down).astype(np.float32)
+        return samples
+
+    # Probe to decide LFE vs mono downmix — mirrors generate_beq_profile.py.
+    probe_cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "a:0",
+        "-show_entries", "stream=channel_layout",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(source_path),
+    ]
+    try:
+        probe = subprocess.run(
+            probe_cmd, capture_output=True, text=True, timeout=30,
+        )
+        layout = (probe.stdout or "").strip().lower()
+    except Exception:
+        layout = ""
+    has_lfe = "lfe" in layout or any(
+        layout.startswith(p) for p in ("5.1", "6.1", "7.1")
+    )
+    af = "pan=mono|c0=LFE" if has_lfe else "aresample"
+
+    ff_cmd = [
+        "ffmpeg", "-v", "error", "-nostdin",
+        "-i", str(source_path),
+        "-af", af, "-ac", "1", "-ar", str(target_sr),
+        "-f", "f32le", "-",
+    ]
+    proc = subprocess.run(ff_cmd, capture_output=True, timeout=600)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg failed (exit {proc.returncode}) for {source_path}: "
+            f"{proc.stderr[:200].decode('utf-8', errors='replace')}",
+        )
+    return np.frombuffer(proc.stdout, dtype=np.float32).copy()
+
+
+def extract_foundation_embedding(
+    source_path: "Path",
+    model_name: str = "whisper-tiny",
+    cache_dir: "Path | None" = None,
+) -> np.ndarray:
+    """Return a pooled audio embedding for an audio source.
+
+    Accepts either a full media container (mkv / mp4 / iso / ...) or a
+    cached LFE WAV. For WAV sources, the audio is upsampled to the
+    model's native sample rate — note that 1 kHz LFE content has no
+    signal above 500 Hz, so the resulting embedding characterises ONLY
+    the sub-500 Hz bass band (which is exactly what matters for BEQ).
+    For full-bandwidth media, ffmpeg picks the LFE channel if present,
+    otherwise falls back to mono downmix.
+
+    The result is cached on disk so subsequent calls are near-free.
+
+    Parameters
+    ----------
+    source_path
+        Path to an mkv/mp4/iso/... OR a WAV file. Suffix dispatches.
+    model_name
+        Key from ``FOUNDATION_MODEL_DIMS``. Currently supported:
+        ``whisper-tiny`` / ``whisper-base`` / ``whisper-small`` via the
+        ``openai-whisper`` package, plus ``mock-16`` for tests.
+    cache_dir
+        Directory for per-source cached embeddings. If None, caches under
+        ``{beq-dir}/foundation-embeddings/<model_name>/`` via the
+        spike helper ``beq_dir()``.
+
+    Returns
+    -------
+    np.ndarray
+        1-D float32 vector of shape ``(foundation_embedding_dim(model_name),)``.
+
+    Raises
+    ------
+    ImportError
+        If the underlying model package is not installed.
+    RuntimeError
+        If ffmpeg fails to decode the media.
+    """
+    from pathlib import Path
+    expected_dim = foundation_embedding_dim(model_name)
+
+    # Resolve cache dir. Prefer caller-supplied; else derive from beq_dir.
+    if cache_dir is None:
+        try:
+            # Local import — spike helpers are only available on test sys.path.
+            from spike._auto_beq_helpers import beq_dir  # type: ignore
+            cache_dir = beq_dir() / "foundation-embeddings" / model_name
+        except Exception:
+            cache_dir = Path.cwd() / ".foundation-embeddings" / model_name
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Cache key = stem + size + mtime — survives renames of unchanged files.
+    try:
+        st = source_path.stat()
+        cache_key = f"{source_path.stem}-{st.st_size}-{int(st.st_mtime)}"
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"audio source not found: {source_path}") from exc
+    cache_file = cache_dir / f"{cache_key}.npy"
+    if cache_file.exists():
+        try:
+            cached = np.load(cache_file)
+            if cached.shape == (expected_dim,):
+                return cached.astype(np.float32)
+            log.warning("cached embedding shape mismatch at %s — recomputing", cache_file)
+        except Exception as exc:
+            log.warning("failed to load cached embedding %s: %s", cache_file, exc)
+
+    # --- Mock path: deterministic synthetic embedding, no model loaded.
+    if model_name == "mock-16":
+        # Deterministic pseudo-embedding derived from the source path —
+        # lets unit tests exercise the plumbing without installing Whisper.
+        rng = np.random.default_rng(abs(hash(str(source_path))) % (2**32))
+        emb = rng.standard_normal(expected_dim).astype(np.float32)
+        np.save(cache_file, emb)
+        return emb
+
+    # --- Whisper path.
+    if model_name.startswith("whisper-"):
+        size = model_name.split("-", 1)[1]
+        # Thread-safe lazy load: the lock prevents parallel workers from
+        # racing and loading the 80 MB weights N times on the first call.
+        if model_name not in _FOUNDATION_MODEL_CACHE:
+            with _FOUNDATION_MODEL_LOCK:
+                if model_name not in _FOUNDATION_MODEL_CACHE:
+                    log.info("loading foundation model: %s (one-time cost)", model_name)
+                    _FOUNDATION_MODEL_CACHE[model_name] = _load_whisper_encoder(size)
+        model = _FOUNDATION_MODEL_CACHE[model_name]
+        audio = _read_audio_to_target_sr(source_path, target_sr=16000)
+        embedding = _run_whisper_encoder(model, audio, sample_rate=16000)
+        if embedding.shape != (expected_dim,):
+            raise RuntimeError(
+                f"whisper embedding shape mismatch: got {embedding.shape}, "
+                f"expected ({expected_dim},)",
+            )
+        np.save(cache_file, embedding)
+        return embedding
+
+    raise ValueError(f"unsupported foundation model: {model_name!r}")
+
+
+def prewarm_foundation_model(model_name: str) -> None:
+    """Eagerly load a foundation model into the process-local cache.
+
+    Call before parallel embedding extraction to avoid a race where all
+    workers try to load the weights on their first call at the same time.
+    No-op if the model is already cached.
+    """
+    if model_name in _FOUNDATION_MODEL_CACHE:
+        return
+    if model_name == "mock-16":
+        return  # no model to load
+    if model_name.startswith("whisper-"):
+        with _FOUNDATION_MODEL_LOCK:
+            if model_name in _FOUNDATION_MODEL_CACHE:
+                return
+            size = model_name.split("-", 1)[1]
+            log.info("pre-warming foundation model: %s", model_name)
+            _FOUNDATION_MODEL_CACHE[model_name] = _load_whisper_encoder(size)
+        return
+    raise ValueError(f"unsupported foundation model: {model_name!r}")
+
+
+def extract_foundation_embeddings_parallel(
+    source_paths: "list[Path]",
+    model_name: str = "whisper-tiny",
+    cache_dir: "Path | None" = None,
+    max_workers: int | None = None,
+    progress_callback=None,
+) -> "list[tuple[Path, np.ndarray | None]]":
+    """Extract foundation embeddings for many audio sources in parallel.
+
+    Uses a ``ThreadPoolExecutor`` because PyTorch / numpy both release the
+    GIL during heavy inference, so threads give real speedup AND share the
+    loaded model weights (unlike processes, which would each load their
+    own copy — wasteful for 80+ MB models).
+
+    Sets ``torch.set_num_threads(1)`` before submitting so inner torch ops
+    don't all fight for the same cores as the outer pool.
+
+    Parameters
+    ----------
+    source_paths
+        List of paths (mkv / mp4 / wav / ...) to embed.
+    model_name
+        Key from ``FOUNDATION_MODEL_DIMS``.
+    cache_dir
+        Directory for per-source embedding cache. Passed through to
+        ``extract_foundation_embedding``.
+    max_workers
+        Thread-pool size. Defaults to ``os.cpu_count()`` (typically 8-12
+        on modern machines — plenty for whisper-tiny which is small
+        enough to saturate memory bandwidth before compute).
+    progress_callback
+        Optional ``(n_done, n_total) -> None`` hook for progress reporting.
+
+    Returns
+    -------
+    list of ``(source_path, embedding)`` tuples. On failure for a given
+    source, the embedding is ``None`` and a warning is logged.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import os
+
+    # Pre-warm the model once (not per-thread) to avoid races + thundering-herd.
+    prewarm_foundation_model(model_name)
+
+    # Pin torch intra-op threads to 1 so the outer ThreadPoolExecutor
+    # actually parallelises: otherwise each torch call uses all cores.
+    try:
+        import torch  # type: ignore
+        torch.set_num_threads(1)
+    except ImportError:
+        pass
+
+    if max_workers is None:
+        max_workers = os.cpu_count() or 4
+
+    results: list[tuple["Path", "np.ndarray | None"]] = [
+        (p, None) for p in source_paths
+    ]
+    completed = 0
+
+    def _work(idx_and_path):
+        idx, path = idx_and_path
+        try:
+            emb = extract_foundation_embedding(
+                path, model_name=model_name, cache_dir=cache_dir,
+            )
+            return idx, emb
+        except Exception as exc:
+            log.warning("foundation embedding failed for %s: %s", path, exc)
+            return idx, None
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [
+            pool.submit(_work, (i, p)) for i, p in enumerate(source_paths)
+        ]
+        for fut in as_completed(futures):
+            idx, emb = fut.result()
+            results[idx] = (source_paths[idx], emb)
+            completed += 1
+            if progress_callback is not None:
+                progress_callback(completed, len(source_paths))
+
+    return results
 
 
 # ---------------------------------------------------------------------------

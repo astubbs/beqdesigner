@@ -42,6 +42,19 @@ mypy = "*"
 xgboost = "^3.2.0"
 scikit-learn = "^1.8.0"
 
+# Opt-in deps for paradigm-shift experiments (E83+) are installed OUTSIDE
+# poetry via `pip --no-deps` in the existing venv. Reason: openai-whisper
+# pins torch<2.2 which conflicts with the torch 2.11 already installed
+# for other project deps, and poetry's resolver can't reconcile them.
+# `pip --no-deps` keeps the existing torch and only adds the whisper
+# package source (all sub-deps like tiktoken/tqdm/numba were already
+# pulled in by the earlier failed attempt).
+#
+#   poetry run pip install --no-deps openai-whisper  # E83/T1.1
+#   poetry run python3 -c "import whisper; whisper.load_model('tiny')"  # downloads weights
+#
+# CI does not install these. See docs/design/auto_beq_nn_paradigm_shifts.md.
+
 [tool.poetry.scripts]
 ui-gen = "scripts.regen_ui:main"
 

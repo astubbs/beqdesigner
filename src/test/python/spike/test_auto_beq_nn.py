@@ -484,6 +484,180 @@ def test_build_feature_vector_with_option_b_synthetic_fallback():
 
 
 # ---------------------------------------------------------------------------
+# E83 / T1.1 — Foundation model embedding features
+# ---------------------------------------------------------------------------
+
+
+def test_audio_feature_config_includes_foundation_dim():
+    """AudioFeatureConfig grows by foundation_dim when a model is set."""
+    from model.auto_beq_nn import AudioFeatureConfig, N_AUDIO_FEATURES, N_METADATA_FEATURES
+
+    base = AudioFeatureConfig()
+    assert base.foundation_dim == 0
+    assert base.n_total_audio == N_AUDIO_FEATURES
+
+    fnd = AudioFeatureConfig(foundation_model="mock-16")
+    assert fnd.foundation_dim == 16
+    assert fnd.n_total_audio == N_AUDIO_FEATURES + 16
+    assert fnd.n_features == N_AUDIO_FEATURES + 16 + N_METADATA_FEATURES
+    assert "fnd-mock-16" in fnd.label
+
+
+def test_audio_feature_config_rejects_unknown_foundation_model():
+    """Asking for a nonexistent foundation model raises at dim-query time."""
+    from model.auto_beq_nn import AudioFeatureConfig
+
+    cfg = AudioFeatureConfig(foundation_model="does-not-exist")
+    with pytest.raises(ValueError, match="unknown foundation model"):
+        _ = cfg.foundation_dim
+
+
+def test_build_feature_vector_with_foundation_embedding():
+    """Embedding present on CurveFeatures is concatenated in the right slot."""
+    from model.auto_beq_advisor import CurveFeatures
+    from model.auto_beq_nn import AudioFeatureConfig, build_feature_vector
+
+    embedding = tuple(float(i) for i in range(16))  # deterministic [0..15]
+    feats = CurveFeatures(
+        shoulder_peak_db=5.0, shoulder_peak_hz=30.0,
+        level_at_5hz_db=-10.0, level_at_10hz_db=-5.0, level_at_20hz_db=-2.0,
+        rolloff_depth_db=15.0, rolloff_slope_db_per_oct=3.0, dynamic_range_db=20.0,
+        curve_sample_points=tuple(),
+        foundation_embedding=embedding,
+    )
+    meta = MediaMetadata(title="t", year=2020)
+    cfg = AudioFeatureConfig(foundation_model="mock-16")
+
+    vec = build_feature_vector(feats, meta, config=cfg)
+
+    # Shape: 9 audio + 16 foundation + 93 metadata = 118.
+    assert vec.shape == (cfg.n_features,)
+    # Foundation block sits immediately after the 9 audio features.
+    np.testing.assert_array_almost_equal(vec[9:25], np.arange(16, dtype=np.float32))
+
+
+def test_build_feature_vector_synthetic_foundation_fallback():
+    """Synthetic samples (no raw audio) get zero-vector fallback of the right dim."""
+    from model.auto_beq_advisor import CurveFeatures
+    from model.auto_beq_nn import AudioFeatureConfig, build_feature_vector
+
+    feats = CurveFeatures(
+        shoulder_peak_db=5.0, shoulder_peak_hz=30.0,
+        level_at_5hz_db=-10.0, level_at_10hz_db=-5.0, level_at_20hz_db=-2.0,
+        rolloff_depth_db=15.0, rolloff_slope_db_per_oct=3.0, dynamic_range_db=20.0,
+        curve_sample_points=tuple(),
+        foundation_embedding=None,  # synthetic — no raw audio
+    )
+    meta = MediaMetadata(title="t", year=2020)
+    cfg = AudioFeatureConfig(foundation_model="mock-16")
+    vec = build_feature_vector(feats, meta, config=cfg)
+
+    assert vec.shape == (cfg.n_features,)
+    np.testing.assert_array_almost_equal(vec[9:25], 0.0)
+
+
+def test_build_feature_vector_rejects_foundation_embedding_shape_mismatch():
+    """Caller passing the wrong-size embedding fails fast with a clear error."""
+    from model.auto_beq_advisor import CurveFeatures
+    from model.auto_beq_nn import AudioFeatureConfig, build_feature_vector
+
+    feats = CurveFeatures(
+        shoulder_peak_db=5.0, shoulder_peak_hz=30.0,
+        level_at_5hz_db=-10.0, level_at_10hz_db=-5.0, level_at_20hz_db=-2.0,
+        rolloff_depth_db=15.0, rolloff_slope_db_per_oct=3.0, dynamic_range_db=20.0,
+        curve_sample_points=tuple(),
+        foundation_embedding=tuple(range(10)),  # wrong size: 10 instead of 16
+    )
+    meta = MediaMetadata(title="t", year=2020)
+    cfg = AudioFeatureConfig(foundation_model="mock-16")
+    with pytest.raises(ValueError, match="foundation_embedding shape mismatch"):
+        build_feature_vector(feats, meta, config=cfg)
+
+
+def test_extract_foundation_embedding_mock_is_deterministic_and_cached(tmp_path):
+    """Mock model path produces a stable vector per media path + caches it."""
+    from model.auto_beq_advisor import extract_foundation_embedding
+
+    media = tmp_path / "fake.mkv"
+    media.write_bytes(b"not-a-real-mkv-but-that's-fine-for-mock")
+
+    cache_dir = tmp_path / "embedding-cache"
+    v1 = extract_foundation_embedding(media, model_name="mock-16", cache_dir=cache_dir)
+    assert v1.shape == (16,)
+    assert v1.dtype == np.float32
+
+    # Hit the cache on the second call — same output.
+    v2 = extract_foundation_embedding(media, model_name="mock-16", cache_dir=cache_dir)
+    np.testing.assert_array_equal(v1, v2)
+
+    # Cache file is written under {cache_dir}/<key>.npy.
+    cached_files = list(cache_dir.glob("*.npy"))
+    assert len(cached_files) == 1
+
+
+def test_train_production_weighted_hybrid_accepts_foundation_config(tmp_path):
+    """Training function wires AudioFeatureConfig.foundation_model through end-to-end."""
+    import time
+    from model.auto_beq import DEFAULT_GRID
+    from model.auto_beq_advisor import CurveFeatures
+    from model.auto_beq_nn import (
+        AudioFeatureConfig,
+        N_OUTPUT,
+        train_production_weighted_hybrid,
+    )
+
+    # Hand-built tiny fixture: 3 real + 3 synth entries with LowShelf filters.
+    def make_entry(title, freq, gain):
+        return {
+            "title": title,
+            "year": "2020",
+            "theMovieDB": f"tmdb-{title}",
+            "filters": [{"type": "LowShelf", "freq": freq, "gain": gain, "q": 0.9}],
+            "author": "aron7awol",
+        }
+
+    def make_feats(with_embedding: bool):
+        return CurveFeatures(
+            shoulder_peak_db=5.0, shoulder_peak_hz=30.0,
+            level_at_5hz_db=-10.0, level_at_10hz_db=-5.0, level_at_20hz_db=-2.0,
+            rolloff_depth_db=15.0, rolloff_slope_db_per_oct=3.0, dynamic_range_db=20.0,
+            curve_sample_points=tuple(),
+            foundation_embedding=tuple(float(i) for i in range(16)) if with_embedding else None,
+        )
+
+    real_samples = [
+        (make_entry(f"real-{i}", 20.0 + i, 4.0 + i * 0.5), make_feats(with_embedding=True))
+        for i in range(3)
+    ]
+    synth_entries = [make_entry(f"synth-{i}", 25.0 + i, 3.0 + i * 0.5) for i in range(3)]
+
+    cfg = AudioFeatureConfig(foundation_model="mock-16")
+    t0 = time.time()
+    model, metadata = train_production_weighted_hybrid(
+        real_samples=real_samples,
+        synth_entries=synth_entries,
+        tmdb_cache={},
+        freqs_hz=DEFAULT_GRID,
+        fs=1000,
+        real_weight=50.0,
+        config=cfg,
+    )
+    assert time.time() - t0 < 20, "training on 6 samples should be fast"
+
+    # Metadata reflects the foundation config used.
+    assert metadata["foundation_model"] == "mock-16"
+    assert metadata["n_features"] == cfg.n_features
+    assert metadata["feature_config"] == cfg.label
+    assert metadata["n_real"] == 3
+    assert metadata["n_synth"] == 3
+
+    # Model predicts into (1, N_OUTPUT) for a single feature row at the new dim.
+    x = np.zeros((1, cfg.n_features), dtype=np.float32)
+    y = model.predict(x)
+    assert y.shape == (1, N_OUTPUT)
+
+
+# ---------------------------------------------------------------------------
 # G8: per-author alpha (predict_with_alphas)
 # ---------------------------------------------------------------------------
 

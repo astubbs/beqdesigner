@@ -249,6 +249,20 @@ class AudioFeatureConfig:
     use_high_res: bool = False        # F11: 16 bins instead of 9
     use_rolloff_cluster: bool = False # F7: cluster ID one-hot
     n_clusters: int = 6              # F7: number of clusters
+    # T1.1/E83: audio foundation model embedding as additional features.
+    # ``foundation_model`` is a key into ``FOUNDATION_MODEL_DIMS`` (e.g.
+    # "whisper-tiny"). When set, ``build_feature_vector`` concatenates a
+    # pooled embedding vector of the model's native dim. Synthetic samples
+    # get a zero-vector fallback of the same dim.
+    foundation_model: str | None = None
+
+    @property
+    def foundation_dim(self) -> int:
+        if self.foundation_model is None:
+            return 0
+        # Local import to avoid circular dependency at module load time.
+        from model.auto_beq_advisor import foundation_embedding_dim
+        return foundation_embedding_dim(self.foundation_model)
 
     @property
     def n_total_audio(self) -> int:
@@ -259,6 +273,7 @@ class AudioFeatureConfig:
             n += 9   # absolute dBFS at 9 bins
         if self.use_rolloff_cluster:
             n += self.n_clusters  # one-hot cluster ID
+        n += self.foundation_dim  # T1.1/E83
         return n
 
     @property
@@ -278,6 +293,8 @@ class AudioFeatureConfig:
             parts.append("dBFS")
         if self.use_rolloff_cluster:
             parts.append(f"clust{self.n_clusters}")
+        if self.foundation_model is not None:
+            parts.append(f"fnd-{self.foundation_model}")
         return "+".join(parts) if parts else "A9"
 
 
@@ -518,6 +535,22 @@ def build_feature_vector(
 
     # F7 cluster ID is injected externally (requires a fitted KMeans model),
     # so it is NOT populated here — the caller appends it after this call.
+
+    # T1.1/E83: foundation model embedding. Pulled from features when
+    # available (populated for real WAVs upstream), zeros otherwise
+    # (synthetic samples — no raw audio to embed).
+    if config.foundation_model is not None:
+        dim = config.foundation_dim
+        if features.foundation_embedding is not None:
+            emb = np.asarray(features.foundation_embedding, dtype=np.float32)
+            if emb.shape != (dim,):
+                raise ValueError(
+                    f"foundation_embedding shape mismatch: got {emb.shape}, "
+                    f"expected ({dim},) for model {config.foundation_model!r}",
+                )
+            parts.append(emb)
+        else:
+            parts.append(np.zeros(dim, dtype=np.float32))
 
     audio = np.concatenate(parts)
     meta = build_metadata_features(metadata)
@@ -2006,6 +2039,7 @@ def train_production_weighted_hybrid(
     freqs_hz: np.ndarray,
     fs: int = 1000,
     real_weight: float = 50.0,
+    config: AudioFeatureConfig = DEFAULT_AUDIO_CONFIG,
 ) -> "tuple[object, dict]":
     """Train the production 50:1 weighted hybrid plain XGBoost model (E82).
 
@@ -2024,7 +2058,10 @@ def train_production_weighted_hybrid(
     ----------
     real_samples
         List of ``(catalogue_entry, curve_features)`` tuples.  The caller
-        is responsible for WAV extraction (via the spike helpers).
+        is responsible for WAV extraction (via the spike helpers). For
+        E83 (T1.1), the ``CurveFeatures`` should have
+        ``foundation_embedding`` populated; synthetic samples below
+        automatically get a zero-vector fallback.
     synth_entries
         List of catalogue entries to synthesise.  Typically every
         trainable catalogue entry whose tmdb_id does NOT appear in
@@ -2039,6 +2076,10 @@ def train_production_weighted_hybrid(
     real_weight
         Per-sample weight for real samples vs. 1.0 for synthetic samples.
         E82 found 50:1 ties real-only on in-distribution test titles.
+    config
+        Audio feature configuration. Default (E82): 102-dim plain
+        features. Pass ``AudioFeatureConfig(foundation_model=
+        "whisper-tiny")`` for E83 foundation-model features.
 
     Returns
     -------
@@ -2048,7 +2089,8 @@ def train_production_weighted_hybrid(
         ``metadata``: a dict with provenance fields — ``n_real``,
         ``n_synth``, ``real_weight``, ``trained_at`` (unix timestamp),
         ``wav_cache_mtime`` (max WAV mtime at train time or 0.0 if
-        unavailable), ``xgb_params`` (hyperparameter snapshot).
+        unavailable), ``xgb_params`` (hyperparameter snapshot),
+        ``feature_config`` (the AudioFeatureConfig.label).
     """
     import time as _time
     from model.auto_beq import evaluate_filter_chain
@@ -2063,7 +2105,7 @@ def train_production_weighted_hybrid(
         if not entry.get("filters"):
             continue
         metadata = enrich_media_metadata(entry, tmdb_cache)
-        X_real_list.append(build_feature_vector(features, metadata))
+        X_real_list.append(build_feature_vector(features, metadata, config=config))
         Y_real_list.append(catalogue_entry_to_labels(entry))
         tid = str(entry.get("theMovieDB", "")).strip()
         if tid:
@@ -2097,7 +2139,7 @@ def train_production_weighted_hybrid(
             log.debug("skipping synthetic entry %s: %s", entry.get("title"), exc)
             continue
         metadata = enrich_media_metadata(entry, tmdb_cache)
-        X_synth_list.append(build_feature_vector(features, metadata))
+        X_synth_list.append(build_feature_vector(features, metadata, config=config))
         Y_synth_list.append(catalogue_entry_to_labels(entry))
 
     if X_synth_list:
@@ -2140,6 +2182,9 @@ def train_production_weighted_hybrid(
             "learning_rate": 0.05,
             "n_jobs": 1,
         },
+        "feature_config": config.label,
+        "n_features": int(config.n_features),
+        "foundation_model": config.foundation_model,
     }
     return model, metadata
 
