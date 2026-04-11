@@ -3340,3 +3340,107 @@ deterministic Baseline (2.69 dB on 932 WAVs).
 With determinism restored, the next measurement we can trust is
 E76 — I4 per-author dedicated models, using the 305 mobe1969 + 304
 aron7awol + 181 kaelaria WAVs that the 932-WAV cache now has.
+
+---
+
+## 2026-04-11: E76 — I4 per-author dedicated late-fusion with classifier routing
+
+**Hypothesis**: The 0.02–0.09 dB gap between I1b (2.35) and G8 oracle
+(2.33) comes from the shared model compromising between author styles.
+If we train per-author dedicated late-fusion models and route to them
+via the I1b metadata classifier, each model specialises harder and
+beats the shared one.
+
+At 932 WAVs, the top 3 authors have enough samples to support
+dedicated models:
+- mobe1969: 305 WAVs
+- aron7awol: 304 WAVs
+- kaelaria: 181 WAVs
+
+**Design**: `AuthorEnsembleV2Model` + `train_author_ensemble_v2()`
+in `auto_beq_nn.py`.
+
+Differs from the earlier failed F12/E50 in three ways:
+1. **Full late-fusion per author** (not plain XGBoost) with
+   augmentation applied to the audio branch.
+2. **Classifier routing** at inference time (not ground-truth author
+   lookup) — production-viable because the user doesn't need to know
+   the author.
+3. **Shared fallback** for authors without enough samples
+   (MIN_SAMPLES=100): remixmark, halcyon888, t1g8rsfan, mikejl, etc.
+   all route to the fallback model.
+
+Author columns are zeroed in each dedicated model's training data
+(the model IS that author, so the feature is redundant).
+
+**Result** (932-WAV validation, under E75 deterministic harness):
+
+| Experiment | Mean dB | PASS | MARG | FAIL | vs I1b |
+|---|---|---|---|---|---|
+| G8-perauth-oracle | 2.33 | 544 | 272 | 141 | -0.02 |
+| **I1b-soft-blend (ref)** | **2.35** | **549** | **263** | **145** | — |
+| I1c-top3 | 2.35 | 549 | 263 | 145 | 0.00 |
+| G2a-a0.5 | 2.39 | 529 | 290 | 138 | +0.04 |
+| I1a-hard | 2.40 | 535 | 270 | 152 | +0.05 |
+| F1-s0.5 | 2.41 | 524 | 285 | 148 | +0.06 |
+| **I4-dedicated-α0.5** | **2.42** | 546 | 246 | **165** | **+0.07** |
+| **I4-dedicated-α0.7** | **2.42** | 556 | 226 | **175** | **+0.07** |
+| Baseline | 2.83 | 344 | 396 | 217 | +0.48 |
+
+**I4 failed the go criterion** (plan required <2.32 dB).
+
+**Key pattern — the PASS/FAIL distribution shifted more than the mean**:
+- I4-α0.7: **556 PASS (+7 vs I1b)** but also **175 FAIL (+30 vs I1b)**.
+- I4 is *more confident*: more hits on easy titles, more misses on
+  hard ones.  The mean is unchanged but the variance moved.
+
+**Root causes** (hypothesised):
+1. **Training fragmentation**: each dedicated model sees 181–305
+   samples vs the fallback's ~8k.  Even with augmentation, less data
+   = worse generalisation on out-of-distribution content.
+2. **Routing errors compound**: when the classifier predicts the
+   wrong author, the dedicated model commits confidently to a wrong
+   style.  No hedging.
+3. **Author column signal loss**: the shared model uses the author
+   one-hot as context; dedicated models deliberately zero it out and
+   lose the gradient it contributes to adjacent authors in metadata
+   space.
+4. **Training cost**: 173s vs 73s per experiment (2.4× slower) for
+   zero gain.
+
+**Lesson**: This is the H-series insight in a different disguise.
+
+H-series: *"don't average across authors"* (consensus regresses).
+E76: *"don't commit to one author"* (hard routing regresses).
+I1b: *"blend softly by predicted probability"* (correct answer).
+
+The metadata classifier's probability distribution is the right level
+of commitment — soft enough to hedge when the model is uncertain,
+specific enough to pick the right style when it's confident.
+
+**Kept**: No — I4 is not adopted.  The I1b soft-blend remains the
+production model at 2.37 dB (E74) / 2.35 dB (E76 re-run).
+
+**Code preserved**: `AuthorEnsembleV2Model` + `train_author_ensemble_v2`
+stay in `auto_beq_nn.py` as per AGENTS.md experimental-code preservation
+rule.  `use_author_ensemble_v2` flag on ExperimentConfig is retained
+so the experiment is re-runnable.
+
+### Baseline variance follow-up
+
+The harness Baseline came in at 2.83 dB vs 2.69 dB from the standalone
+determinism test in E75.  That's a 0.14 dB gap between contexts that
+both claim to be deterministic.
+
+Hypothesis: some subtle difference in how the harness builds features
+vs the standalone test.  Possible sources: dict iteration order
+during TMDb cache enrichment, entry ordering after
+`deduplicate_by_title` is consumed differently, or something in
+`_build_train_entries` that depends on traversal order.
+
+The *relative* ranking is stable within a single run (all experiments
+share the same context), so conclusions about technique ordering are
+still valid.  But the absolute number shifts across invocations.
+
+**Deferred to E75b**: investigate with a diff between the two
+contexts.  Not blocking for the current best-model selection.
