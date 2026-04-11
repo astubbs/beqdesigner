@@ -8,18 +8,32 @@ import numpy as np
 import qtawesome as qta
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import FuncFormatter, MaxNLocator
+from model.limits import Limits, LimitsDialog
+from model.preferences import (
+    AUDIO_ANALYIS_MAX_FILTERED_FREQ,
+    AUDIO_ANALYIS_MAX_UNFILTERED_FREQ,
+    AUDIO_ANALYIS_MIN_FREQ,
+    AUDIO_ANALYSIS_COLOUR_MAX,
+    AUDIO_ANALYSIS_COLOUR_MIN,
+    AUDIO_ANALYSIS_ELLIPSE_HEIGHT,
+    AUDIO_ANALYSIS_ELLIPSE_WIDTH,
+    AUDIO_ANALYSIS_GEOMETRY,
+    AUDIO_ANALYSIS_MARKER_SIZE,
+    AUDIO_ANALYSIS_MARKER_TYPE,
+    AUDIO_ANALYSIS_SIGNAL_MIN,
+    ELLIPSE,
+    EXTRACTION_OUTPUT_DIR,
+    GRAPH_X_MAX,
+    GRAPH_X_MIN,
+    POINT,
+    SPECTROGRAM_CONTOURED,
+    SPECTROGRAM_FLAT,
+    STYLE_IMAGE_FORMAT_DEFAULT,
+)
+from model.signal import readWav, select_file
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from qtpy import QtCore
-from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QDialog
-
-from model.limits import Limits, LimitsDialog
-from model.preferences import GRAPH_X_MIN, GRAPH_X_MAX, POINT, ELLIPSE, SPECTROGRAM_CONTOURED, SPECTROGRAM_FLAT, \
-    AUDIO_ANALYSIS_MARKER_SIZE, AUDIO_ANALYSIS_MARKER_TYPE, AUDIO_ANALYSIS_ELLIPSE_WIDTH, AUDIO_ANALYSIS_ELLIPSE_HEIGHT, \
-    AUDIO_ANALYIS_MIN_FREQ, AUDIO_ANALYIS_MAX_UNFILTERED_FREQ, AUDIO_ANALYIS_MAX_FILTERED_FREQ, \
-    AUDIO_ANALYSIS_COLOUR_MAX, AUDIO_ANALYSIS_COLOUR_MIN, AUDIO_ANALYSIS_SIGNAL_MIN, AUDIO_ANALYSIS_GEOMETRY, \
-    EXTRACTION_OUTPUT_DIR, STYLE_IMAGE_FORMAT_DEFAULT
-from model.signal import select_file, readWav
 from ui.analysis import Ui_analysisDialog
 
 logger = logging.getLogger('analysis')
@@ -202,7 +216,7 @@ class AnalyseSignalDialog(QDialog, Ui_analysisDialog):
 
     def save_chart(self):
         ''' opens the save chart dialog '''
-        from app import SaveChartDialog, MatplotlibExportProcessor
+        from app import MatplotlibExportProcessor, SaveChartDialog
         selected_data = self.__get_signal_data(self.leftSignal.currentText())
         if self.analysisTabs.currentIndex() == 0:
             SaveChartDialog(self, 'peak spectrum', self.spectrumChart.canvas.figure,
@@ -265,8 +279,8 @@ class AnalyseSignalDialog(QDialog, Ui_analysisDialog):
         if end_millis < self.__duration or start is not None:
             end = end_millis
         channel = int(self.channelSelector.currentText())
-        from model.preferences import ANALYSIS_TARGET_FS
         from app import wait_cursor
+        from model.preferences import ANALYSIS_TARGET_FS
         with wait_cursor(f"Loading {self.__info.name}"):
             self.__signal = readWav('analysis', self.__preferences, self.__info.name,
                                     channel=channel, start=start, end=end,
@@ -435,7 +449,7 @@ class Waveform:
         Calculates the spectrum view.
         '''
         from app import wait_cursor
-        with wait_cursor(f"Analysing"):
+        with wait_cursor("Analysing"):
             step = 1.0 / self.signal.fs
             x = np.arange(0, self.signal.duration_seconds, step)
             y = self.signal.samples
@@ -559,7 +573,7 @@ class MaxSpectrumByTime:
     def update_chart(self):
         ''' Updates the chart for the cached data'''
         from app import wait_cursor
-        with wait_cursor(f"Updating"):
+        with wait_cursor("Updating"):
             self.__clear_on_layout_change()
             if self.__left_signal is None:
                 times = self.__render_one_only()
@@ -684,7 +698,7 @@ class MaxSpectrumByTime:
         Calculates the spectrum view.
         '''
         from app import wait_cursor
-        with wait_cursor(f"Analysing"):
+        with wait_cursor("Analysing"):
             self.__cache_xyz(self.__left_signal, self.__left_cache)
             self.__cache_xyz(self.__right_signal, self.__right_cache)
             self.__init_mag_range()

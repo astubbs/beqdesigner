@@ -1,27 +1,60 @@
 import json
 import logging
+import math
 from collections import defaultdict
 from collections.abc import Sequence
-from typing import Optional, Type, Tuple, Any, List
+from typing import Any, List, Optional, Tuple, Type
 from uuid import uuid4
 
-import math
 import qtawesome as qta
-from qtpy import QtCore
-from qtpy.QtCore import QAbstractTableModel, QModelIndex, QVariant, Qt, QTimer
-from qtpy.QtGui import QIcon
-from qtpy.QtWidgets import QDialog, QFileDialog, QMessageBox, QHeaderView, QTableView, QWidget
-
-from model.iir import FilterType, LowShelf, HighShelf, PeakingEQ, SecondOrder_LowPass, \
-    SecondOrder_HighPass, ComplexLowPass, ComplexHighPass, q_to_s, s_to_q, max_permitted_s, CompleteFilter, COMBINED, \
-    Passthrough, Gain, Shelf, LinkwitzTransform, Biquad, AllPass, DEFAULT_Q
+from model.iir import (
+    COMBINED,
+    DEFAULT_Q,
+    AllPass,
+    Biquad,
+    CompleteFilter,
+    ComplexHighPass,
+    ComplexLowPass,
+    FilterType,
+    Gain,
+    HighShelf,
+    LinkwitzTransform,
+    LowShelf,
+    Passthrough,
+    PeakingEQ,
+    SecondOrder_HighPass,
+    SecondOrder_LowPass,
+    Shelf,
+    max_permitted_s,
+    q_to_s,
+    s_to_q,
+)
 from model.limits import DecibelRangeCalculator, PhaseRangeCalculator
 from model.magnitude import MagnitudeModel
-from model.preferences import SHOW_ALL_FILTERS, SHOW_NO_FILTERS, FILTER_COLOURS, DISPLAY_SHOW_FILTERS, DISPLAY_Q_STEP, \
-    DISPLAY_GAIN_STEP, DISPLAY_S_STEP, DISPLAY_FREQ_STEP, get_filter_colour, FILTERS_DEFAULT_Q, FILTERS_DEFAULT_FREQ, \
-    FILTERS_GEOMETRY, FILTERS_DEFAULT_HS_FREQ, FILTERS_DEFAULT_HS_Q, FILTERS_DEFAULT_PEAK_FREQ, FILTERS_DEFAULT_PEAK_Q
-from model.xy import MagnitudeData, ComplexData
+from model.preferences import (
+    DISPLAY_FREQ_STEP,
+    DISPLAY_GAIN_STEP,
+    DISPLAY_Q_STEP,
+    DISPLAY_S_STEP,
+    DISPLAY_SHOW_FILTERS,
+    FILTER_COLOURS,
+    FILTERS_DEFAULT_FREQ,
+    FILTERS_DEFAULT_HS_FREQ,
+    FILTERS_DEFAULT_HS_Q,
+    FILTERS_DEFAULT_PEAK_FREQ,
+    FILTERS_DEFAULT_PEAK_Q,
+    FILTERS_DEFAULT_Q,
+    FILTERS_GEOMETRY,
+    SHOW_ALL_FILTERS,
+    SHOW_NO_FILTERS,
+    get_filter_colour,
+)
+from model.xy import ComplexData, MagnitudeData
 from mpl import NoCaretStyle
+from qtpy import QtCore
+from qtpy.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer, QVariant
+from qtpy.QtGui import QIcon
+from qtpy.QtWidgets import QDialog, QFileDialog, QHeaderView, QMessageBox, QTableView, QWidget
 from ui.filter import Ui_editFilterDialog
 
 logger = logging.getLogger('filter')
@@ -56,7 +89,7 @@ class FilterModel(Sequence):
                 if self.__filter.listener is not None:
                     self.__label.setText(f"Filter - {filt.listener.name}")
                 else:
-                    self.__label.setText(f"Filter - Default")
+                    self.__label.setText("Filter - Default")
             self.post_update()
             if self.__table is not None:
                 self.__table.endResetModel()
@@ -660,8 +693,8 @@ class FilterDialog(QDialog, Ui_editFilterDialog):
         ''' Allows a filter to be loaded from a supported file format and set as the snapshot. '''
         result = QMessageBox.question(self,
                                       'Load Filter or XML?',
-                                      f"Do you want to load from a filter or a minidsp beq file?"
-                                      f"\n\nClick Yes to load from a filter or No for a beq file",
+                                      "Do you want to load from a filter or a minidsp beq file?"
+                                      "\n\nClick Yes to load from a filter or No for a beq file",
                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                       QMessageBox.StandardButton.No)
         load_xml = result == QMessageBox.StandardButton.No
@@ -1138,8 +1171,8 @@ def load_filter(parent, status_bar=None):
     '''
     dialog = QFileDialog(parent=parent)
     dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
-    dialog.setNameFilter(f"*.filter")
-    dialog.setWindowTitle(f"Load Filter")
+    dialog.setNameFilter("*.filter")
+    dialog.setWindowTitle("Load Filter")
     if dialog.exec():
         selected = dialog.selectedFiles()
         if len(selected) > 0:

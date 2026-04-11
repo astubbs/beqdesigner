@@ -1,0 +1,16 @@
+[
+  {
+    "path": "/absolute/path/to/Edge.of.Tomorrow.2014.mkv",
+    "title": "Edge of Tomorrow",
+    "filter_count": 5,
+    "expected_grade": "PASS",
+    "notes": "deep cascaded shelf (~+28 dB at 10 Hz)"
+  },
+  {
+    "path": "/absolute/path/to/Mad.Max.Fury.Road.2015.mkv",
+    "title": "Mad Max: Fury Road",
+    "filter_count": 5,
+    "expected_grade": "PASS",
+    "notes": "dense continuous LFE - contrast to EoT's impulsive profile"
+  }
+]

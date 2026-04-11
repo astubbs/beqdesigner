@@ -10,14 +10,13 @@ import threading
 import time
 from pathlib import Path
 
-from ffmpeg.nodes import filter_operator, FilterNode
-from qtpy import QtWidgets
-from qtpy.QtCore import Signal, QRunnable, QObject, QThreadPool
-from qtpy.QtWidgets import QDialog, QTreeWidget, QTreeWidgetItem
-
 import ffmpeg
-from model.iir import Passthrough, FilterType, ComplexHighPass, ComplexLowPass
-from model.preferences import COMPRESS_FORMAT_NATIVE, COMPRESS_FORMAT_FLAC, COMPRESS_FORMAT_EAC3, COMPRESS_FORMAT_AC3
+from ffmpeg.nodes import FilterNode, filter_operator
+from model.iir import ComplexHighPass, ComplexLowPass, FilterType, Passthrough
+from model.preferences import COMPRESS_FORMAT_AC3, COMPRESS_FORMAT_EAC3, COMPRESS_FORMAT_FLAC, COMPRESS_FORMAT_NATIVE
+from qtpy import QtWidgets
+from qtpy.QtCore import QObject, QRunnable, QThreadPool, Signal
+from qtpy.QtWidgets import QDialog, QTreeWidget, QTreeWidgetItem
 from ui.ffmpeg import Ui_ffmpegReportDialog
 
 logger = logging.getLogger('progress')

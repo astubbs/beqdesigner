@@ -6,26 +6,42 @@ import re
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import List, Optional, Dict, Iterable, Any, Callable
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import numpy as np
 import qtawesome as qta
 import soxr
-from qtpy import QtCore
-from qtpy.QtCore import QAbstractTableModel, QModelIndex, QVariant, Qt, QRunnable, QThreadPool
-from qtpy.QtWidgets import QDialog, QFileDialog, QDialogButtonBox, QStatusBar
-from scipy import signal
-from sortedcontainers import SortedDict
-
-from model.codec import signaldata_to_json, bassmanagedsignaldata_to_json
+from model.codec import bassmanagedsignaldata_to_json, signaldata_to_json
 from model.iir import CompleteFilter, ComplexLowPass, FilterType
 from model.magnitude import MagnitudeModel
-from model.preferences import get_avg_colour, get_peak_colour, get_median_colour, SHOW_FILTERED_ONLY, \
-    DISPLAY_SHOW_SIGNALS, DISPLAY_SHOW_FILTERED_SIGNALS, ANALYSIS_TARGET_FS, BASS_MANAGEMENT_LPF_FS, \
-    BASS_MANAGEMENT_LPF_POSITION, BM_LPF_BEFORE, BM_LPF_AFTER, DISPLAY_SMOOTH_PRECALC, X_RESOLUTION, \
-    SHOWING_AVERAGE, SHOWING_PEAK, SHOWING_MEDIAN, SHOW_UNFILTERED_ONLY, ANALYSIS_WINDOW_DEFAULT, \
-    ANALYSIS_RESOLUTION_DEFAULT, EXTRACTION_OUTPUT_DIR
+from model.preferences import (
+    ANALYSIS_RESOLUTION_DEFAULT,
+    ANALYSIS_TARGET_FS,
+    ANALYSIS_WINDOW_DEFAULT,
+    BASS_MANAGEMENT_LPF_FS,
+    BASS_MANAGEMENT_LPF_POSITION,
+    BM_LPF_AFTER,
+    BM_LPF_BEFORE,
+    DISPLAY_SHOW_FILTERED_SIGNALS,
+    DISPLAY_SHOW_SIGNALS,
+    DISPLAY_SMOOTH_PRECALC,
+    EXTRACTION_OUTPUT_DIR,
+    SHOW_FILTERED_ONLY,
+    SHOW_UNFILTERED_ONLY,
+    SHOWING_AVERAGE,
+    SHOWING_MEDIAN,
+    SHOWING_PEAK,
+    X_RESOLUTION,
+    get_avg_colour,
+    get_median_colour,
+    get_peak_colour,
+)
 from model.xy import MagnitudeData, interp
+from qtpy import QtCore
+from qtpy.QtCore import QAbstractTableModel, QModelIndex, QRunnable, Qt, QThreadPool, QVariant
+from qtpy.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QStatusBar
+from scipy import signal
+from sortedcontainers import SortedDict
 from ui.merge_signals import Ui_MergeSignalDialog
 from ui.signal import Ui_addSignalDialog
 from ui.signal_viz import Ui_selectSignalsDialog
@@ -654,8 +670,8 @@ class SignalModel(Sequence):
         '''
         if self.__table is not None:
             self.__table.beginResetModel()
-        for signal in self:
-            signal.free_all()
+        for sig in self:
+            sig.free_all()
         if self.__table is not None:
             self.__table.endResetModel()
 
@@ -850,7 +866,7 @@ class Signal:
                  analysis_resolution=ANALYSIS_RESOLUTION_DEFAULT, avg_window=ANALYSIS_WINDOW_DEFAULT,
                  peak_window=ANALYSIS_WINDOW_DEFAULT, fs=48000, metadata=None, rescale_x=True):
         if preferences is not None:
-            from model.preferences import ANALYSIS_RESOLUTION, ANALYSIS_PEAK_WINDOW, ANALYSIS_AVG_WINDOW
+            from model.preferences import ANALYSIS_AVG_WINDOW, ANALYSIS_PEAK_WINDOW, ANALYSIS_RESOLUTION
             self.__analysis_resolution = preferences.get(ANALYSIS_RESOLUTION)
             self.__avg_window = preferences.get(ANALYSIS_AVG_WINDOW)
             self.__peak_window = preferences.get(ANALYSIS_PEAK_WINDOW)
@@ -1484,7 +1500,7 @@ def select_file(owner, file_types, dir=None):
     dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
     filt = ' '.join([f"*.{f}" for f in file_types])
     dialog.setNameFilter(f"Audio ({filt})")
-    dialog.setWindowTitle(f"Select Signal File")
+    dialog.setWindowTitle("Select Signal File")
     if dir:
         dialog.setDirectory(dir)
     if dialog.exec():
@@ -1862,7 +1878,7 @@ class PulseLoader:
         self.__prefs = prefs
         from scipy.signal import unit_impulse
         signal = Signal('signal', unit_impulse(4 * 48000, 'mid'), prefs, fs=48000)
-        self.__pulse = SingleChannelSignalData(name=f"signal", signal=signal)
+        self.__pulse = SingleChannelSignalData(name="signal", signal=signal)
 
     def can_save(self):
         '''
@@ -2025,13 +2041,13 @@ class SignalDialog(QDialog, Ui_addSignalDialog):
         loader = self.__loaders[self.__loader_idx]
         if loader.can_save():
             from app import wait_cursor
-            with wait_cursor(f"Saving signals"):
+            with wait_cursor("Saving signals"):
                 signal = loader.get_signal(offset=self.gainOffset.value())
                 if signal is not None:
                     self.save(signal)
                     QDialog.accept(self)
                 else:
-                    logger.warning(f"No signals produced by loader")
+                    logger.warning("No signals produced by loader")
             self.__clear_down()
 
     def save(self, signal):

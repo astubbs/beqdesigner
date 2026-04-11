@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Dict, Optional, List, Tuple, Iterable, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from model.jriver import flatten
-from model.jriver.formats import get_channel_name, SHORT_USER_CHANNELS
-from model.jriver.filter import FilterGraph, Filter, ChannelFilter, ComplexChannelFilter, Mix, \
-    MixType, CompoundRoutingFilter
+from model.jriver.filter import (
+    ChannelFilter,
+    ComplexChannelFilter,
+    CompoundRoutingFilter,
+    Filter,
+    FilterGraph,
+    Mix,
+    MixType,
+)
+from model.jriver.formats import SHORT_USER_CHANNELS, get_channel_name
 
 logger = logging.getLogger('jriver.render')
 

@@ -3,10 +3,9 @@ import math
 import time
 
 import numpy as np
+from model.preferences import DISPLAY_SMOOTH_GRAPHS, Preferences
 from qtpy.QtCore import QSettings
 from scipy.interpolate import PchipInterpolator
-
-from model.preferences import DISPLAY_SMOOTH_GRAPHS, Preferences
 
 SAVGOL_WINDOW_LENGTH = 101
 SAVGOL_POLYORDER = 7
@@ -217,7 +216,7 @@ def smooth_octave(x, y, smooth_type):
     :return: the smoothed data.
     '''
     from acoustics.smooth import fractional_octaves
-    from model.signal import db_to_amplitude, amplitude_to_db
+    from model.signal import amplitude_to_db, db_to_amplitude
     octave_x, smoothed_y = fractional_octaves(x, db_to_amplitude(y), fraction=smooth_type)
     return octave_x.center, amplitude_to_db(smoothed_y)
 

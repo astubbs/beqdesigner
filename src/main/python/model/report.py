@@ -8,24 +8,44 @@ from urllib.parse import urlparse
 import matplotlib
 import qtawesome as qta
 import requests
-from PIL import Image
 from matplotlib.gridspec import GridSpec
 from matplotlib.image import imread
 from matplotlib.table import Table
 from matplotlib.ticker import NullLocator
-from qtpy.QtCore import Qt, QSize
-from qtpy.QtGui import QFont, QGuiApplication
-from qtpy.QtWidgets import QListWidgetItem, QDialog, QFileDialog, QDialogButtonBox, QMessageBox
-
 from model.magnitude import MagnitudeModel
-from model.preferences import REPORT_TITLE_FONT_SIZE, REPORT_IMAGE_ALPHA, REPORT_FILTER_ROW_HEIGHT_MULTIPLIER, \
-    REPORT_FILTER_X0, REPORT_FILTER_X1, REPORT_FILTER_Y0, REPORT_FILTER_Y1, \
-    REPORT_LAYOUT_MAJOR_RATIO, REPORT_LAYOUT_MINOR_RATIO, REPORT_CHART_GRID_ALPHA, REPORT_CHART_SHOW_LEGEND, \
-    REPORT_GEOMETRY, REPORT_LAYOUT_SPLIT_DIRECTION, REPORT_LAYOUT_TYPE, REPORT_CHART_LIMITS_X0, \
-    REPORT_CHART_LIMITS_X_SCALE, REPORT_CHART_LIMITS_X1, REPORT_FILTER_FONT_SIZE, REPORT_FILTER_SHOW_HEADER, \
-    REPORT_GROUP, REPORT_LAYOUT_WSPACE, REPORT_LAYOUT_HSPACE, DISPLAY_SHOW_SIGNALS, DISPLAY_SHOW_FILTERED_SIGNALS, \
-    STYLE_IMAGE_FORMAT_DEFAULT, Preferences
+from model.preferences import (
+    DISPLAY_SHOW_FILTERED_SIGNALS,
+    DISPLAY_SHOW_SIGNALS,
+    REPORT_CHART_GRID_ALPHA,
+    REPORT_CHART_LIMITS_X0,
+    REPORT_CHART_LIMITS_X1,
+    REPORT_CHART_LIMITS_X_SCALE,
+    REPORT_CHART_SHOW_LEGEND,
+    REPORT_FILTER_FONT_SIZE,
+    REPORT_FILTER_ROW_HEIGHT_MULTIPLIER,
+    REPORT_FILTER_SHOW_HEADER,
+    REPORT_FILTER_X0,
+    REPORT_FILTER_X1,
+    REPORT_FILTER_Y0,
+    REPORT_FILTER_Y1,
+    REPORT_GEOMETRY,
+    REPORT_GROUP,
+    REPORT_IMAGE_ALPHA,
+    REPORT_LAYOUT_HSPACE,
+    REPORT_LAYOUT_MAJOR_RATIO,
+    REPORT_LAYOUT_MINOR_RATIO,
+    REPORT_LAYOUT_SPLIT_DIRECTION,
+    REPORT_LAYOUT_TYPE,
+    REPORT_LAYOUT_WSPACE,
+    REPORT_TITLE_FONT_SIZE,
+    STYLE_IMAGE_FORMAT_DEFAULT,
+    Preferences,
+)
 from model.signal import get_visible_signal_name_filter
+from PIL import Image
+from qtpy.QtCore import QSize, Qt
+from qtpy.QtGui import QFont, QGuiApplication
+from qtpy.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QListWidgetItem, QMessageBox
 from ui.report import Ui_saveReportDialog
 
 VALID_IMG_FORMATS = ['jpg', 'jpeg', 'png']
@@ -807,7 +827,6 @@ class SaveReportDialog(QDialog, Ui_saveReportDialog):
                 f.write(resp.content)
                 name = tmp_file.name
             except Exception as e:
-                import traceback
                 logger.exception(f"Unable to download {self.imageURL.text()}")
                 msg_box = QMessageBox()
                 font = QFont()

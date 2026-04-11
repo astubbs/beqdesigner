@@ -1,7 +1,7 @@
 import numpy as np
 
-from acoustics.standards.iec_61260_1_2014 import index_of_frequency, REFERENCE_FREQUENCY
 from acoustics.standards import iec_61260_1_2014
+from acoustics.standards.iec_61260_1_2014 import REFERENCE_FREQUENCY, index_of_frequency
 
 REFERENCE_PRESSURE = 2.0e-5
 

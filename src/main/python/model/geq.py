@@ -1,20 +1,33 @@
 import logging
 import math
-from typing import List, Callable, Dict, Optional, Union
+from typing import Callable, Dict, List, Optional, Union
 
 import qtawesome as qta
+from acoustics.standards.iec_61260_1_2014 import NOMINAL_OCTAVE_CENTER_FREQUENCIES
+from model.iir import SOS, CompleteFilter, HighShelf, LowShelf, Passthrough, PeakingEQ
+from model.jriver import JRIVER_FS
+from model.limits import DecibelRangeCalculator, PhaseRangeCalculator
+from model.magnitude import MagnitudeModel
+from model.preferences import GEQ_GEOMETRY, GEQ_GRAPH_X_MAX, GEQ_GRAPH_X_MIN, Preferences, get_filter_colour
+from model.xy import MagnitudeData
 from qtpy.QtCore import Qt, QTimer
 from qtpy.QtGui import QFont
-from qtpy.QtWidgets import QDialog, QFrame, QGridLayout, QHBoxLayout, QToolButton, QButtonGroup, QLabel, QSlider, \
-    QDoubleSpinBox, QSpacerItem, QSizePolicy, QWidget, QAbstractSpinBox, QListWidgetItem
-
-from acoustics.standards.iec_61260_1_2014 import NOMINAL_OCTAVE_CENTER_FREQUENCIES
-from model.iir import LowShelf, HighShelf, PeakingEQ, CompleteFilter, Passthrough, SOS
-from model.jriver import JRIVER_FS
-from model.limits import PhaseRangeCalculator, DecibelRangeCalculator
-from model.magnitude import MagnitudeModel
-from model.preferences import GEQ_GEOMETRY, GEQ_GRAPH_X_MIN, GEQ_GRAPH_X_MAX, get_filter_colour, Preferences
-from model.xy import MagnitudeData
+from qtpy.QtWidgets import (
+    QAbstractSpinBox,
+    QButtonGroup,
+    QDialog,
+    QDoubleSpinBox,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QListWidgetItem,
+    QSizePolicy,
+    QSlider,
+    QSpacerItem,
+    QToolButton,
+    QWidget,
+)
 from ui.geq import Ui_geqDialog
 
 GEQ = 'GEQ'

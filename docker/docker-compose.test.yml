@@ -1,0 +1,63 @@
+# BEQ local-integration test runner — docker-compose configuration.
+#
+# Copy this file (or reference it directly with `-f`) to run the full
+# spike test + experiment suite inside a hermetic container. Intended
+# for the self-hosted `grumpy` GitHub Actions runner, but also runnable
+# from any dev machine with Docker Desktop (WSL2 backend) / Docker Engine.
+#
+# Quick invocation from the repo root:
+#
+#     docker compose -f docker/docker-compose.test.yml build beq-test-runner
+#     docker compose -f docker/docker-compose.test.yml run --rm beq-test-runner
+#
+# Environment variables (set on the host or via a .env file next to
+# this compose file):
+#
+#   WAV_CACHE_DIR  absolute host path to the BEQ WAV cache (read-only mount)
+#   BEQ_DIR        absolute host path to the BEQ working dir (catalogue + model)
+#
+# On Windows (grumpy), these paths must be mapped Windows drive-letter
+# paths, e.g. `Z:\media\wav-cache` — Docker Desktop cannot bind-mount
+# raw UNC `\\nas\share\...` paths, so use `net use Z: \\nas\share
+# /persistent:yes` first. See docs/local_integration.md for the full
+# walkthrough.
+#
+# Service name is prefixed `beq-` so it doesn't collide with other
+# compose stacks on the same host, matching the convention established
+# in docker/docker-compose.example.yml for the NAS LFE extractor.
+
+services:
+
+  beq-test-runner:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.test
+    image: beq-test:latest
+    container_name: beq-test-runner
+    # host networking so the container can reach Ollama / TMDb the same
+    # way the host sees them — avoids host.docker.internal gymnastics
+    # for integration tests that talk to an LLM on localhost or a LAN
+    # peer.
+    network_mode: host
+    environment:
+      # TEST_SCOPE selects which of the three spike runners execute;
+      # see docker/test-entrypoint.sh for the dispatch rules. Default
+      # `all` means unit + integration + experiment (full suite).
+      TEST_SCOPE: "${TEST_SCOPE:-all}"
+      AUTO_BEQ_ADVISOR: "${AUTO_BEQ_ADVISOR:-measurement}"
+      SPIKE_VERBOSE: "${SPIKE_VERBOSE:-0}"
+      # Pass through the host-configured cache + beq dir so tests that
+      # need real fixtures resolve them the same way the dev laptop does.
+      BEQ_WAV_CACHE: "/wav-cache"
+      AUTO_BEQ_BEQ_DIR: "/beq"
+    volumes:
+      # Bind-mount the repo work tree over /app so rebuilds aren't
+      # required every commit — the Dockerfile.test COPY of src/ and
+      # scripts/ is just a fallback for standalone runs.
+      - ../:/app
+      # BEQ working dir: catalogue cache, saved production model, any
+      # report artifacts. Must exist on the host.
+      - "${BEQ_DIR:?BEQ_DIR must be set — run scripts/win/Configure-LocalIntegration.ps1}:/beq"
+      # WAV cache (training fixtures for the experiment suite).
+      # Read-only because no test should be writing into the cache.
+      - "${WAV_CACHE_DIR:?WAV_CACHE_DIR must be set — run scripts/win/Configure-LocalIntegration.ps1}:/wav-cache:ro"
