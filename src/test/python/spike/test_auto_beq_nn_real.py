@@ -1025,6 +1025,431 @@ def test_real_audio_training(tmp_path):
         print(f"    {name:30s} {sign}{delta:.2f} dB{verdict}")
     print()
 
+    # --- 6. E79 / E80 — production model comparison on the same test split ---
+    #
+    # E77 measured real-only at 2.12 dB but I1b/G8 were only measured on the
+    # full 932-WAV harness split.  Re-run each production model on the same
+    # 193-title test split so we get an apples-to-apples comparison.
+    from model.auto_beq_nn import (
+        PER_AUTHOR_ALPHA, DEFAULT_PER_AUTHOR_ALPHA,
+        predict_alpha_from_metadata, train_author_classifier,
+    )
+
+    print(f"\n{'='*78}")
+    print(f"  E79 — PRODUCTION MODELS ON THE SAME 193-TITLE TEST SPLIT")
+    print(f"  (Training set = ~8k synthetic, test titles excluded)")
+    print(f"{'='*78}\n")
+
+    # train_tmdb_ids + test_tmdb_ids are already in scope from earlier.
+    # X_synth / Y_synth already excludes test titles.  We need the
+    # entries list for train_author_classifier — use the deduped
+    # entries filtered to match X_synth order.
+    synth_train_entries = [
+        e for e in deduped
+        if str(e.get("theMovieDB", "")).strip() not in test_tmdb_ids
+    ]
+
+    e79_results: list[tuple[str, float, np.ndarray]] = []
+
+    def _mean_and_preds(model, X_test, label: str):
+        Y_pred = model.predict(X_test)
+        losses = [
+            downstream_loss(labels_to_filters(Y_pred[i]), e["filters"], DEFAULT_GRID)
+            for i, e in enumerate(test_entries)
+        ]
+        mean = float(np.mean(losses))
+        print(f"  {label:35s} {mean:10.2f} dB")
+        return mean, Y_pred
+
+    # E79a — F1-s0.5: late fusion α=0.7 + F1 augmentation (the original F-best).
+    f1_model = train_late_fusion(
+        X_synth, Y_synth, alpha=0.7, augmentation=aug,
+    )
+    f1_mean, f1_pred = _mean_and_preds(f1_model, X_real_test, "F1-s0.5 (LF α=0.7 + aug)")
+    e79_results.append(("F1-s0.5", f1_mean, f1_pred))
+
+    # E79b — G2a-a0.5: the single-alpha best from G-series.
+    g2a_model = train_late_fusion(
+        X_synth, Y_synth, alpha=0.5, augmentation=aug,
+    )
+    g2a_mean, g2a_pred = _mean_and_preds(g2a_model, X_real_test, "G2a-a0.5 (LF α=0.5 + aug)")
+    e79_results.append(("G2a-a0.5", g2a_mean, g2a_pred))
+
+    # E79c — G8-perauth: oracle per-author alpha at inference.
+    # Reuses g2a_model since per-author alpha is an inference-time blend.
+    # We need per-row alpha lookup from the test_entries' author field.
+    test_alphas = np.array([
+        PER_AUTHOR_ALPHA.get(
+            str(e.get("author", "unknown")).strip().lower(),
+            DEFAULT_PER_AUTHOR_ALPHA,
+        )
+        for e in test_entries
+    ], dtype=np.float32)
+    g8_pred = g2a_model.predict_with_alphas(X_real_test, test_alphas)
+    g8_losses = [
+        downstream_loss(labels_to_filters(g8_pred[i]), e["filters"], DEFAULT_GRID)
+        for i, e in enumerate(test_entries)
+    ]
+    g8_mean = float(np.mean(g8_losses))
+    print(f"  {'G8-perauth (oracle, known author)':35s} {g8_mean:10.2f} dB")
+    e79_results.append(("G8-perauth", g8_mean, g8_pred))
+
+    # E79d — I1b-soft-blend: classifier-predicted author + soft-blend alpha.
+    # This is the current production recommendation when the author is unknown.
+    classifier = train_author_classifier(X_synth, synth_train_entries, n_audio=9)
+    predicted_alphas, _ = predict_alpha_from_metadata(
+        classifier, X_real_test, n_audio=9, method="soft_blend",
+    )
+    i1b_pred = g2a_model.predict_with_alphas(X_real_test, predicted_alphas)
+    i1b_losses = [
+        downstream_loss(labels_to_filters(i1b_pred[i]), e["filters"], DEFAULT_GRID)
+        for i, e in enumerate(test_entries)
+    ]
+    i1b_mean = float(np.mean(i1b_losses))
+    print(f"  {'I1b-soft-blend (auto author)':35s} {i1b_mean:10.2f} dB")
+    e79_results.append(("I1b-soft-blend", i1b_mean, i1b_pred))
+
+    # Reference rows from E77 for context.
+    print()
+    print(f"  {'— E77 reference rows on same split —'}")
+    print(f"  {'Real-only plain XGB':35s} {results_table[1][0]:10.2f} dB")
+    print(f"  {'Synthetic LF+aug':35s} {synth_lf_aug:10.2f} dB")
+
+    # Deltas table.
+    print(f"\n  Delta vs Real-only plain XGB ({results_table[1][0]:.2f} dB):")
+    real_only = results_table[1][0]
+    for name, mean, _pred in e79_results:
+        delta = mean - real_only
+        sign = "+" if delta > 0 else ""
+        verdict = " ← beats real-only" if delta < -0.02 else (
+            " ← ties real-only" if abs(delta) <= 0.02 else ""
+        )
+        print(f"    {name:35s} {sign}{delta:.2f} dB{verdict}")
+    print()
+
+    # --- 7. E80 — per-author breakdown on the 193-title test split ---
+    print(f"\n{'='*78}")
+    print(f"  E80 — PER-AUTHOR BREAKDOWN ON THE 193-TITLE TEST SPLIT")
+    print(f"{'='*78}\n")
+
+    from collections import defaultdict
+
+    # Gather predictions from all models (E77's 9 cells + E79's 4 production models).
+    # Name → (mean_func → per-entry losses).
+    all_models: dict[str, list[float]] = {}
+
+    # E77 cells — retrain each (fast since X_real is already computed).
+    e77_cells: list[tuple[str, np.ndarray, np.ndarray]] = [
+        ("Synth-XGB", X_synth, Y_synth),
+        ("Real-XGB", X_real_train, Y_real_train),
+        ("Hybrid-XGB", X_hybrid, Y_hybrid),
+    ]
+    for name, X_tr, Y_tr in e77_cells:
+        m = train_xgboost(X_tr, Y_tr)
+        Y_pred = m.predict(X_real_test)
+        all_models[name] = [
+            downstream_loss(labels_to_filters(Y_pred[i]), e["filters"], DEFAULT_GRID)
+            for i, e in enumerate(test_entries)
+        ]
+
+    # E79 production models (already computed, just reuse predictions).
+    for name, _mean, Y_pred in e79_results:
+        all_models[name] = [
+            downstream_loss(labels_to_filters(Y_pred[i]), e["filters"], DEFAULT_GRID)
+            for i, e in enumerate(test_entries)
+        ]
+
+    # Group test entries by author.
+    authors_in_test: dict[str, list[int]] = defaultdict(list)
+    for i, e in enumerate(test_entries):
+        author = str(e.get("author", "unknown")).strip().lower()
+        authors_in_test[author].append(i)
+
+    model_order = list(all_models.keys())
+    print(f"  {'Author':14s} {'n':>3s}  " + " ".join(
+        f"{name:>14s}" for name in model_order
+    ))
+    print(f"  {'-' * (14 + 5 + 15 * len(model_order))}")
+
+    # Author rows sorted by count desc.
+    for author, indices in sorted(authors_in_test.items(), key=lambda kv: -len(kv[1])):
+        row_means = [
+            float(np.mean([all_models[name][i] for i in indices]))
+            for name in model_order
+        ]
+        # Bold the winning model for this author.
+        best_idx = int(np.argmin(row_means))
+        formatted = []
+        for j, m in enumerate(row_means):
+            marker = "*" if j == best_idx else " "
+            formatted.append(f"{marker}{m:13.2f}")
+        print(f"  {author:14s} {len(indices):3d}  " + " ".join(formatted))
+
+    # Overall row.
+    print(f"  {'-' * (14 + 5 + 15 * len(model_order))}")
+    overall_means = [
+        float(np.mean([all_models[name][i] for i in range(len(test_entries))]))
+        for name in model_order
+    ]
+    best_overall = int(np.argmin(overall_means))
+    formatted = []
+    for j, m in enumerate(overall_means):
+        marker = "*" if j == best_overall else " "
+        formatted.append(f"{marker}{m:13.2f}")
+    print(f"  {'OVERALL':14s} {len(test_entries):3d}  " + " ".join(formatted))
+    print(f"\n  (* = best model for that author / overall)\n")
+
+
+@pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")
+def test_real_data_threshold_sweep(tmp_path):
+    """E81: Find the minimum real-data threshold where real-only beats synthetic.
+
+    E33 (155 real WAVs): real-only lost to synthetic by +1.14 dB.
+    E77 (770 real WAVs): real-only won by -1.24 dB.
+
+    Sweeps real-only training at n ∈ {100, 200, 300, 400, 500, 600, 700, 770}
+    against a fixed held-out test split.  Reports mean dB for each point so
+    we can identify the crossover knee.
+    """
+    from model.auto_beq_catalogue import _fetch_or_cache
+    from sklearn.model_selection import train_test_split
+
+    log.info("=== E81 real-data threshold sweep ===")
+
+    # --- Extract real features (same pipeline as E77) ---
+    all_real = _extract_features_parallel(
+        _PAIRS, DEFAULT_GRID, _DEFAULT_FS, strategy=STRATEGY_BLENDED_07,
+    )
+    tmdb_cache = load_cache()
+    tmdb_cache = fetch_metadata_batch(
+        [p["catalogue_entry"] for p, _ in all_real], cache=tmdb_cache,
+    )
+
+    real_X, real_Y, real_entries = [], [], []
+    for p, features in all_real:
+        entry = p["catalogue_entry"]
+        if not entry.get("filters"):
+            continue
+        metadata = enrich_media_metadata(entry, tmdb_cache)
+        real_X.append(build_feature_vector(features, metadata))
+        real_Y.append(catalogue_entry_to_labels(entry))
+        real_entries.append(entry)
+
+    real_X = np.array(real_X, dtype=np.float32)
+    real_Y = np.array(real_Y, dtype=np.float32)
+    log.info("real audio dataset: %d entries", len(real_X))
+
+    if len(real_X) < 400:
+        pytest.skip(f"need at least 400 real audio entries for sweep, have {len(real_X)}")
+
+    # --- Fixed stratified train/test split (same seed as E77) ---
+    indices = np.arange(len(real_X))
+    severity = [
+        "heavy" if sum(abs(float(f.get("gain", 0))) for f in e.get("filters", [])) >= 20
+        else "moderate" if sum(abs(float(f.get("gain", 0))) for f in e.get("filters", [])) >= 10
+        else "gentle"
+        for e in real_entries
+    ]
+    train_idx, test_idx = train_test_split(
+        indices, test_size=0.2, random_state=42,
+        stratify=severity if len(set(severity)) > 1 else None,
+    )
+    X_real_train_all = real_X[train_idx]
+    Y_real_train_all = real_Y[train_idx]
+    X_real_test = real_X[test_idx]
+    test_entries = [real_entries[i] for i in test_idx]
+    test_tmdb_ids = {str(real_entries[i].get("theMovieDB", "")).strip() for i in test_idx}
+
+    n_max = len(X_real_train_all)
+    log.info("real train pool: %d, test: %d", n_max, len(X_real_test))
+
+    # --- Build synthetic training set (excluding test titles) ---
+    catalogue = _fetch_or_cache()
+    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
+    X_synth_list, Y_synth_list = [], []
+    for e in deduped:
+        if str(e.get("theMovieDB", "")).strip() in test_tmdb_ids:
+            continue
+        features = _synthetic_features(e, DEFAULT_GRID)
+        metadata = enrich_media_metadata(e, tmdb_cache)
+        X_synth_list.append(build_feature_vector(features, metadata))
+        Y_synth_list.append(catalogue_entry_to_labels(e))
+    X_synth = np.array(X_synth_list, dtype=np.float32)
+    Y_synth = np.array(Y_synth_list, dtype=np.float32)
+
+    # --- Reference: synthetic-only plain XGB (stays fixed across sweep) ---
+    synth_model = train_xgboost(X_synth, Y_synth)
+    synth_pred = synth_model.predict(X_real_test)
+    synth_mean = float(np.mean([
+        downstream_loss(labels_to_filters(synth_pred[i]), e["filters"], DEFAULT_GRID)
+        for i, e in enumerate(test_entries)
+    ]))
+
+    # --- Sweep over n_real values with a fixed subsample seed ---
+    rng = np.random.default_rng(seed=42)
+    # One permutation — prefix-take gives nested subsets (smaller ⊂ larger).
+    perm = rng.permutation(n_max)
+
+    sweep_points = [100, 200, 300, 400, 500, 600, 700, n_max]
+    sweep_points = [n for n in sweep_points if n <= n_max]
+
+    print(f"\n{'='*78}")
+    print(f"  E81 — REAL-DATA THRESHOLD SWEEP")
+    print(f"  Test set: {len(X_real_test)} held-out real titles (seed=42 stratified)")
+    print(f"  Synthetic-only reference: {synth_mean:.2f} dB")
+    print(f"{'='*78}\n")
+    print(f"  {'n_real':>8s}  {'real XGB':>12s}  {'vs synth':>12s}")
+    print(f"  {'-' * 38}")
+
+    sweep_table = []
+    for n_real in sweep_points:
+        sub_idx = perm[:n_real]
+        X_sub = X_real_train_all[sub_idx]
+        Y_sub = Y_real_train_all[sub_idx]
+        model = train_xgboost(X_sub, Y_sub)
+        pred = model.predict(X_real_test)
+        mean = float(np.mean([
+            downstream_loss(labels_to_filters(pred[i]), e["filters"], DEFAULT_GRID)
+            for i, e in enumerate(test_entries)
+        ]))
+        delta = mean - synth_mean
+        sign = "+" if delta > 0 else ""
+        verdict = " ← WINS" if delta < -0.05 else (
+            " ← loses" if delta > 0.05 else " ← tied"
+        )
+        print(f"  {n_real:>8d}  {mean:10.2f} dB  {sign}{delta:9.2f} dB{verdict}")
+        sweep_table.append((n_real, mean, delta))
+
+    # Find the crossover: smallest n where real wins by >0.05 dB.
+    crossover = None
+    for n_real, mean, delta in sweep_table:
+        if delta < -0.05:
+            crossover = n_real
+            break
+    print()
+    if crossover is not None:
+        print(f"  Crossover: real-only beats synthetic at n ≥ {crossover}")
+    else:
+        print(f"  No crossover found in sweep range — real never won by >0.05 dB")
+    print()
+
+
+@pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")
+def test_weighted_hybrid_router(tmp_path):
+    """E82: Sample-weighted hybrid training — real samples weighted 5-50×.
+
+    E77's naive hybrid (real + synthetic concatenated) lost by +0.10 dB
+    because the 10× synthetic drowned out the 770 real.  A sample-weighted
+    hybrid rebalances the loss so real samples contribute proportionally
+    despite being outnumbered.
+
+    Sweeps weight ratios 1/5/10/20/50 and reports mean dB on the fixed
+    193-title test split.  If any ratio beats real-only (2.12 dB), we
+    get the best of both worlds: real-audio accuracy + synthetic coverage.
+    """
+    from model.auto_beq_catalogue import _fetch_or_cache
+    from sklearn.model_selection import train_test_split
+
+    log.info("=== E82 sample-weighted hybrid ===")
+
+    # --- Same pipeline as E77/E81: extract, split, build sets ---
+    all_real = _extract_features_parallel(
+        _PAIRS, DEFAULT_GRID, _DEFAULT_FS, strategy=STRATEGY_BLENDED_07,
+    )
+    tmdb_cache = load_cache()
+    tmdb_cache = fetch_metadata_batch(
+        [p["catalogue_entry"] for p, _ in all_real], cache=tmdb_cache,
+    )
+
+    real_X, real_Y, real_entries = [], [], []
+    for p, features in all_real:
+        entry = p["catalogue_entry"]
+        if not entry.get("filters"):
+            continue
+        metadata = enrich_media_metadata(entry, tmdb_cache)
+        real_X.append(build_feature_vector(features, metadata))
+        real_Y.append(catalogue_entry_to_labels(entry))
+        real_entries.append(entry)
+    real_X = np.array(real_X, dtype=np.float32)
+    real_Y = np.array(real_Y, dtype=np.float32)
+
+    if len(real_X) < 200:
+        pytest.skip(f"need at least 200 real audio entries, have {len(real_X)}")
+
+    indices = np.arange(len(real_X))
+    severity = [
+        "heavy" if sum(abs(float(f.get("gain", 0))) for f in e.get("filters", [])) >= 20
+        else "moderate" if sum(abs(float(f.get("gain", 0))) for f in e.get("filters", [])) >= 10
+        else "gentle"
+        for e in real_entries
+    ]
+    train_idx, test_idx = train_test_split(
+        indices, test_size=0.2, random_state=42,
+        stratify=severity if len(set(severity)) > 1 else None,
+    )
+    X_real_train = real_X[train_idx]
+    Y_real_train = real_Y[train_idx]
+    X_real_test = real_X[test_idx]
+    test_entries = [real_entries[i] for i in test_idx]
+    train_tmdb_ids = {str(real_entries[i].get("theMovieDB", "")).strip() for i in train_idx}
+    test_tmdb_ids = {str(real_entries[i].get("theMovieDB", "")).strip() for i in test_idx}
+
+    # Synthetic set for non-overlapping titles (same as E77 hybrid rule).
+    catalogue = _fetch_or_cache()
+    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
+    X_synth_list, Y_synth_list = [], []
+    for e in deduped:
+        tid = str(e.get("theMovieDB", "")).strip()
+        if tid in test_tmdb_ids or tid in train_tmdb_ids:
+            continue
+        features = _synthetic_features(e, DEFAULT_GRID)
+        metadata = enrich_media_metadata(e, tmdb_cache)
+        X_synth_list.append(build_feature_vector(features, metadata))
+        Y_synth_list.append(catalogue_entry_to_labels(e))
+    X_synth = np.array(X_synth_list, dtype=np.float32)
+    Y_synth = np.array(Y_synth_list, dtype=np.float32)
+
+    # Build the combined hybrid training set (real first, then synthetic).
+    X_combined = np.vstack([X_real_train, X_synth])
+    Y_combined = np.vstack([Y_real_train, Y_synth])
+    n_real = len(X_real_train)
+    n_synth = len(X_synth)
+
+    # Reference: real-only plain XGB.
+    real_model = train_xgboost(X_real_train, Y_real_train)
+    real_pred = real_model.predict(X_real_test)
+    real_mean = float(np.mean([
+        downstream_loss(labels_to_filters(real_pred[i]), e["filters"], DEFAULT_GRID)
+        for i, e in enumerate(test_entries)
+    ]))
+
+    print(f"\n{'='*78}")
+    print(f"  E82 — SAMPLE-WEIGHTED HYBRID (real:synth weight ratio sweep)")
+    print(f"  Real train: {n_real}, Synth train: {n_synth}, Test: {len(test_entries)}")
+    print(f"  Reference: real-only plain XGB = {real_mean:.2f} dB")
+    print(f"{'='*78}\n")
+    print(f"  {'Ratio':>10s}  {'mean dB':>10s}  {'vs real-only':>14s}")
+    print(f"  {'-' * 40}")
+
+    for ratio in [1, 5, 10, 20, 50]:
+        weights = np.concatenate([
+            np.full(n_real, float(ratio), dtype=np.float32),
+            np.ones(n_synth, dtype=np.float32),
+        ])
+        model = train_xgboost(X_combined, Y_combined, sample_weight=weights)
+        pred = model.predict(X_real_test)
+        mean = float(np.mean([
+            downstream_loss(labels_to_filters(pred[i]), e["filters"], DEFAULT_GRID)
+            for i, e in enumerate(test_entries)
+        ]))
+        delta = mean - real_mean
+        sign = "+" if delta > 0 else ""
+        verdict = " ← BEATS real-only" if delta < -0.02 else (
+            " ← ties" if abs(delta) <= 0.02 else ""
+        )
+        print(f"  {ratio:>9d}:1  {mean:8.2f} dB  {sign}{delta:11.2f} dB{verdict}")
+    print()
+
 
 @pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")
 def test_reweighted_training(tmp_path):
