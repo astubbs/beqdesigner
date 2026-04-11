@@ -43,6 +43,7 @@ nav:
         - 'Manage HTP-1 Filters': ui/manage_htp1.md
         - 'Manage JRiver MC Filters': ui/manage_mc.md
       - 'LFE Extractor (Docker, NAS/server)': lfe_extractor.md
+      - 'Local integration CI (Windows build box)': local_integration.md
       - 'Preferences': ui/preferences.md
   - Workflow:
       - 'A Worked Example': workflow/beq.md

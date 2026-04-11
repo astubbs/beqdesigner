@@ -3791,3 +3791,44 @@ noise.  Rebalancing fixed it.
 - [x] Document "50:1 weighted hybrid plain XGBoost" in the
       `Current production model` section at the top of this file
       (done — see the updated section at line 62)
+
+### Infrastructure improvements (2026-04-11)
+
+Not algorithm experiments. Local-integration CI rig on grumpy
+(reference Windows box, see multi-host Ollama test at line 796):
+
+- **GitHub Actions self-hosted runner on grumpy**: new workflow
+  `.github/workflows/local-integration.yml` triggers the full spike
+  test + experiment suite (`run-spike-tests.sh` → `-integration.sh`
+  → `-experiments.sh`, sequential) on every push to
+  `div/local-integration`. Dev laptop no longer needed in the loop
+  for long experiment retrains. `concurrency.cancel-in-progress: true`
+  coalesces push bursts without polling.
+- **New Docker test image `docker/Dockerfile.test`**: full
+  poetry dev closure (scipy + xgboost + scikit-learn + PyQt6
+  offscreen + pytest + ffmpeg). Kept deliberately separate from the
+  lean stdlib-only `docker/Dockerfile` used by the NAS LFE
+  extractor — two images, two jobs, no bloat bleed.
+- **`docker/test-entrypoint.sh` dispatcher**: runs all three spike
+  runners in order, collects the worst exit code across stages so a
+  unit failure doesn't mask an experiment failure on the same build.
+  Honours `TEST_SCOPE=unit|integration|all` so dev dry-runs can skip
+  the slow stages.
+- **`scripts/win/` helpers**: `Configure-LocalIntegration.ps1`
+  (interactive bootstrap, 30 s prompt timeout, fails fast headless),
+  `Assert-LocalIntegrationConfig.ps1` (read-only workflow-time
+  check), `Run-ExperimentBuild.ps1` (docker compose wrapper).
+  Config persisted at `C:\ProgramData\beqdesigner-ci\config.json`
+  so the runner service can read it non-interactively.
+- **End-user docs**: `docs/local_integration.md` (full walkthrough +
+  troubleshooting + teardown) and a "Quick start (local CI on a
+  Windows build box)" subsection in `readme.md`. Nav entry added to
+  `mkdocs.yml`.
+
+**Lesson (anticipated, pending the W5 smoke test)**: offloading the
+experiment suite to dedicated GPU hardware on a push-triggered rig
+should unblock rapid iteration on real-audio training regimes
+without blocking the dev laptop. Self-hosted runner + Docker is
+strictly less moving parts than a Jenkins/Woodpecker/Drone setup
+for a one-user one-machine loop — and GitHub handles build history,
+log streaming, and concurrency cancellation for free.

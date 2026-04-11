@@ -1,0 +1,94 @@
+# Local integration CI: full spike test + experiment suite on grumpy.
+#
+# Triggered on every push to div/local-integration. Runs on a self-
+# hosted GitHub Actions runner (the Windows machine called `grumpy`)
+# inside the beq-test Docker image, so the host doesn't need a full
+# Python/Poetry dev setup.
+#
+# Setup is documented in docs/local_integration.md. The short version:
+#   1. Install Docker Desktop (WSL2 backend) + Git for Windows + PowerShell 7
+#   2. pwsh scripts/win/Configure-LocalIntegration.ps1   # interactive
+#   3. Register grumpy as a self-hosted runner with label `grumpy`
+#   4. Push to div/local-integration and watch this workflow run
+#
+# This workflow is intentionally the *only* thing that runs the
+# full experiment suite in CI. The default `test.yaml` workflow stays
+# on GitHub-hosted runners and skips integration + experiment markers
+# (see .github/workflows/test.yaml:104-108).
+
+name: local-integration full suite
+
+on:
+  push:
+    branches:
+      - div/local-integration
+  # Manual retrigger from the GitHub Actions UI (useful if a build
+  # failed for infra reasons like docker build cache corruption — you
+  # can re-run without having to push an empty commit).
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "Which test groups to run"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - unit
+          - integration
+          - all
+
+concurrency:
+  # Cancel an in-flight run the moment a newer commit arrives on the
+  # branch. Replaces the "30 s quiet period" debounce from the
+  # rejected polling-watcher design: instead of coalescing bursts on
+  # the client, we let GitHub cancel the older run on the server.
+  group: local-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-suite:
+    name: docker test-runner on grumpy
+    # `grumpy` is a custom label added to the self-hosted runner at
+    # registration time (see docs/local_integration.md step 4). The
+    # [self-hosted, windows] labels are added automatically by the GH
+    # Actions runner install script on Windows.
+    runs-on: [self-hosted, windows, grumpy]
+    # Experiment tests can take minutes-to-hours per AGENTS.md:173.
+    # 6 hours is plenty of headroom even for a full E77/E82 retrain.
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # We only need the single SHA that triggered the run, not
+          # full history — faster clone on grumpy's SMB-backed work dir.
+          fetch-depth: 1
+
+      - name: Verify runner config
+        # Non-interactive check: reads the persisted config written by
+        # Configure-LocalIntegration.ps1 and exports WAV_CACHE_DIR /
+        # BEQ_DIR into the job env so later steps can pass them to
+        # docker compose. Fails fast with a pointer to the bootstrap
+        # script if the config is missing.
+        shell: pwsh
+        run: ./scripts/win/Assert-LocalIntegrationConfig.ps1
+
+      - name: Build + run full suite in Docker
+        shell: pwsh
+        env:
+          TEST_SCOPE: ${{ github.event.inputs.scope || 'all' }}
+        run: ./scripts/win/Run-ExperimentBuild.ps1 -Scope $env:TEST_SCOPE
+
+      - name: Upload spike logs
+        # `if: always()` so we get logs even when the suite failed —
+        # that's exactly when we need them. .pytest_cache is on the
+        # bind-mounted host work tree, so the logs exist on disk after
+        # the container exits.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spike-logs-${{ github.sha }}
+          path: .pytest_cache/spike_*.log
+          if-no-files-found: warn
+          retention-days: 14

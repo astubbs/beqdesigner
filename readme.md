@@ -247,6 +247,52 @@ against the BEQ catalogue (~14,700 entries), and saves the results.
 Step 4 runs the auto-generation algorithm on each matched file and
 compares the output to the catalogue's expert-authored filters.
 
+### Quick start (local CI on a Windows build box)
+
+If you have a spare beefy Windows machine (the reference one is
+called `grumpy`: Windows + RTX GPU) and want it to automatically run
+the **full** spike test + experiment suite whenever you push to a
+branch called `div/local-integration`, there's a push-triggered
+GitHub Actions workflow wired up for it. Trigger is push-based (no
+polling), runtime is Docker-based (`docker/Dockerfile.test`), and
+concurrency control means a rapid push burst just cancels the older
+in-flight run instead of queueing up N builds.
+
+**Prerequisites on the Windows box**: Docker Desktop with WSL2
+backend, Git for Windows, PowerShell 7.
+
+```powershell
+# 1. Clone the repo anywhere convenient
+git clone https://github.com/astubbs/beqdesigner.git
+cd beqdesigner
+
+# 2. Map the NAS share to a drive letter so Docker can bind-mount it
+#    (Docker cannot mount UNC \\nas\... paths directly)
+net use Z: \\nas\share /persistent:yes
+
+# 3. One-shot interactive bootstrap — persists WAV cache + BEQ dir
+#    paths under C:\ProgramData\beqdesigner-ci\config.json. Each
+#    prompt has a 30 s timeout so it crashes fast if run headless.
+pwsh scripts/win/Configure-LocalIntegration.ps1
+
+# 4. Register this box as a self-hosted GitHub Actions runner
+#    → GitHub repo → Settings → Actions → Runners → New self-hosted
+#      runner → follow the copy-pasteable block. Add `grumpy` as an
+#      extra label when prompted.
+#    → .\svc.cmd install
+#    → .\svc.cmd start
+
+# 5. Smoke test the Docker rig without touching GitHub
+pwsh scripts/win/Run-ExperimentBuild.ps1 -Scope unit
+```
+
+After that, every push to `div/local-integration` triggers the
+`local-integration full suite` workflow on your runner. Spike logs
+upload as GitHub artifacts so you can read failures from the Actions
+UI without RDP-ing into the box. See
+[`docs/local_integration.md`](docs/local_integration.md) for the
+full walkthrough, troubleshooting, and teardown.
+
 ### Scripts
 
 | Script | Purpose |

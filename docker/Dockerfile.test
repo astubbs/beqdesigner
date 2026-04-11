@@ -1,0 +1,76 @@
+# Dockerfile.test — full test + experiment runner image.
+#
+# This is deliberately separate from docker/Dockerfile (the lean NAS LFE
+# extractor, stdlib-only). This image carries the full dev dependency
+# closure — scipy, xgboost, scikit-learn, pytest, PyQt6 — so it can run
+# the spike unit / integration / experiment suites end-to-end inside a
+# container. Volumes for the WAV cache and BEQ working dir are provided
+# at run time via docker/docker-compose.test.yml.
+#
+# Used by the local-integration GitHub Actions workflow on the
+# self-hosted `grumpy` runner, and by `scripts/win/Run-ExperimentBuild.ps1`
+# for local dry runs. See docs/local_integration.md for the full setup.
+
+FROM python:3.13-slim
+
+# Build deps for scipy/numpy wheels (usually pre-built on 3.13 but keep
+# gcc available as a fallback) + ffmpeg/ffprobe for LFE extraction +
+# libegl1 + libxkbcommon + libxcb-* so PyQt6 can load its offscreen
+# platform plugin. Matches the apt line in .github/workflows/test.yaml
+# (which installs libegl1 for the Linux test job).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        libegl1 \
+        libxkbcommon0 \
+        libxcb-cursor0 \
+        libdbus-1-3 \
+        libfontconfig1 \
+        graphviz \
+        git \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Poetry via the official installer, pinned to a known-good
+# major so we don't float silently across Poetry 1.x/2.x changes.
+ENV POETRY_VERSION=1.8.4 \
+    POETRY_HOME=/opt/poetry \
+    POETRY_VIRTUALENVS_CREATE=false \
+    POETRY_NO_INTERACTION=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1
+RUN curl -sSL https://install.python-poetry.org | python3 - --version ${POETRY_VERSION}
+ENV PATH="/opt/poetry/bin:${PATH}"
+
+WORKDIR /app
+
+# Dependency layer — cached on pyproject.toml + poetry.lock churn only.
+# Copying these two files first lets Docker skip the slow poetry install
+# step when only src/ changes. --no-root because this project is
+# package-mode = false (pyproject.toml:10).
+COPY pyproject.toml poetry.lock ./
+RUN poetry install --no-root --with dev
+
+# Source tree — copied last so iterative rebuilds are cheap. In normal
+# use the compose file bind-mounts the host work tree over /app anyway,
+# so this COPY only matters when running the image standalone.
+COPY src/ src/
+COPY scripts/ scripts/
+
+# Entry point dispatcher. Honours TEST_SCOPE env var: `unit` runs
+# run-spike-tests.sh only, `integration` runs unit + integration,
+# `all` (default) runs unit + integration + experiment in sequence.
+# See docker/test-entrypoint.sh for the exit-code aggregation rules.
+COPY docker/test-entrypoint.sh /usr/local/bin/test-entrypoint.sh
+RUN chmod +x /usr/local/bin/test-entrypoint.sh
+
+# Env vars mirror scripts/run-spike-experiments.sh:22-25 so the three
+# spike runners see consistent defaults whether invoked directly or via
+# the entrypoint.
+ENV PYTHONPATH="/app/src/main/python:/app/src/test/python" \
+    QT_QPA_PLATFORM="offscreen" \
+    AUTO_BEQ_ADVISOR="measurement" \
+    TEST_SCOPE="all"
+
+ENTRYPOINT ["/usr/local/bin/test-entrypoint.sh"]

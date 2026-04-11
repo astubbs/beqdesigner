@@ -93,8 +93,8 @@ plan/intent to `branch-plans/plan-<branch-name>.md` (project root).
 Also keep experiment logs and living design docs updated and committed
 alongside code — these are gold for resuming work across sessions.
 
-Current branch plan: [`branch-plans/plan-neural-net-strat.md`](branch-plans/plan-neural-net-strat.md)
-Parent branch plans: [`branch-plans/plan-audio-chunks-strat.md`](branch-plans/plan-audio-chunks-strat.md), [`branch-plans/plan-sharp-goldberg.md`](branch-plans/plan-sharp-goldberg.md)
+Current branch plan: [`branch-plans/plan-claude-max-effort-2YyNi.md`](branch-plans/plan-claude-max-effort-2YyNi.md)
+Parent branch plans: [`branch-plans/plan-neural-net-strat.md`](branch-plans/plan-neural-net-strat.md), [`branch-plans/plan-audio-chunks-strat.md`](branch-plans/plan-audio-chunks-strat.md), [`branch-plans/plan-sharp-goldberg.md`](branch-plans/plan-sharp-goldberg.md)
 
 ## Ollama model usage
 
@@ -135,6 +135,12 @@ so the user can see results incrementally: `AUTO_BEQ_SWEEP_LIMIT=1`.
 | `scripts/generate_beq_profile.py` | Generate complete BEQ profiles for uncatalogued media (loads `production_model.joblib`, falls back to inline late-fusion training if missing) | yes | no (imports model + helpers) |
 | `docker/Dockerfile` | Docker image: Python 3.13-slim + ffmpeg + project source | — | — |
 | `docker/docker-compose.example.yml` | Example compose config — copy, edit paths, run | — | — |
+| `docker/Dockerfile.test` | **Full-deps** test runner image (poetry + scipy + xgboost + PyQt6 offscreen + ffmpeg). Used by the local-integration GH Actions workflow on grumpy. Distinct from the lean `Dockerfile`. | — | — |
+| `docker/docker-compose.test.yml` | `beq-test-runner` compose service: mounts WAV cache + BEQ dir, `network_mode: host`, runs `docker/test-entrypoint.sh` | — | — |
+| `docker/test-entrypoint.sh` | Dispatcher: runs `run-spike-tests.sh` → `-integration.sh` → `-experiments.sh` sequentially, collects worst exit code, honours `TEST_SCOPE` env var | yes | no |
+| `scripts/win/Configure-LocalIntegration.ps1` | One-shot interactive bootstrap (30 s prompt timeout): persists `WAV_CACHE_DIR` + `BEQ_DIR` for the grumpy runner. Exit 2 if no TTY / timeout. | no (pwsh) | no |
+| `scripts/win/Assert-LocalIntegrationConfig.ps1` | Non-interactive config reader used by `.github/workflows/local-integration.yml`. Fails fast with a pointer to the Configure script. | no (pwsh) | no |
+| `scripts/win/Run-ExperimentBuild.ps1` | `docker compose build` + `run` wrapper for the `beq-test-runner` service. Accepts `-Scope unit\|integration\|all`. | no (pwsh) | no |
 
 ## Docker (NAS LFE extraction)
 
