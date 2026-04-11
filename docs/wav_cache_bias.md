@@ -1,8 +1,8 @@
 # WAV Cache Bias Report
 
-**Catalogue (trainable)**: 14,755 entries
-**Cache match**: 114 trainable entries (67 WAV files, 46 unique tmdb IDs)
-**Coverage**: 0.77% of catalogue
+**Catalogue (trainable)**: 14,761 entries
+**Cache match**: 1,712 trainable entries (952 WAV files, 535 unique tmdb IDs)
+**Coverage**: 11.60% of catalogue
 
 This report compares the local WAV cache distribution to the full BEQ catalogue across metadata dimensions.  Positive bias means the cache **over-represents** that bucket; negative means **under-represents**.
 
@@ -14,70 +14,70 @@ This report compares the local WAV cache distribution to the full BEQ catalogue 
 
 | Bucket | Catalogue % | Cache % | Bias | Catalogue entries |
 |---|---:|---:|---:|---:|
-| mobe1969 | 57.0% | 32.5% | -24.5 | 8,409 |
-| aron7awol | 13.4% | 17.5% | ++4.2 | 1,976 |
-| mikejl | 8.7% | 7.9% | -0.9 | 1,291 |
-| kaelaria | 8.3% | 7.0% | -1.3 | 1,231 |
-| remixmark | 7.4% | 26.3% | ++18.9 | 1,093 |
-| t1g8rsfan | 2.9% | 4.4% | ++1.5 | 424 |
-| halcyon888 | 2.1% | 4.4% | ++2.3 | 308 |
-| bombaycat007 | 0.2% | 0.0% | -0.2 | 23 |
+| mobe1969 | 57.0% | 31.9% | -25.1 | 8,409 |
+| aron7awol | 13.4% | 15.2% | ++1.9 | 1,976 |
+| mikejl | 8.8% | 11.6% | ++2.8 | 1,294 |
+| kaelaria | 8.3% | 12.0% | ++3.6 | 1,231 |
+| remixmark | 7.4% | 19.3% | ++11.9 | 1,096 |
+| t1g8rsfan | 2.9% | 6.0% | ++3.1 | 424 |
+| halcyon888 | 2.1% | 3.8% | ++1.7 | 308 |
+| bombaycat007 | 0.2% | 0.2% | ++0.0 | 23 |
 
 ### Audio format
 
 | Bucket | Catalogue % | Cache % | Bias | Catalogue entries |
 |---|---:|---:|---:|---:|
-| dts-hd | 34.6% | 21.9% | -12.7 | 5,109 |
-| atmos | 30.9% | 55.3% | ++24.3 | 4,563 |
-| dd+ | 24.1% | 18.4% | -5.7 | 3,561 |
-| truehd | 5.7% | 0.9% | -4.8 | 843 |
-| other | 4.6% | 3.5% | -1.1 | 679 |
+| dts-hd | 34.6% | 23.9% | -10.7 | 5,109 |
+| atmos | 30.9% | 56.7% | ++25.7 | 4,566 |
+| dd+ | 24.1% | 12.3% | -11.9 | 3,564 |
+| truehd | 5.7% | 3.9% | -1.8 | 843 |
+| other | 4.6% | 3.3% | -1.3 | 679 |
 
 ### Era
 
 | Bucket | Catalogue % | Cache % | Bias | Catalogue entries |
 |---|---:|---:|---:|---:|
-| 2020s | 39.7% | 43.9% | ++4.2 | 5,857 |
-| 2010s | 38.3% | 30.7% | -7.6 | 5,658 |
+| 2020s | 39.7% | 48.6% | ++8.9 | 5,862 |
+| 2010s | 38.3% | 25.7% | -12.6 | 5,659 |
 | 1990s-2000s | 18.5% | 19.3% | ++0.8 | 2,734 |
-| pre1990 | 3.4% | 6.1% | ++2.7 | 506 |
+| pre1990 | 3.4% | 6.4% | ++2.9 | 506 |
 
 ### Content type
 
 | Bucket | Catalogue % | Cache % | Bias | Catalogue entries |
 |---|---:|---:|---:|---:|
-| film | 80.6% | 84.2% | ++3.6 | 11,889 |
-| TV | 19.4% | 15.8% | -3.6 | 2,866 |
+| film | 80.6% | 77.4% | -3.2 | 11,894 |
+| TV | 19.4% | 22.6% | ++3.2 | 2,867 |
 
 ### Source
 
 | Bucket | Catalogue % | Cache % | Bias | Catalogue entries |
 |---|---:|---:|---:|---:|
-| Disc | 74.5% | 83.3% | ++8.9 | 10,987 |
-| Streaming | 20.5% | 9.6% | -10.8 | 3,022 |
-| Netflix | 1.8% | 2.6% | ++0.8 | 270 |
-| Amazon | 1.2% | 0.0% | -1.2 | 177 |
-| Disney+ | 0.8% | 2.6% | ++1.9 | 113 |
-| Apple TV+ | 0.5% | 0.0% | -0.5 | 76 |
-| HBOMax | 0.2% | 1.8% | ++1.6 | 26 |
-| iTunes | 0.2% | 0.0% | -0.2 | 25 |
-| HBO Max | 0.2% | 0.0% | -0.2 | 24 |
+| Disc | 74.5% | 85.7% | ++11.2 | 10,990 |
+| Streaming | 20.5% | 7.5% | -13.0 | 3,022 |
+| Netflix | 1.8% | 1.9% | ++0.1 | 270 |
+| Amazon | 1.2% | 1.8% | ++0.6 | 177 |
+| Disney+ | 0.8% | 0.6% | -0.1 | 115 |
+| Apple TV+ | 0.5% | 1.2% | ++0.7 | 77 |
+| HBOMax | 0.2% | 0.2% | ++0.1 | 26 |
+| iTunes | 0.2% | 0.4% | ++0.2 | 25 |
+| HBO Max | 0.2% | 0.4% | ++0.2 | 24 |
 | Peacock | 0.1% | 0.0% | -0.1 | 15 |
 | Hulu | 0.0% | 0.0% | -0.0 | 6 |
-| Paramount+ | 0.0% | 0.0% | -0.0 | 5 |
-| DVD | 0.0% | 0.0% | -0.0 | 2 |
-| Movies Anywhere | 0.0% | 0.0% | -0.0 | 2 |
-|  | 0.0% | 0.0% | -0.0 | 1 |
-| DC Universe | 0.0% | 0.0% | -0.0 | 1 |
+| Paramount+ | 0.0% | 0.1% | ++0.0 | 5 |
+| DVD | 0.0% | 0.1% | ++0.1 | 2 |
+| Movies Anywhere | 0.0% | 0.1% | ++0.0 | 2 |
+|  | 0.0% | 0.1% | ++0.1 | 1 |
 | UHD | 0.0% | 0.0% | -0.0 | 1 |
-| YouTube Premium | 0.0% | 0.0% | -0.0 | 1 |
+| DC Universe | 0.0% | 0.0% | -0.0 | 1 |
 | German UHDs | 0.0% | 0.0% | -0.0 | 1 |
+| YouTube Premium | 0.0% | 0.0% | -0.0 | 1 |
 
 ### Top 15 studios
 
 | Studio | Catalogue | Cache | Cache coverage |
 |---|---:|---:|---:|
-| unknown | 14,755 | 114 | 0.8% |
+| unknown | 14,761 | 1712 | 11.6% |
 
 ## Top bias issues
 
@@ -85,21 +85,25 @@ Sorted by absolute bias.  Positive = overrepresented in cache, negative = underr
 
 | Dimension | Bucket | Catalogue % | Cache % | Bias |
 |---|---|---:|---:|---:|
-| Author | mobe1969 | 57.0% | 32.5% | -24.5 |
-| Audio format | atmos | 30.9% | 55.3% | ++24.3 |
-| Author | remixmark | 7.4% | 26.3% | ++18.9 |
-| Audio format | dts-hd | 34.6% | 21.9% | -12.7 |
-| Source | Streaming | 20.5% | 9.6% | -10.8 |
-| Source | Disc | 74.5% | 83.3% | ++8.9 |
-| Era | 2010s | 38.3% | 30.7% | -7.6 |
-| Audio format | dd+ | 24.1% | 18.4% | -5.7 |
-| Audio format | truehd | 5.7% | 0.9% | -4.8 |
-| Era | 2020s | 39.7% | 43.9% | ++4.2 |
-| Author | aron7awol | 13.4% | 17.5% | ++4.2 |
-| Content type | film | 80.6% | 84.2% | ++3.6 |
-| Content type | TV | 19.4% | 15.8% | -3.6 |
-| Era | pre1990 | 3.4% | 6.1% | ++2.7 |
-| Author | halcyon888 | 2.1% | 4.4% | ++2.3 |
+| Audio format | atmos | 30.9% | 56.7% | ++25.7 |
+| Author | mobe1969 | 57.0% | 31.9% | -25.1 |
+| Source | Streaming | 20.5% | 7.5% | -13.0 |
+| Era | 2010s | 38.3% | 25.7% | -12.6 |
+| Author | remixmark | 7.4% | 19.3% | ++11.9 |
+| Audio format | dd+ | 24.1% | 12.3% | -11.9 |
+| Source | Disc | 74.5% | 85.7% | ++11.2 |
+| Audio format | dts-hd | 34.6% | 23.9% | -10.7 |
+| Era | 2020s | 39.7% | 48.6% | ++8.9 |
+| Author | kaelaria | 8.3% | 12.0% | ++3.6 |
+| Content type | film | 80.6% | 77.4% | -3.2 |
+| Content type | TV | 19.4% | 22.6% | ++3.2 |
+| Author | t1g8rsfan | 2.9% | 6.0% | ++3.1 |
+| Era | pre1990 | 3.4% | 6.4% | ++2.9 |
+| Author | mikejl | 8.8% | 11.6% | ++2.8 |
+
+## Missing media DB IDs
+
+`media_inventory.json` not found.  Run `scripts/extract_lfe.py` to scan the library and populate it.  After that, this section will list any media files missing their tmdb/tvdb/imdb tags.
 
 ---
 Generated by `scripts/nn_cache_bias_report.py`

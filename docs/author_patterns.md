@@ -1,6 +1,6 @@
 # Author Pattern Analysis
 
-**Source**: `/Users/astubbs/.config/beqdesigner/catalogue_cache.json`  |  **Total entries**: 14,806
+**Source**: `/Users/astubbs/.config/beqdesigner/catalogue_cache.json`  |  **Total entries**: 14,812
 
 Used by I-series experiments to validate that authors specialize in different content types — meaningful signal for the meta-classifier.
 
@@ -10,9 +10,9 @@ Used by I-series experiments to validate that authors specialize in different co
 |---|---:|---:|
 | mobe1969 | 8,444 | 57.0% |
 | aron7awol | 1,976 | 13.3% |
-| mikejl | 1,293 | 8.7% |
+| mikejl | 1,296 | 8.7% |
 | kaelaria | 1,245 | 8.4% |
-| remixmark | 1,093 | 7.4% |
+| remixmark | 1,096 | 7.4% |
 | t1g8rsfan | 424 | 2.9% |
 | halcyon888 | 308 | 2.1% |
 | bombaycat007 | 23 | 0.2% |
@@ -55,16 +55,16 @@ Used by I-series experiments to validate that authors specialize in different co
 
 ## Multi-author title coverage
 
-- Single-author titles: **5,949**
-- Multi-author titles: **2,291** (28% of unique titles)
+- Single-author titles: **5,952**
+- Multi-author titles: **2,292** (28% of unique titles)
 
 Distribution of authors per title:
 
 | # Authors | # Titles |
 |---:|---:|
-| 1 | 5,949 |
+| 1 | 5,952 |
 | 2 | 1,543 |
-| 3 | 511 |
+| 3 | 512 |
 | 4 | 173 |
 | 5 | 46 |
 | 6 | 16 |
