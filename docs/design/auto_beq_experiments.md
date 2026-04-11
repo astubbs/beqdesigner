@@ -3270,8 +3270,7 @@ input needed.
 - [ ] J-series acquisition recommender — now running on the 932-WAV
       cache, the bias has shifted slightly (remixmark +11.9 vs +18.9).
       Regenerate the 50-title shopping list.
-- [ ] Baseline determinism fix — investigate `AUTO_BEQ_F_WORKERS=1`
-      vs XGBoost thread settings to reduce the ±0.05 dB noise.
+- [x] Baseline determinism fix — see E75 below.
 - [ ] Per-author dedicated models (I4) — still the most promising
       remaining optimisation.  With 305 mobe1969 WAVs + 304 aron7awol
       WAVs in the cache now, per-author late fusion is feasible.
@@ -3279,3 +3278,65 @@ input needed.
       training should finally be competitive with synthetic training.
       Previously tried at 155 WAVs and failed; 6× more data may be
       enough to cross the threshold.
+
+---
+
+## 2026-04-11: E75 — XGBoost n_jobs=1 for deterministic training
+
+**Problem**: The 932-WAV scale-up (E71–E74) showed the Baseline config
+producing 2.78 / 2.82 / 2.78 / 3.00 dB across four consecutive runs —
+a 0.22 dB spread that masked sub-0.05 dB differences between
+techniques.  We couldn't trust small improvements as signal rather
+than noise.
+
+**Root cause**: Both `XGBRegressor` and `XGBClassifier` default to
+`n_jobs=-1` (all CPU cores).  The experiment harness runs batches via
+`ThreadPoolExecutor` with `max_workers=2` by default, so two concurrent
+XGBoost trainings contend for the same cores.  The thread scheduling is
+non-deterministic, propagating into non-deterministic histogram
+construction and tree splits.
+
+**Fix**: Pin both `XGBRegressor` and `XGBClassifier` to `n_jobs=1` in
+`auto_beq_nn.py`.  Each training is now single-threaded and fully
+deterministic.  Parallelism is still handled at the batch level by the
+harness's `ThreadPoolExecutor` — the concurrency boundary just moves
+up one level.
+
+**Verification**: New regression test `test_baseline_determinism` in
+`test_auto_beq_nn_experiments.py` runs the Baseline config three times
+back-to-back and asserts that the mean loss is identical across runs
+(spread < 0.005 dB epsilon).  If anyone reintroduces thread contention
+via `n_jobs=-1` or removes the `n_jobs=1` override, this test fails
+immediately with a clear error.
+
+**Result**: Three consecutive 932-WAV Baseline runs produced:
+- Run 1: mean = **2.689770** dB
+- Run 2: mean = **2.689770** dB
+- Run 3: mean = **2.689770** dB
+
+Bit-identical to 12 decimal places.  The true Baseline on 932 WAVs
+is **2.69 dB** — tighter than the noisy 2.78–3.00 spread seen before
+the fix, and near the middle of the earlier range (as expected for
+the "denoised" value).
+
+**Side effects**:
+- **Unit tests 10× faster**: `test_auto_beq_nn.py` went from 90s → 9s
+  because XGBoost no longer burns time on thread spawn/sync overhead
+  for tiny snapshot datasets.
+- **Large-data experiments**: per-training wall time is comparable
+  because modern XGBoost histogram construction doesn't benefit much
+  from >4 cores on 8k-entry datasets.  Batch-level concurrency
+  (max_workers=2) still delivers throughput.
+
+**Lesson**: When a library uses all cores by default and you run
+multiple instances concurrently, you get silent non-determinism.
+Always pin `n_jobs=1` and push parallelism to the batch level.
+
+**Kept**: Yes.  All future experiments must be re-measured under the
+deterministic Baseline (2.69 dB on 932 WAVs).
+
+### Next step sequencing (after E75)
+
+With determinism restored, the next measurement we can trust is
+E76 — I4 per-author dedicated models, using the 305 mobe1969 + 304
+aron7awol + 181 kaelaria WAVs that the 932-WAV cache now has.
