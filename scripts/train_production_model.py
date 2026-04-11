@@ -190,7 +190,14 @@ def main():
     t_embed_start = time.time()
     embed_cache_dir = target_dir / "foundation-embeddings" / (args.foundation_model or "none")
     n_embed_failed = 0
-    for pair, features in all_real:
+    n_all_real = len(all_real)
+    next_pct = 10
+    if args.foundation_model:
+        log.info(
+            "attaching %s embeddings to %d real samples…",
+            args.foundation_model, n_all_real,
+        )
+    for i, (pair, features) in enumerate(all_real):
         entry = pair.get("catalogue_entry")
         if entry is None or not entry.get("filters"):
             continue
@@ -211,6 +218,11 @@ def main():
                     pair["wav_path"].name, exc,
                 )
                 n_embed_failed += 1
+            pct = ((i + 1) * 100) // max(1, n_all_real)
+            if pct >= next_pct and pct < 100:
+                log.info("  %3d%%  %d/%d embeddings", pct, i + 1, n_all_real)
+                while next_pct <= pct:
+                    next_pct += 10
         real_samples.append((entry, features))
     if args.foundation_model:
         t_embed = time.time() - t_embed_start
@@ -228,12 +240,15 @@ def main():
     if args.self_train:
         unmatched_wavs = discover_unmatched_wavs_cached()
         log.info(
-            "E84: discovered %d unmatched WAVs (unlabelled candidates)",
+            "E84: %d unmatched WAVs available for pseudo-labelling",
             len(unmatched_wavs),
         )
         if unmatched_wavs:
+            n_u = len(unmatched_wavs)
+            log.info("extracting curve features from %d unmatched WAVs…", n_u)
             t_u0 = time.time()
-            for wav_path in unmatched_wavs:
+            next_u_pct = 10
+            for i, wav_path in enumerate(unmatched_wavs):
                 try:
                     features = cached_extract_features_with_strategy(
                         wav_path, DEFAULT_GRID, 1000, strategy=strategy,
@@ -241,9 +256,14 @@ def main():
                     unmatched_pairs.append((wav_path, features))
                 except Exception as exc:
                     log.debug("skipping %s: %s", wav_path.name, exc)
+                pct = ((i + 1) * 100) // max(1, n_u)
+                if pct >= next_u_pct and pct < 100:
+                    log.info("  %3d%%  %d/%d unmatched WAVs", pct, i + 1, n_u)
+                    while next_u_pct <= pct:
+                        next_u_pct += 10
             log.info(
                 "E84: extracted features for %d/%d unmatched WAVs in %.1fs",
-                len(unmatched_pairs), len(unmatched_wavs), time.time() - t_u0,
+                len(unmatched_pairs), n_u, time.time() - t_u0,
             )
 
     # --- Train ---

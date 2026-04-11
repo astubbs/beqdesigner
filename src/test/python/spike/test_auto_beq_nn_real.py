@@ -196,6 +196,8 @@ def _extract_features_parallel(
 
     Returns list of (pair, features) tuples. Failed extractions are skipped.
     Uses ProcessPoolExecutor since scipy Welch is single-threaded.
+    Logs progress at each 10% decile + final count so long runs over
+    the NAS cache have visible heartbeat.
     """
     from spike._auto_beq_helpers import STRATEGY_WELCH
     if strategy is None:
@@ -205,17 +207,39 @@ def _extract_features_parallel(
         (str(p["wav_path"]), freqs_hz, fs, strategy)
         for p in pairs
     ]
+    n_work = len(work)
+    strat_label = getattr(strategy, "label", "welch")
+    log.info(
+        "extracting curve features from %d WAVs (strategy=%s, parallel)…",
+        n_work, strat_label,
+    )
 
     t0 = time.time()
     results = {}
+    next_pct_to_log = 10
+    done = 0
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         for wav_str, features in executor.map(_extract_one_wav, work):
             results[wav_str] = features
+            done += 1
+            pct = (done * 100) // max(1, n_work)
+            if pct >= next_pct_to_log and pct < 100:
+                elapsed_s = time.time() - t0
+                rate = done / elapsed_s if elapsed_s > 0 else 0
+                eta_s = (n_work - done) / rate if rate > 0 else 0
+                log.info(
+                    "  %3d%%  %d/%d WAVs  (%.0f WAVs/s, ETA %.0fs)",
+                    pct, done, n_work, rate, eta_s,
+                )
+                while next_pct_to_log <= pct:
+                    next_pct_to_log += 10
 
     elapsed = time.time() - t0
     ok_count = sum(1 for f in results.values() if f is not None)
-    log.info("parallel feature extraction: %d/%d in %.1fs (%.1f WAVs/s)",
-             ok_count, len(work), elapsed, ok_count / elapsed if elapsed > 0 else 0)
+    log.info(
+        "curve-feature extraction complete: %d/%d WAVs in %.1fs (%.1f WAVs/s)",
+        ok_count, n_work, elapsed, ok_count / elapsed if elapsed > 0 else 0,
+    )
 
     out = []
     for p in pairs:
@@ -2011,8 +2035,15 @@ def test_e84_self_trained(tmp_path, caplog):
              len(unmatched_wav_paths))
 
     unmatched_pairs: list[tuple] = []
+    n_unmatched = len(unmatched_wav_paths)
+    if n_unmatched:
+        log.info(
+            "extracting curve features from %d unmatched WAVs for E84 pool…",
+            n_unmatched,
+        )
     t_unm = time.time()
-    for wav_path in unmatched_wav_paths:
+    next_pct = 10
+    for i, wav_path in enumerate(unmatched_wav_paths):
         try:
             features = cached_extract_features_with_strategy(
                 wav_path, DEFAULT_GRID, _DEFAULT_FS, strategy=STRATEGY_BLENDED_07,
@@ -2020,9 +2051,14 @@ def test_e84_self_trained(tmp_path, caplog):
             unmatched_pairs.append((wav_path, features))
         except Exception as exc:
             log.debug("E84 skipping unmatched %s: %s", wav_path.name, exc)
+        pct = ((i + 1) * 100) // max(1, n_unmatched)
+        if pct >= next_pct and pct < 100:
+            log.info("  %3d%%  %d/%d unmatched WAVs processed", pct, i + 1, n_unmatched)
+            while next_pct <= pct:
+                next_pct += 10
     log.info(
         "E84 unmatched features: %d/%d in %.1fs",
-        len(unmatched_pairs), len(unmatched_wav_paths), time.time() - t_unm,
+        len(unmatched_pairs), n_unmatched, time.time() - t_unm,
     )
 
     # Synthetic set (same rule as E82/E83).

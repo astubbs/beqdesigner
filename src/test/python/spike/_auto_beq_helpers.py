@@ -305,13 +305,13 @@ def load_and_smooth(
     assert read_fs == fs, f"expected fs={fs}, got {read_fs}"
     mono = samples[:, 0] if samples.ndim > 1 else samples
     duration_s = len(mono) / fs
-    log.info("loaded %d samples (%.1f s = %.1f min)", len(mono), duration_s, duration_s / 60)
+    log.debug("loaded %d samples (%.1f s = %.1f min)", len(mono), duration_s, duration_s / 60)
     sig = Signal(wav_path.stem, mono, fs=fs)
 
-    log.info("computing average spectrum (Welch)")
+    log.debug("computing average spectrum (Welch)")
     measured_freqs, measured_db = sig.avg_spectrum()
-    log.info("raw spectrum: %d bins from %.1f to %.1f Hz",
-             len(measured_freqs), measured_freqs[0], measured_freqs[-1])
+    log.debug("raw spectrum: %d bins from %.1f to %.1f Hz",
+              len(measured_freqs), measured_freqs[0], measured_freqs[-1])
 
     measured_on_grid = np.interp(freqs, measured_freqs, measured_db)
 
@@ -517,7 +517,7 @@ def load_and_smooth_chunked(
     assert read_fs == fs, f"expected fs={fs}, got {read_fs}"
     mono = samples[:, 0] if samples.ndim > 1 else samples
     duration_s = len(mono) / fs
-    log.info(
+    log.debug(
         "loaded %d samples (%.1f s = %.1f min) for chunked analysis",
         len(mono), duration_s, duration_s / 60,
     )
@@ -529,7 +529,7 @@ def load_and_smooth_chunked(
         for i in range(0, len(mono), chunk_samples)
         if len(mono[i : i + chunk_samples]) >= min_chunk_samples
     ]
-    log.info(
+    log.debug(
         "chunked into %d chunks of %.0f s (fs=%d, percentile=%.0f)",
         len(chunks), chunk_s, fs, percentile,
     )
@@ -585,7 +585,7 @@ def load_and_smooth_chunked(
     aggregated -= aggregated[anchor_idx]
     aggregated = smooth_fractional_octave(aggregated, freqs, octaves=1.0 / 6.0)
     aggregated -= aggregated[anchor_idx]
-    log.info(
+    log.debug(
         "chunked-percentile curve: 10Hz=%.1f 20Hz=%.1f 80Hz=%.1f dB",
         aggregated[0],
         aggregated[int(np.argmin(np.abs(freqs - 20.0)))],
@@ -637,7 +637,7 @@ def load_and_smooth_blended(
         wav_path, fs, freqs, chunk_s=chunk_s, percentile=percentile,
     )
     blended = alpha * welch + (1.0 - alpha) * chunked
-    log.info(
+    log.debug(
         "blended curve (alpha=%.2f): 10Hz=%.1f 20Hz=%.1f 80Hz=%.1f dB",
         alpha, blended[0],
         blended[int(np.argmin(np.abs(freqs - 20.0)))],
@@ -665,7 +665,7 @@ def load_measured(
     """
     if strategy is None:
         strategy = _strategy_from_env()
-    log.info("extraction strategy: %s", strategy.label)
+    log.debug("extraction strategy: %s", strategy.label)
 
     if strategy.method == ExtractionMethod.WELCH:
         return load_and_smooth(wav_path, fs, freqs, return_absolute=return_absolute)

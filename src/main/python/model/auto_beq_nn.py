@@ -1081,7 +1081,7 @@ def train_xgboost(
         fit_kwargs["sample_weight"] = sample_weight
 
     model.fit(X_train, Y_train, **fit_kwargs)
-    log.info("XGBoost training complete. n_features_in=%d", model.n_features_in_)
+    log.debug("XGBoost training complete. n_features_in=%d", model.n_features_in_)
     return model
 
 
@@ -1108,8 +1108,8 @@ def train_xgboost_reweighted(
             loss = downstream_loss(pred_filters, target_filters, freqs_hz)
             weights[i] = max(1.0, loss)  # upweight high-loss samples
 
-        log.info("reweighted round %d: mean_weight=%.2f max_weight=%.2f",
-                 round_idx + 1, weights.mean(), weights.max())
+        log.debug("reweighted round %d: mean_weight=%.2f max_weight=%.2f",
+                  round_idx + 1, weights.mean(), weights.max())
         model = train_xgboost(X_train, Y_train, sample_weight=weights)
 
     return model
@@ -1486,16 +1486,16 @@ def train_late_fusion(
     X_meta = np.zeros_like(X_train)
     X_meta[:, n_audio:] = X_train[:, n_audio:]
 
-    log.info("training audio-only sub-model (%d features active)...", n_audio)
+    log.debug("training audio-only sub-model (%d features active)...", n_audio)
     model_audio = train_xgboost(
         X_audio, Y_train, augmentation=augmentation, n_audio=n_audio,
     )
 
-    log.info("training metadata-only sub-model (%d features active)...",
-             X_train.shape[1] - n_audio)
+    log.debug("training metadata-only sub-model (%d features active)...",
+              X_train.shape[1] - n_audio)
     model_meta = train_xgboost(X_meta, Y_train)
 
-    log.info("late fusion complete, alpha=%.2f", alpha)
+    log.debug("late fusion complete, alpha=%.2f", alpha)
     return LateFusionModel(model_audio, model_meta, alpha=alpha, n_audio=n_audio)
 
 
@@ -2161,6 +2161,16 @@ def train_production_weighted_hybrid(
     from model.auto_beq_advisor import extract_curve_features
     from model.auto_beq_metadata import enrich_media_metadata
 
+    t_train_start = _time.time()
+    feature_label_str = (
+        f" + {config.foundation_model}" if config.foundation_model else ""
+    )
+    log.info(
+        "=== E82 production training starting: %d real samples, "
+        "50:1 weighted hybrid plain XGBoost, %d-dim features%s ===",
+        len(real_samples), config.n_features, feature_label_str,
+    )
+
     # --- Build the real-sample training rows (X_real, Y_real). ---
     X_real_list: list[np.ndarray] = []
     Y_real_list: list[np.ndarray] = []
@@ -2227,12 +2237,17 @@ def train_production_weighted_hybrid(
     ])
 
     log.info(
-        "E82 production training: %d real + %d synth (ratio %.0f:1)",
-        n_real, n_synth, real_weight,
+        "training XGBoost on %d real + %d synthetic samples (%.0f:1 weight ratio, "
+        "%d features, %d output dims)…",
+        n_real, n_synth, real_weight, X_combined.shape[1], Y_combined.shape[1],
     )
 
     # --- Train plain XGBoost (no late fusion, no augmentation). ---
     model = train_xgboost(X_combined, Y_combined, sample_weight=sample_weight)
+    log.info(
+        "=== E82 training done in %.1fs — model ready ===",
+        _time.time() - t_train_start,
+    )
 
     # --- Provenance metadata for the sidecar file. ---
     metadata = {
@@ -2491,6 +2506,13 @@ def train_e84_self_trained(
     current_pseudo: list[tuple[dict, object]] = []
     t_start = _time.time()
 
+    log.info(
+        "=== E84 self-training starting: %d real + %d unmatched WAVs, "
+        "%d iterations, confidence gate ≤ %.1f dB, pseudo weight %.0f ===",
+        len(real_samples), len(unmatched_pairs),
+        n_iterations, confidence_threshold_db, pseudo_weight,
+    )
+
     for iteration in range(n_iterations + 1):
         if iteration == 0:
             model, base_meta = train_production_weighted_hybrid(
@@ -2591,8 +2613,10 @@ def train_e84_self_trained(
         ])
 
         log.info(
-            "E84 iter %d: %d real + %d synth + %d pseudo (weights %.0f:1:%.0f)",
-            iteration, len(X_real), len(X_synth), len(X_pseudo),
+            "E84 iteration %d/%d: retraining with %d real + %d synth + %d pseudo "
+            "(%.0f:1:%.0f weight ratio)…",
+            iteration, n_iterations,
+            len(X_real), len(X_synth), len(X_pseudo),
             real_weight, pseudo_weight,
         )
         model = train_xgboost(X_combined, Y_combined, sample_weight=sample_weight)
@@ -2618,6 +2642,11 @@ def train_e84_self_trained(
         "feature_config": config.label,
         "n_features": int(config.n_features),
     }
+    log.info(
+        "=== E84 training done in %.1fs — %d iterations, %d pseudo-labels kept ===",
+        metadata["train_time_s"], n_iterations,
+        sum(s["n_pseudo"] for s in iter_stats),
+    )
     return current_model, metadata
 
 

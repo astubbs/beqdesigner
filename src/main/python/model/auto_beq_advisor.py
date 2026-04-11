@@ -562,10 +562,20 @@ def extract_foundation_embeddings_parallel(
     if max_workers is None:
         max_workers = os.cpu_count() or 4
 
+    n_total = len(source_paths)
+    log.info(
+        "extracting %s embeddings from %d audio sources (%d threads)…",
+        model_name, n_total, max_workers,
+    )
+
+    import time as _time
+    t0 = _time.time()
+
     results: list[tuple["Path", "np.ndarray | None"]] = [
         (p, None) for p in source_paths
     ]
     completed = 0
+    next_pct = 10
 
     def _work(idx_and_path):
         idx, path = idx_and_path
@@ -586,9 +596,26 @@ def extract_foundation_embeddings_parallel(
             idx, emb = fut.result()
             results[idx] = (source_paths[idx], emb)
             completed += 1
+            pct = (completed * 100) // max(1, n_total)
+            if pct >= next_pct and pct < 100:
+                elapsed = _time.time() - t0
+                rate = completed / elapsed if elapsed > 0 else 0
+                eta_s = (n_total - completed) / rate if rate > 0 else 0
+                log.info(
+                    "  %3d%%  %d/%d embeddings  (%.1f WAVs/s, ETA %.0fs)",
+                    pct, completed, n_total, rate, eta_s,
+                )
+                while next_pct <= pct:
+                    next_pct += 10
             if progress_callback is not None:
-                progress_callback(completed, len(source_paths))
+                progress_callback(completed, n_total)
 
+    elapsed = _time.time() - t0
+    log.info(
+        "%s embedding extraction complete: %d/%d in %.1fs (%.1f WAVs/s)",
+        model_name, completed, n_total, elapsed,
+        completed / elapsed if elapsed > 0 else 0,
+    )
     return results
 
 
