@@ -846,14 +846,22 @@ def test_chunked_nn_training(tmp_path):
 
 @pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")
 def test_real_audio_training(tmp_path):
-    """E33: Train on real audio features instead of synthetic.
+    """E33/E77: Train on real audio features instead of synthetic.
 
     Compares three training approaches on the same held-out real test set:
     1. Synthetic-only (baseline): ~8k synthetic entries
     2. Real-only: train on real WAV features only
     3. Hybrid: real features where available + synthetic for the rest
 
-    Plus late fusion (α=0.3) variants of each.
+    E33 (original run at 155 WAVs): real-only lost to synthetic by 1.14 dB
+    and hybrid lost by 0.24 dB.  Not enough real data to beat synthetic.
+
+    E77 (re-run at 932 WAVs): test whether 6× more real data is enough
+    for real or hybrid training to beat synthetic-only.
+
+    All three training approaches are tested under the current best
+    config (F1 augmentation σ=0.5 + late fusion α=0.5), matching the
+    production model (I1b-soft-blend).
     """
     from model.auto_beq_catalogue import _fetch_or_cache
     from sklearn.model_selection import train_test_split
@@ -950,6 +958,8 @@ def test_real_audio_training(tmp_path):
              len(X_hybrid), len(X_real_train), len(X_hybrid) - len(X_real_train))
 
     # --- 5. Train + evaluate ---
+    from model.auto_beq_nn import AugmentationConfig
+
     def _mean_loss(model, X_test):
         Y_pred = model.predict(X_test)
         return sum(
@@ -957,26 +967,63 @@ def test_real_audio_training(tmp_path):
             for i, e in enumerate(test_entries)
         ) / len(test_entries)
 
-    print(f"\n{'='*70}")
-    print(f"  E33 REAL AUDIO TRAINING")
+    # Current production config: F1 σ=0.5 + late fusion α=0.5.
+    # Also run plain XGBoost and LF without augmentation for comparison
+    # against the old E33 numbers (155-WAV regime).
+    aug = AugmentationConfig(
+        gaussian_sigma_db=0.5, per_bin_uniform_db=1.0, n_copies=3,
+    )
+
+    print(f"\n{'='*78}")
+    print(f"  E77/E33 REAL AUDIO TRAINING (932-WAV cache re-run)")
     print(f"  Real train: {len(X_real_train)} | Synthetic: {len(X_synth)}")
     print(f"  Hybrid: {len(X_hybrid)} | Test: {len(X_real_test)} (held-out real)")
-    print(f"{'='*70}\n")
-    print(f"  {'Training approach':35s} {'Early fusion':>14s} {'Late α=0.3':>14s}")
-    print(f"  {'-'*65}")
-
+    print(f"{'='*78}\n")
+    print(f"  {'Training approach':30s} "
+          f"{'XGB plain':>12s} "
+          f"{'LF α=0.5':>12s} "
+          f"{'LF+aug':>12s}")
+    print(f"  {'-' * 72}")
+    results_table = []
     for name, X_tr, Y_tr in [
         (f"Synthetic-only ({len(X_synth)})", X_synth, Y_synth),
         (f"Real-only ({len(X_real_train)})", X_real_train, Y_real_train),
         (f"Hybrid ({len(X_hybrid)})", X_hybrid, Y_hybrid),
     ]:
-        model_early = train_xgboost(X_tr, Y_tr)
-        early_loss = _mean_loss(model_early, X_real_test)
+        # 1. Plain XGBoost (matches old E33 numbers for comparison).
+        model_plain = train_xgboost(X_tr, Y_tr)
+        plain_loss = _mean_loss(model_plain, X_real_test)
 
-        model_late = train_late_fusion(X_tr, Y_tr, alpha=0.3)
-        late_loss = _mean_loss(model_late, X_real_test)
+        # 2. Late fusion α=0.5 (G2a single-alpha best).
+        model_lf = train_late_fusion(X_tr, Y_tr, alpha=0.5)
+        lf_loss = _mean_loss(model_lf, X_real_test)
 
-        print(f"  {name:35s} {early_loss:12.2f} dB {late_loss:12.2f} dB")
+        # 3. Late fusion α=0.5 + augmentation (F1 × G2a, production config).
+        model_lf_aug = train_late_fusion(
+            X_tr, Y_tr, alpha=0.5, augmentation=aug,
+        )
+        lf_aug_loss = _mean_loss(model_lf_aug, X_real_test)
+
+        print(f"  {name:30s} "
+              f"{plain_loss:10.2f} dB "
+              f"{lf_loss:10.2f} dB "
+              f"{lf_aug_loss:10.2f} dB")
+        results_table.append((name, plain_loss, lf_loss, lf_aug_loss))
+
+    # Print deltas vs synthetic-only baseline (LF+aug, production config).
+    synth_lf_aug = results_table[0][3]
+    print(f"\n  Delta vs synthetic-only (LF+aug column, production config):")
+    for name, _plain, _lf, lf_aug in results_table[1:]:
+        delta = lf_aug - synth_lf_aug
+        sign = "+" if delta > 0 else ""
+        if delta < -0.05:
+            verdict = " ← WINS"
+        elif delta > 0.05:
+            verdict = " ← loses"
+        else:
+            verdict = " ← tied"
+        print(f"    {name:30s} {sign}{delta:.2f} dB{verdict}")
+    print()
 
 
 @pytest.mark.skipif(not _PAIRS, reason="no WAV files matched to catalogue entries")

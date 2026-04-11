@@ -58,8 +58,29 @@ sweep = E54a–E54e).
 
 ### Current production model
 
-**`I1b-soft-blend`** — automated author selection via metadata classifier,
-soft-blended per-author alpha at inference.
+There are now **two** production-ready models depending on how much
+real-audio training data you have:
+
+#### Real-data regime (≥700 WAVs matched to catalogue)
+
+**Real-only + plain XGBoost (E77)** — the new champion at 2.12 dB on
+a 193-title held-out test split from the 932-WAV cache.
+
+- **Mean loss**: 2.12 dB (plain XGBoost on 770 real WAV features)
+- **Crossover confirmed**: at 155 WAVs (E33) real-only lost by
+  1.14 dB; at 770 WAVs (E77) it wins by 1.24 dB.  More data beats
+  fancier models.
+- **Training**: literally just `train_xgboost(X_real, Y_real)` — no
+  late fusion, no augmentation, no classifier routing.  Those were
+  crutches for the synthetic-to-real gap.
+- **Counterintuitive**: adding late fusion (2.26 dB) and augmentation
+  (2.24 dB) on top of real training *hurts*.  Once you leave the
+  synthetic regime, the F/G/I-series architecture is net-negative.
+
+#### Synthetic regime (few real WAVs available)
+
+**`I1b-soft-blend`** — automated author selection via metadata
+classifier, soft-blended per-author alpha at inference.
 
 - **Mean loss**: 2.37 dB on 932 real-audio validation titles (E74)
 - **Verdict**: 561 PASS / 232 MARGINAL / 157 FAIL (60% PASS, 85%
@@ -70,9 +91,10 @@ soft-blended per-author alpha at inference.
   `predict_alpha_from_metadata(method="soft_blend")` in
   `src/main/python/model/auto_beq_nn.py`
 
-**`G8-perauth`** is the oracle ceiling at 2.27 dB but requires a known
-author — use it only for catalogue titles where the author is known
-upstream (e.g. regenerating an existing catalogue entry).
+**`G8-perauth`** is the oracle ceiling at 2.33 dB (E76 re-measured
+under determinism) but requires a known author — use it only for
+catalogue titles where the author is known upstream (e.g. regenerating
+an existing catalogue entry).
 
 ### Going deeper
 
@@ -3444,3 +3466,116 @@ still valid.  But the absolute number shifts across invocations.
 
 **Deferred to E75b**: investigate with a diff between the two
 contexts.  Not blocking for the current best-model selection.
+
+---
+
+## 2026-04-11: E77 — real-audio training re-run at 932 WAVs (crossover!)
+
+**Hypothesis**: E33 (originally at 155 WAVs) showed real-audio training
+lost to synthetic-only by 1.14 dB — not enough real data to beat 8k
+synthetic entries.  At 932 WAVs (6× more real data), hybrid or
+real-only training should finally become competitive.
+
+**Method**: `test_real_audio_training` in `test_auto_beq_nn_real.py`.
+Extracts features from all 932 real WAVs, splits 80/20 stratified by
+rolloff severity → 770 train / ~193 test.  Trains three approaches
+(synthetic-only, real-only, hybrid) under three configs (plain
+XGBoost, LF α=0.5, LF α=0.5 + F1 augmentation) = 9 trainings, all
+evaluated on the same held-out real test split.
+
+**Result** (E75 deterministic harness, 770 train / 193 test):
+
+| Training approach | XGB plain | LF α=0.5 | LF+aug (prod) |
+|---|---|---|---|
+| Synthetic-only (8097) | 3.36 | 2.93 | **2.37** |
+| **Real-only (770)**   | **2.12** 🥇 | 2.26 | 2.24 |
+| Hybrid (8480)         | 2.53 | 2.42 | 2.47 |
+
+**Delta vs synthetic-only baseline (LF+aug production column)**:
+- **Real-only: −0.13 dB** (WINS)
+- Hybrid: +0.10 dB (loses)
+
+**For the direct XGB-plain comparison** (fair Apples-to-apples with
+the original E33 numbers):
+- Synthetic-only plain: 3.36 dB → Real-only plain: 2.12 dB = **−1.24 dB**
+
+At 155 WAVs (E33) this delta was +1.14 dB (real lost).  At 932 WAVs
+it's −1.24 dB (real wins decisively).  **Crossover happened.**
+
+**Three striking findings**:
+
+1. **Real-only with plain XGBoost (2.12 dB) beats the full
+   production config on synthetic (2.37 dB) by 0.25 dB.**  At
+   932 WAVs, training on real audio directly beats training on 10×
+   more synthetic features with all our fancy tricks.
+
+2. **Late fusion and augmentation HURT real-only training**.
+   Real-only plain XGB = 2.12, LF = 2.26 (+0.14), LF+aug = 2.24
+   (+0.12).  Both techniques were invented as crutches to bridge the
+   synthetic-to-real gap.  When there's no gap (real train, real
+   test), they just add noise.
+
+3. **Hybrid is the worst of both worlds** (2.47–2.53 dB).  The 7.3k
+   synthetic entries drown out the 770 real ones at 10:1 ratio —
+   synthetic patterns dominate the tree splits and the real-audio
+   signal gets ignored.
+
+**Production implications (big)**:
+
+- The F/G/I-series architecture (augmentation, late fusion, per-author
+  alpha, classifier routing) was optimal for the **synthetic data
+  regime**.  Once enough real data is available, **the simpler
+  plain-XGBoost trained on real features is better**.
+- At >80% of the catalogue covered by real WAVs (932/8k ≈ 11% covered
+  currently — but maybe the ratio matters less than absolute sample
+  count), real-only should replace the synthetic+augmentation stack.
+- The **production recommendation should shift**: I1b-soft-blend
+  (2.37 dB) stays only while we're in the synthetic regime.  Once
+  real audio coverage is high enough, switch to plain XGBoost on
+  real features (2.12 dB).
+- Augmentation and late fusion were NOT universal improvements —
+  they're regime-specific.  This explains why the F/G combos kept
+  looking flat at scale: each new technique was fixing a problem
+  that augmentation already solved, not adding independent signal.
+
+**Caveats**:
+
+- The 2.12 dB is measured on a 193-title test split held out from
+  the 932 real WAVs, not on the full 932 cache used by F/G/H/I
+  harness runs.  The directly comparable number is synthetic-only
+  LF+aug on the same 193-title subset (2.37 dB) — so the 0.25 dB
+  improvement is real, but comparing 2.12 to the 2.35 I1b number
+  from the harness is apples-to-oranges.
+- The split stratification uses rolloff severity (heavy/moderate/
+  gentle) based on total gain.  Random seed 42 — reproducible.
+- At 770 train samples, XGBoost is near its data-hungry minimum.
+  More real data = more improvement, up to a plateau.
+
+**Lesson**: **We've been tuning the wrong knob.**  All the F/G/H/I
+experiments optimised within the synthetic regime.  The real win came
+from finally having enough real training data to leave that regime
+altogether.  This is the classic ML "more data beats better models"
+result — we just hadn't tested it at scale until now.
+
+**Kept**: Yes — this is the new champion at 2.12 dB.  But keeping
+the synthetic+augmentation stack in parallel since it's needed for
+authors/titles without real WAV coverage.
+
+**Open questions**:
+- What's the minimum real-data threshold?  E33 at 155 failed
+  (+1.14 dB).  E77 at 770 wins (−1.24 dB).  Somewhere between is
+  the crossover.  Could re-run with 300, 500, 700 real samples to
+  find the knee.
+- Does real-only training still beat synthetic when the test set
+  includes authors *without* any real training samples?  Need to
+  check per-author breakdown of the 193-title test split.
+- Should we train a hybrid router: use real-only for titles with
+  good real-WAV coverage, synthetic+aug for everything else?
+
+### Updated production recommendation
+
+| Scenario | Best model | Mean dB | Notes |
+|---|---|---|---|
+| **Real audio available for title's domain** | **Real-only + plain XGBoost** | **2.12** | **NEW** (E77, needs verification on full 932) |
+| Synthetic regime (unknown / sparse real data) | I1b-soft-blend (LF+aug+classifier) | 2.35 | Previous production winner (E74) |
+| Known catalogue author | G8-perauth (oracle) | 2.33 | Upper bound when author is known |
