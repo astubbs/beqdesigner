@@ -80,6 +80,41 @@ Rules:
 Do NOT commit code changes without checking whether the docs need
 updating. Stale docs are worse than no docs.
 
+### Accessible writing rule
+
+**All documentation must be accessible to developers who have NO
+background in machine learning or audio engineering.** This is a hard
+project rule, not a guideline.
+
+Why: "vibe coding" risk — AI-assisted development can produce
+systems whose internals nobody understands when returning cold. If
+the docs use jargon without explanation, future readers (including
+the original authors) can't reason about the system.
+
+Mandatory practices:
+
+- **Define every abbreviation on first use.** MSE → "Mean Squared
+  Error (MSE) — the average of (prediction minus target) squared".
+  XGBoost → "XGBoost (eXtreme Gradient Boosting) — a machine
+  learning algorithm that builds ensembles of decision trees".
+- **Link to external explanations** for non-trivial concepts: the
+  Audio EQ Cookbook for biquad maths, PyTorch docs for tensors,
+  3Blue1Brown for neural network intuition, Wikipedia for DSP terms.
+- **Teach concepts progressively**: start with "why does this matter
+  for our project" before "how does the maths work". Use analogies
+  and concrete examples over abstract definitions.
+- **Target reader**: a competent Python developer who has never
+  touched machine learning, digital signal processing, or audio
+  engineering. They should be able to read
+  `docs/design/auto_beq_how_it_works.md` and understand the full
+  system.
+- **When in doubt, over-explain.** A developer who already knows can
+  skim; a developer who doesn't know can't guess.
+
+The canonical "plain language" overview lives at
+`docs/design/auto_beq_how_it_works.md`. Any new technique added to
+the system must be explained there in the same accessible style.
+
 ## Branch plans
 
 **Rule**: when working on a feature branch, save the branch's current
