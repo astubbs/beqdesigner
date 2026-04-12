@@ -196,16 +196,34 @@ def _load_or_train_model() -> "tuple[object, str]":
     """Load the production BEQ model, or train a legacy fallback inline.
 
     Resolution order:
-      1. ``AUTO_BEQ_MODEL_PATH`` env var (explicit override)
-      2. ``{beq-dir}/production_model.joblib`` (auto-discover)
-      3. Inline late-fusion α=0.3 training (legacy fallback + warning)
+      1. ``AUTO_BEQ_ADVISOR=torch_differentiable`` + ``AUTO_BEQ_TORCH_MODEL_PATH``
+         or ``{beq-dir}/e85_torch_filter.pt`` — E85 diff-DSP champion (1.49 dB)
+      2. ``AUTO_BEQ_MODEL_PATH`` env var (explicit XGBoost override)
+      3. ``{beq-dir}/production_model.joblib`` (E82 auto-discover)
+      4. Inline late-fusion α=0.3 training (legacy fallback + warning)
 
-    The preferred path is the E82 50:1 weighted hybrid plain XGBoost
-    model (mean 1.99 dB per-title test error).
-
-    Returns ``(model, source)`` where ``source`` is ``"production"`` or
-    ``"inline-late-fusion"`` for provenance in the profile note.
+    Returns ``(model, source)`` where ``source`` is ``"E85-diff-dsp"``,
+    ``"production"``, or ``"inline-late-fusion"`` for provenance.
     """
+    # E85 torch path — the new champion.
+    advisor_name = os.environ.get("AUTO_BEQ_ADVISOR", "").lower()
+    if advisor_name == "torch_differentiable":
+        torch_path = os.environ.get("AUTO_BEQ_TORCH_MODEL_PATH")
+        if not torch_path:
+            try:
+                torch_path = str(beq_dir() / "e85_torch_filter.pt")
+            except Exception:
+                torch_path = None
+        if torch_path and Path(torch_path).exists():
+            from model.auto_beq_torch import load_torch_predictor
+            log.info("loading E85 torch model: %s", torch_path)
+            return load_torch_predictor(torch_path), "E85-diff-dsp"
+        raise FileNotFoundError(
+            f"AUTO_BEQ_ADVISOR=torch_differentiable but no model found "
+            f"at {torch_path}. Run `scripts/train_torch_model.py` first.",
+        )
+
+    # E82 XGBoost path.
     override = os.environ.get("AUTO_BEQ_MODEL_PATH")
     if override:
         prod_path = Path(override)
@@ -391,8 +409,14 @@ def generate_profile(
     # Predict with the pre-loaded model (loaded once in main()).
     log.info("  predicting filters (model: %s)...", model_source)
     x = build_feature_vector(features, metadata)
-    y_pred = model.predict(x.reshape(1, -1))[0]
-    filters = labels_to_filters(y_pred)
+
+    # E85 torch predictor has predict_filters(x) → filter dicts directly.
+    # XGBoost models have predict(X) → raw label vector → labels_to_filters.
+    if hasattr(model, "predict_filters"):
+        filters = model.predict_filters(x)
+    else:
+        y_pred = model.predict(x.reshape(1, -1))[0]
+        filters = labels_to_filters(y_pred)
 
     # Add biquad coefficients.
     filters_with_biquads = [_compute_biquads(f) for f in filters]

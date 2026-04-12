@@ -132,7 +132,10 @@ so the user can see results incrementally: `AUTO_BEQ_SWEEP_LIMIT=1`.
 | `scripts/nn_cache_bias_report.py` | WAV cache vs catalogue distribution bias report | yes | no (imports helpers) |
 | `scripts/nn_acquisition_recommender.py` | Recommend N missing catalogue titles to acquire (greedy bias correction). Reads `media_inventory.json` to exclude already-owned titles. | yes | no (imports helpers) |
 | `scripts/train_production_model.py` | Train + save the E82 50:1 weighted hybrid production model to `{beq-dir}/production_model.joblib` (+ metadata sidecar) | yes | no (imports model + helpers) |
-| `scripts/generate_beq_profile.py` | Generate complete BEQ profiles for uncatalogued media (loads `production_model.joblib`, falls back to inline late-fusion training if missing) | yes | no (imports model + helpers) |
+| `scripts/train_torch_model.py` | Train + save the E85 differentiable-DSP production model to `{beq-dir}/e85_torch_filter.pt`. Uses E82 XGBoost as warm-start teacher, then fine-tunes on acoustic loss. **New champion (1.49 dB)** | yes | no (imports model + torch) |
+| `scripts/run_tier1_comparison.py` | Run all Tier 1 experiments (E82/E83/E84/E85) on the same split, produce a unified leaderboard + CSV | yes | no (imports all models) |
+| `scripts/run_e85_experiment.py` | Standalone E85 experiment runner (train + eval on the E82 test split) | yes | no |
+| `scripts/generate_beq_profile.py` | Generate complete BEQ profiles for uncatalogued media. Supports `AUTO_BEQ_ADVISOR=trained_model` (E82 XGBoost) or `AUTO_BEQ_ADVISOR=torch_differentiable` (E85 diff-DSP champion) | yes | no (imports model + helpers) |
 | `docker/Dockerfile` | Docker image: Python 3.13-slim + ffmpeg + project source | — | — |
 | `docker/docker-compose.example.yml` | Example compose config — copy, edit paths, run | — | — |
 

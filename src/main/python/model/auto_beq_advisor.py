@@ -1972,16 +1972,81 @@ def _warn_if_stale_production_model(model_path: "Path") -> None:
         pass
 
 
+class TorchFilterAdvisor:
+    """Advisor backed by E85's differentiable-DSP ``FilterChainPredictor``.
+
+    Implements the ``Advisor`` protocol. Given ``MediaMetadata`` and
+    ``CurveFeatures``, builds the 102-dim feature vector, runs the
+    PyTorch MLP + range-clamping activations, and returns an ``Advice``
+    with the predicted LowShelf filter chain.
+
+    Load with ``TorchFilterAdvisor.load(path)`` for production use.
+    The model artifact is a ``.pt`` file written by
+    ``auto_beq_torch.save_torch_predictor``.
+    """
+
+    name = "torch_differentiable"
+
+    def __init__(self, predictor) -> None:
+        self._predictor = predictor
+
+    @classmethod
+    def load(cls, path: str) -> "TorchFilterAdvisor":
+        from model.auto_beq_torch import load_torch_predictor
+        return cls(load_torch_predictor(path))
+
+    def advise(self, metadata: "MediaMetadata", features: "CurveFeatures") -> "Advice":
+        from model.auto_beq_nn import build_feature_vector
+
+        x = build_feature_vector(features, metadata)
+        filters = self._predictor.predict_filters(x)
+
+        if not filters:
+            log.debug("torch_differentiable: no filters predicted above gain threshold")
+            return _clamp_advice(
+                Advice(
+                    max_gain_db=10.0,
+                    reasoning="torch_differentiable: no filters predicted",
+                    confidence=0.2,
+                    source="torch_differentiable",
+                ),
+                source="torch_differentiable",
+            )
+
+        total_gain = sum(abs(f["gain"]) for f in filters)
+        primary_knee = filters[0]["freq"]
+        log.debug(
+            "torch_differentiable: %d filter(s), total_gain=%.1f dB, primary_knee=%.1f Hz",
+            len(filters), total_gain, primary_knee,
+        )
+        return _clamp_advice(
+            Advice(
+                max_gain_db=total_gain,
+                knee_hz=primary_knee,
+                filters=tuple(filters),
+                reasoning=f"E85 diff-DSP: {len(filters)} LowShelf filter(s), acoustic-loss trained",
+                confidence=0.6,
+                source="torch_differentiable",
+            ),
+            source="torch_differentiable",
+        )
+
+
 def get_advisor(name: str | None = None) -> Advisor:
     """Return an Advisor by name. Falls back to AUTO_BEQ_ADVISOR env var,
     then to HeuristicAdvisor.
 
     Supported names: ``heuristic``, ``measurement``, ``topology``,
-    ``slope_extension``, ``mock``, ``ollama``, ``trained_model``.
+    ``slope_extension``, ``mock``, ``ollama``, ``trained_model``,
+    ``torch_differentiable``.
 
     For ``trained_model``: looks at ``AUTO_BEQ_MODEL_PATH`` env var first;
     if unset, falls back to ``{beq-dir}/production_model.joblib`` (the
     E82 production model trained by ``scripts/train_production_model.py``).
+
+    For ``torch_differentiable``: looks at ``AUTO_BEQ_TORCH_MODEL_PATH``
+    env var first; if unset, falls back to
+    ``{beq-dir}/e85_torch_filter.pt``.
     """
     resolved = (name or os.environ.get("AUTO_BEQ_ADVISOR") or "heuristic").lower()
     if resolved == "heuristic":
@@ -2023,6 +2088,26 @@ def get_advisor(name: str | None = None) -> Advisor:
                 "AUTO_BEQ_MODEL_PATH env var required for 'late_fusion' advisor"
             )
         return LateFusionAdvisor.load(path)
+    if resolved == "torch_differentiable":
+        path = os.environ.get("AUTO_BEQ_TORCH_MODEL_PATH")
+        if not path:
+            try:
+                from spike._auto_beq_helpers import beq_dir as _beq_dir
+                default = _beq_dir() / "e85_torch_filter.pt"
+                if default.exists():
+                    path = str(default)
+                    log.info("torch_differentiable: using default model at %s", path)
+            except Exception:
+                pass
+        if not path:
+            raise ValueError(
+                "AUTO_BEQ_TORCH_MODEL_PATH env var required for "
+                "'torch_differentiable' advisor when no model exists at "
+                "the default location.  Either set AUTO_BEQ_TORCH_MODEL_PATH, "
+                "or run `scripts/train_torch_model.py` to populate "
+                "{beq-dir}/e85_torch_filter.pt.",
+            )
+        return TorchFilterAdvisor.load(path)
     if resolved == "cnn_dual_branch":
         from model.auto_beq_nn_cnn import CNNAdvisor
         path = os.environ.get("AUTO_BEQ_MODEL_PATH")
@@ -2034,5 +2119,5 @@ def get_advisor(name: str | None = None) -> Advisor:
     raise ValueError(
         f"unknown advisor name: {resolved!r} "
         "(supported: heuristic, measurement, topology, slope_extension, mock, ollama, "
-        "trained_model, late_fusion, cnn_dual_branch)"
+        "trained_model, torch_differentiable, late_fusion, cnn_dual_branch)"
     )
