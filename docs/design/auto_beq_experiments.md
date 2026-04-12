@@ -3869,9 +3869,89 @@ scan-everything mode, re-run E84 with a realistic unlabelled pool.
 
 ### E83 — Audio foundation-model features (T1.1)
 
-**Status**: infrastructure committed in `1014d99`, experiment run
-pending Phase 2 (xgboost native serializer to unblock torch coinstall).
-See plan file for details.
+**Hypothesis**: Whisper's encoder is trained on 680,000 hours of
+speech + general audio. Even though its 80-bin log-mel front-end is
+biased toward mid/high frequencies, its 384-dim pooled output might
+carry some signal about spectral texture, compression, or mastering
+character that our 9 Welch bins discard. Drop it in as additional
+features for the E82 weighted hybrid, let XGBoost's feature
+importance decide whether it helps.
+
+**Method**: Same E82 pipeline, `AudioFeatureConfig(foundation_model=
+"whisper-tiny")`. Extract one 384-dim embedding per real WAV
+(upsample 1 → 16 kHz, 30-second chunks, encoder forward, mean-pool
+across chunks). Concatenate to the existing 102-dim feature vector →
+486 total dims. Synthetic samples get a zero-vector fallback.
+
+Apples-to-apples comparison on the same 1279-WAV 80/20 stratified
+split (random_state=42) as E84:
+- baseline = E82 weighted hybrid with 102 features
+- E83 = same pipeline with 486 features (102 + 384 Whisper)
+
+**Result**:
+
+| Model | mean dB | max dB | n_features | train time |
+|---|---|---|---|---|
+| baseline (E82) | **1.73** | 11.51 | 102 | 30.5 s |
+| E83 + whisper-tiny | 1.90 | 14.37 | 486 | 941 s (31×) |
+| **Δ mean** | **+0.17 (regression)** | **+2.86 (worse)** | — | — |
+
+**Per-author** — **regresses on every single author**:
+
+| Author | baseline | E83 | Δ |
+|---|---|---|---|
+| aron7awol | 1.32 | 1.45 | +0.13 |
+| halcyon888 | 0.51 | 0.81 | +0.30 |
+| kaelaria | 1.85 | 2.16 | +0.30 |
+| mobe1969 | 2.59 | 2.72 | +0.13 |
+| remixmark | 0.93 | 1.05 | +0.12 |
+| t1g8rsfan | 1.57 | 1.75 | +0.18 |
+
+**Timing cost**: Whisper embedding extraction took **63 minutes** for
+the 1279 WAV cache on CPU (0.3 WAVs/s across 12 threads — the per-
+WAV mel + encoder cost dominates). XGBoost training grew from 30 s
+to 941 s (31× slowdown) because the 4.8× wider feature matrix needs
+more split candidate evaluations per tree. Extraction was fully
+cached after the first run, but the training-time cost persists.
+
+**Why it failed** — the theoretical concern from
+`auto_beq_nn_paradigm_shifts.md` was empirically confirmed:
+
+1. Our LFE content is sub-500 Hz. When upsampled to 16 kHz for
+   Whisper's input, everything above 500 Hz is silence.
+2. Whisper's 80-bin log-mel filterbank puts its highest resolution
+   in the 1–8 kHz speech range (where phonemes live) and has near-
+   zero resolution below 100 Hz.
+3. The resulting 384-dim embedding is dominated by whatever minimal
+   structure Whisper's attention heads find in the "silence+some
+   bass energy" input — essentially noise from the model's
+   perspective (far from its training distribution).
+4. XGBoost with 486 features and only 1022 real samples + 7797
+   synthetic (heavily weighted) has enough capacity to fit the 384
+   noise dimensions on training data. This overfits — visible in
+   the max-error increase (+2.86 dB), where worst-case titles got
+   materially worse.
+
+**Verdict**: **preserved as selectable alternative, not promoted**.
+Code path: `AudioFeatureConfig(foundation_model="whisper-tiny")`,
+CLI flag `--foundation-model whisper-tiny`. Cached embeddings at
+`{beq-dir}/foundation-embeddings/whisper-tiny/*.npy`. If a future
+experiment wants to compare against a proper sub-bass-aware
+foundation model (EnCodec, or a custom 1D CNN trained on LFE), the
+plumbing is ready — just add a new entry to `FOUNDATION_MODEL_DIMS`
+and wire up the extractor.
+
+**Next foundation-model attempt** (if any) should use **EnCodec**
+(24 kHz neural codec — trained to RECONSTRUCT full-bandwidth audio
+including sub-bass, so its encoder has real incentive to preserve
+low-frequency content) or a **custom 1D CNN trained from scratch**
+on our LFE data directly. Both live in T3.x of the paradigm-shifts
+doc as speculative bets; Whisper was meant to be the easy first win
+and empirically wasn't.
+
+**CSV**: `.pytest_cache/e83_foundation.csv`
+**Experiment test**: `test_e83_foundation_features` in
+`src/test/python/spike/test_auto_beq_nn_real.py`
 
 ### E85 — Differentiable DSP (T1.2)
 
