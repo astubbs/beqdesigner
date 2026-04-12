@@ -62,11 +62,14 @@ Q_MAX = 4.0
 # this module has no import-time dependency on auto_beq_nn.
 NUM_SLOTS = 6
 
-# Per-slot parameter count for this module's fixed topology:
-#   (freq_raw, gain_raw, q_raw, enabled_raw)
-# 4 raw scalars per slot → projected into bounded physical params via
-# sigmoid/tanh. NO type-selection logits in v1 — fixed LowShelf.
-PARAMS_PER_SLOT = 4
+# Per-slot parameter counts:
+# v1 (E85): 4 params (freq, gain, q, enabled) — fixed LowShelf topology.
+# v2 (E86): 7 params (freq, gain, q, enabled, type_LS, type_HS, type_PEQ) —
+#   soft type selection via softmax during training, hard argmax at inference.
+PARAMS_PER_SLOT = 4        # v1 default, backward-compat
+PARAMS_PER_SLOT_V2 = 7     # v2 multi-type
+N_FILTER_TYPES = 3         # LowShelf, HighShelf, PeakingEQ
+FILTER_TYPE_NAMES = ["LowShelf", "HighShelf", "PeakingEQ"]
 
 
 # ---------------------------------------------------------------------------
@@ -185,18 +188,134 @@ def _low_shelf_log_mag_db(
     return log_mag_db * enabled
 
 
+def _high_shelf_log_mag_db(freq_hz, gain_db, q, enabled, eval_freqs_hz, fs: int):
+    """Differentiable log-magnitude of a HighShelf biquad.
+
+    Coefficient formulas from ``model.iir.HighShelf._compute_coeffs``:
+        b0 =    A*( (A+1) + (A-1)*cos(w0) + 2*sqrt(A)*alpha )
+        b1 = -2*A*( (A-1) + (A+1)*cos(w0)                   )
+        b2 =    A*( (A+1) + (A-1)*cos(w0) - 2*sqrt(A)*alpha )
+        a0 =        (A+1) - (A-1)*cos(w0) + 2*sqrt(A)*alpha
+        a1 =    2*( (A-1) - (A+1)*cos(w0)                   )
+        a2 =        (A+1) - (A-1)*cos(w0) - 2*sqrt(A)*alpha
+    """
+    import torch
+
+    freq_hz = freq_hz.unsqueeze(-1)
+    gain_db = gain_db.unsqueeze(-1)
+    q = q.unsqueeze(-1)
+    enabled = enabled.unsqueeze(-1)
+    eps = 1e-8
+
+    A = torch.pow(torch.tensor(10.0, dtype=freq_hz.dtype, device=freq_hz.device),
+                  gain_db / 40.0)
+    sqrtA = torch.sqrt(A + eps)
+    w0 = 2.0 * math.pi * freq_hz / fs
+    cos_w0 = torch.cos(w0)
+    sin_w0 = torch.sin(w0)
+    alpha = sin_w0 / (2.0 * (q + eps))
+    two_sqrtA_alpha = 2.0 * sqrtA * alpha
+    a_plus_1 = A + 1.0
+    a_minus_1 = A - 1.0
+
+    # HighShelf coefficients (note sign differences vs LowShelf).
+    b0 = A * (a_plus_1 + a_minus_1 * cos_w0 + two_sqrtA_alpha)
+    b1 = -2.0 * A * (a_minus_1 + a_plus_1 * cos_w0)
+    b2 = A * (a_plus_1 + a_minus_1 * cos_w0 - two_sqrtA_alpha)
+    a0 = a_plus_1 - a_minus_1 * cos_w0 + two_sqrtA_alpha
+    a1 = 2.0 * (a_minus_1 - a_plus_1 * cos_w0)
+    a2 = a_plus_1 - a_minus_1 * cos_w0 - two_sqrtA_alpha
+
+    return _eval_biquad_mag_db(b0, b1, b2, a0, a1, a2, eval_freqs_hz, fs, enabled, eps)
+
+
+def _peaking_eq_log_mag_db(freq_hz, gain_db, q, enabled, eval_freqs_hz, fs: int):
+    """Differentiable log-magnitude of a PeakingEQ biquad.
+
+    Coefficient formulas from ``model.iir.PeakingEQ._compute_coeffs``:
+        b0 =   1 + alpha*A
+        b1 =  -2*cos(w0)
+        b2 =   1 - alpha*A
+        a0 =   1 + alpha/A
+        a1 =  -2*cos(w0)
+        a2 =   1 - alpha/A
+    """
+    import torch
+
+    freq_hz = freq_hz.unsqueeze(-1)
+    gain_db = gain_db.unsqueeze(-1)
+    q = q.unsqueeze(-1)
+    enabled = enabled.unsqueeze(-1)
+    eps = 1e-8
+
+    A = torch.pow(torch.tensor(10.0, dtype=freq_hz.dtype, device=freq_hz.device),
+                  gain_db / 40.0)
+    w0 = 2.0 * math.pi * freq_hz / fs
+    cos_w0 = torch.cos(w0)
+    sin_w0 = torch.sin(w0)
+    alpha = sin_w0 / (2.0 * (q + eps))
+
+    b0 = 1.0 + alpha * A
+    b1 = -2.0 * cos_w0
+    b2 = 1.0 - alpha * A
+    a0 = 1.0 + alpha / (A + eps)
+    a1 = -2.0 * cos_w0
+    a2 = 1.0 - alpha / (A + eps)
+
+    return _eval_biquad_mag_db(b0, b1, b2, a0, a1, a2, eval_freqs_hz, fs, enabled, eps)
+
+
+def _eval_biquad_mag_db(b0, b1, b2, a0, a1, a2, eval_freqs_hz, fs, enabled, eps=1e-8):
+    """Shared magnitude evaluator for any biquad type.
+
+    Takes unnormalised coefficients (a0 need not be 1), normalises
+    internally, and returns log-magnitude in dB with the enabled gate.
+    """
+    import torch
+
+    inv_a0 = 1.0 / (a0 + eps)
+    b0n = b0 * inv_a0
+    b1n = b1 * inv_a0
+    b2n = b2 * inv_a0
+    a0n = torch.ones_like(a0)
+    a1n = a1 * inv_a0
+    a2n = a2 * inv_a0
+
+    w = 2.0 * math.pi * torch.as_tensor(
+        eval_freqs_hz, dtype=b0.dtype, device=b0.device,
+    ) / fs
+    cos_w = torch.cos(w)
+    cos_2w = torch.cos(2.0 * w)
+
+    num = (
+        b0n * b0n + b1n * b1n + b2n * b2n
+        + 2.0 * (b0n * b1n + b1n * b2n) * cos_w
+        + 2.0 * b0n * b2n * cos_2w
+    )
+    den = (
+        a0n * a0n + a1n * a1n + a2n * a2n
+        + 2.0 * (a0n * a1n + a1n * a2n) * cos_w
+        + 2.0 * a0n * a2n * cos_2w
+    )
+
+    mag_sq = torch.clamp(num / (den + eps), min=eps)
+    log_mag_db = 10.0 * torch.log10(mag_sq)
+    return log_mag_db * enabled
+
+
 class BiquadResponseLayer:
-    """Differentiable log-magnitude response of a LowShelf filter chain.
+    """Differentiable log-magnitude response of a biquad filter chain.
 
-    Not actually an ``nn.Module`` because it has no learnable state —
-    it's a pure function over (predicted_params, eval_freqs_hz). Kept as
-    a class for symmetry with the rest of the model-loading code and so
-    future extensions (HighShelf / PeakingEQ soft mixture) can add
-    state cleanly.
+    Supports two modes:
+    - **v1 (E85)**: slot_params shape ``(batch, NUM_SLOTS, 4)`` — fixed
+      LowShelf topology. Columns: (freq, gain, q, enabled).
+    - **v2 (E86)**: slot_params shape ``(batch, NUM_SLOTS, 7)`` — soft
+      type selection via 3 type logits. Columns: (freq, gain, q, enabled,
+      type_LS, type_HS, type_PEQ). During training, type logits are
+      softmaxed and used to blend the three types' responses. At
+      inference, hard argmax picks one type per slot.
 
-    The forward pass sums the per-slot log-mag responses in dB, which
-    is equivalent to multiplying magnitudes in linear — the standard
-    "chain = product of transfer functions" rule for cascaded biquads.
+    Not an ``nn.Module`` — pure function, no learnable state.
     """
 
     def __init__(self, eval_freqs_hz: np.ndarray, fs: int = _DEFAULT_FS):
@@ -209,22 +328,21 @@ class BiquadResponseLayer:
         Parameters
         ----------
         slot_params
-            Tensor of shape ``(batch, NUM_SLOTS, 4)`` with columns
-            ``(freq_hz, gain_db, q, enabled)``. All entries must
-            already be in valid physical ranges (the
-            ``FilterChainPredictor`` handles that via its output
-            activations).
+            Tensor of shape ``(batch, NUM_SLOTS, 4)`` for v1 (LowShelf-only)
+            or ``(batch, NUM_SLOTS, 7)`` for v2 (multi-type with soft blend).
 
         Returns
         -------
-        Tensor of shape ``(batch, len(eval_freqs_hz))`` containing the
-        cascaded chain's log-magnitude response in dB.
+        Tensor of shape ``(batch, len(eval_freqs_hz))`` — cascaded chain
+        response in dB.
         """
         import torch
 
-        if slot_params.shape[-2:] != (NUM_SLOTS, 4):
+        n_params = slot_params.shape[-1]
+        if n_params not in (PARAMS_PER_SLOT, PARAMS_PER_SLOT_V2):
             raise ValueError(
-                f"expected (..., {NUM_SLOTS}, 4) slot_params, got {tuple(slot_params.shape)}",
+                f"expected last dim 4 (v1) or 7 (v2), got {n_params} "
+                f"in shape {tuple(slot_params.shape)}",
             )
 
         freq = slot_params[..., 0]
@@ -232,15 +350,36 @@ class BiquadResponseLayer:
         q = slot_params[..., 2]
         enabled = slot_params[..., 3]
 
-        per_slot_db = _low_shelf_log_mag_db(
-            freq_hz=freq,
-            gain_db=gain,
-            q=q,
-            enabled=enabled,
-            eval_freqs_hz=self.eval_freqs_hz,
-            fs=self.fs,
-        )
-        # per_slot_db: (batch, NUM_SLOTS, n_freqs) → sum across slot dim.
+        if n_params == PARAMS_PER_SLOT:
+            # v1: fixed LowShelf topology.
+            per_slot_db = _low_shelf_log_mag_db(
+                freq, gain, q, enabled, self.eval_freqs_hz, self.fs,
+            )
+        else:
+            # v2: soft type selection. Compute all three types' responses,
+            # softmax-blend them per slot.
+            type_logits = slot_params[..., 4:7]  # (batch, NUM_SLOTS, 3)
+            type_weights = torch.softmax(type_logits, dim=-1)
+
+            ls_db = _low_shelf_log_mag_db(
+                freq, gain, q, enabled, self.eval_freqs_hz, self.fs,
+            )
+            hs_db = _high_shelf_log_mag_db(
+                freq, gain, q, enabled, self.eval_freqs_hz, self.fs,
+            )
+            peq_db = _peaking_eq_log_mag_db(
+                freq, gain, q, enabled, self.eval_freqs_hz, self.fs,
+            )
+
+            # type_weights: (batch, NUM_SLOTS, 3) → unsqueeze to
+            # (batch, NUM_SLOTS, 3, 1) then broadcast against
+            # (batch, NUM_SLOTS, n_freqs).
+            w_ls = type_weights[..., 0].unsqueeze(-1)
+            w_hs = type_weights[..., 1].unsqueeze(-1)
+            w_pq = type_weights[..., 2].unsqueeze(-1)
+
+            per_slot_db = w_ls * ls_db + w_hs * hs_db + w_pq * peq_db
+
         return per_slot_db.sum(dim=-2)
 
 
@@ -263,7 +402,9 @@ def _maybe_import_nn():
 
 
 class FilterChainPredictor:
-    """Feature vector → ``(batch, NUM_SLOTS, 4)`` filter chain params.
+    """Feature vector → ``(batch, NUM_SLOTS, K)`` filter chain params.
+
+    K = 4 for v1 (E85, LowShelf-only) or 7 for v2 (E86, multi-type).
 
     Shared MLP trunk, then a per-slot head. Output activations map raw
     linear outputs to valid physical ranges:
@@ -273,11 +414,9 @@ class FilterChainPredictor:
     - ``q``:    ``sigmoid`` → scaled to ``[Q_MIN, Q_MAX]``
     - ``enabled``: ``sigmoid`` → ``[0, 1]`` (soft at train time, hard
       threshold at 0.5 for inference filter extraction)
-
-    Factored as a free-standing class rather than ``nn.Module`` so we
-    can construct it even in environments without torch (e.g. CI) —
-    torch is imported lazily on first use. The underlying trunk lives
-    on ``self._trunk`` which IS an ``nn.Module``.
+    - ``type_logits`` (v2 only): 3 raw scalars per slot — softmaxed in
+      BiquadResponseLayer during training, hard-argmaxed in
+      ``predict_filters()`` at inference.
     """
 
     def __init__(
@@ -286,12 +425,15 @@ class FilterChainPredictor:
         hidden_dim: int = 256,
         n_hidden_layers: int = 3,
         device: str = "cpu",
+        multi_type: bool = False,
     ):
         torch, nn = _maybe_import_nn()
         self.n_features = n_features
         self.hidden_dim = hidden_dim
         self.n_hidden_layers = n_hidden_layers
         self.device = device
+        self.multi_type = multi_type
+        self._params_per_slot = PARAMS_PER_SLOT_V2 if multi_type else PARAMS_PER_SLOT
 
         layers: list = []
         in_dim = n_features
@@ -300,8 +442,7 @@ class FilterChainPredictor:
             layers.append(nn.ReLU())
             layers.append(nn.BatchNorm1d(hidden_dim))
             in_dim = hidden_dim
-        # Output: NUM_SLOTS * PARAMS_PER_SLOT raw values, reshaped downstream.
-        layers.append(nn.Linear(in_dim, NUM_SLOTS * PARAMS_PER_SLOT))
+        layers.append(nn.Linear(in_dim, NUM_SLOTS * self._params_per_slot))
         self._trunk = nn.Sequential(*layers).to(device)
 
     def parameters(self):
@@ -329,13 +470,12 @@ class FilterChainPredictor:
         """Forward pass.
 
         ``x`` shape ``(batch, n_features)`` → output shape
-        ``(batch, NUM_SLOTS, 4)`` with each column already in valid
-        physical ranges.
+        ``(batch, NUM_SLOTS, 4)`` (v1) or ``(batch, NUM_SLOTS, 7)`` (v2).
         """
         import torch
 
-        raw = self._trunk(x)  # (batch, NUM_SLOTS * PARAMS_PER_SLOT)
-        raw = raw.view(-1, NUM_SLOTS, PARAMS_PER_SLOT)
+        raw = self._trunk(x)
+        raw = raw.view(-1, NUM_SLOTS, self._params_per_slot)
 
         freq_raw = raw[..., 0]
         gain_raw = raw[..., 1]
@@ -343,18 +483,28 @@ class FilterChainPredictor:
         enabled_raw = raw[..., 3]
 
         freq = FREQ_MIN_HZ + (FREQ_MAX_HZ - FREQ_MIN_HZ) * torch.sigmoid(freq_raw)
-        gain = GAIN_MAX_DB * torch.tanh(gain_raw)  # symmetric ±15 dB
+        gain = GAIN_MAX_DB * torch.tanh(gain_raw)
         q = Q_MIN + (Q_MAX - Q_MIN) * torch.sigmoid(q_raw)
         enabled = torch.sigmoid(enabled_raw)
 
+        if self.multi_type:
+            # Type logits are passed through RAW — softmax happens in
+            # BiquadResponseLayer for training, argmax in predict_filters
+            # for inference. No activation here.
+            type_logits = raw[..., 4:7]
+            return torch.stack([freq, gain, q, enabled], dim=-1), type_logits
         return torch.stack([freq, gain, q, enabled], dim=-1)
 
     def predict_filters(self, feature_vector: np.ndarray) -> list[dict]:
         """Convenience: 1-D feature vector → list of filter dicts (catalogue schema).
 
         Used by the advisor wrapper at inference time. Applies a hard
-        threshold (enabled > 0.5) and returns LowShelf dicts matching
-        the format ``catalogue_entry_to_labels`` expects.
+        threshold (enabled > 0.5) and returns filter dicts matching the
+        catalogue schema.
+
+        v1 (E85): all LowShelf.
+        v2 (E86): hard-argmax picks the highest type logit per slot →
+        LowShelf, HighShelf, or PeakingEQ.
         """
         import torch
 
@@ -363,16 +513,28 @@ class FilterChainPredictor:
             x = torch.as_tensor(
                 feature_vector, dtype=torch.float32, device=self.device,
             ).unsqueeze(0)
-            slot_params = self(x)  # (1, NUM_SLOTS, 4)
-        slot_params = slot_params[0].cpu().numpy()
+            result = self(x)
+
+        if self.multi_type:
+            slot_params, type_logits = result
+            slot_params = slot_params[0].cpu().numpy()
+            type_logits = type_logits[0].cpu().numpy()
+        else:
+            slot_params = result[0].cpu().numpy()
+            type_logits = None
 
         filters: list[dict] = []
         for i in range(NUM_SLOTS):
             freq, gain, q, en = slot_params[i]
             if en < 0.5 or abs(gain) < 0.5:
                 continue
+            if type_logits is not None:
+                type_idx = int(np.argmax(type_logits[i]))
+                ftype = FILTER_TYPE_NAMES[type_idx]
+            else:
+                ftype = "LowShelf"
             filters.append({
-                "type": "LowShelf",
+                "type": ftype,
                 "freq": float(np.clip(freq, FREQ_MIN_HZ, FREQ_MAX_HZ)),
                 "gain": float(np.clip(gain, GAIN_MIN_DB, GAIN_MAX_DB)),
                 "q": float(np.clip(q, Q_MIN, Q_MAX)),
@@ -398,6 +560,7 @@ class E85TrainingConfig:
     hidden_dim: int = 256
     n_hidden_layers: int = 3
     device: str = "cpu"
+    multi_type: bool = False   # E86: softmax over LowShelf/HighShelf/PeakingEQ
 
 
 def _target_response_from_entry(entry: dict, eval_freqs_hz: np.ndarray, fs: int) -> np.ndarray:
@@ -408,27 +571,40 @@ def _target_response_from_entry(entry: dict, eval_freqs_hz: np.ndarray, fs: int)
 
 
 def _teacher_predicted_params(
-    teacher_model, X: np.ndarray,
-) -> np.ndarray:
-    """Run the XGBoost teacher and decode its 36-dim output into per-slot params.
+    teacher_model, X: np.ndarray, multi_type: bool = False,
+) -> "np.ndarray | tuple[np.ndarray, np.ndarray]":
+    """Run the XGBoost teacher and decode into per-slot params.
 
-    Returns shape ``(n, NUM_SLOTS, 4)`` — (freq, gain, q, enabled) per slot.
-    Used for the Stage 1 MSE warm-start target.
+    v1: returns ``(n, NUM_SLOTS, 4)`` — (freq, gain, q, enabled).
+    v2 (multi_type=True): returns ``((n, NUM_SLOTS, 4), (n, NUM_SLOTS, 3))``
+    where the second array is one-hot type targets for the warm-start.
     """
-    from model.auto_beq_nn import MAX_FILTER_SLOTS, N_PER_SLOT, labels_to_filters
+    from model.auto_beq_nn import labels_to_filters
 
-    raw = teacher_model.predict(X)  # (n, 36)
-    out = np.zeros((len(X), NUM_SLOTS, 4), dtype=np.float32)
+    _TYPE_TO_IDX = {"LowShelf": 0, "HighShelf": 1, "PeakingEQ": 2}
+
+    raw = teacher_model.predict(X)
+    params = np.zeros((len(X), NUM_SLOTS, 4), dtype=np.float32)
+    type_targets = np.zeros((len(X), NUM_SLOTS, N_FILTER_TYPES), dtype=np.float32)
+    # Default type target: LowShelf (index 0) with high logit.
+    type_targets[:, :, 0] = 5.0  # strong LowShelf bias for empty slots
+
     for i, y in enumerate(raw):
         filters = labels_to_filters(y)
         for slot_idx in range(min(NUM_SLOTS, len(filters))):
             f = filters[slot_idx]
-            out[i, slot_idx, 0] = float(f.get("freq", 20.0))
-            out[i, slot_idx, 1] = float(f.get("gain", 0.0))
-            out[i, slot_idx, 2] = float(f.get("q", 0.9))
-            out[i, slot_idx, 3] = 1.0  # enabled
-        # Remaining slots stay zeroed with enabled=0
-    return out
+            params[i, slot_idx, 0] = float(f.get("freq", 20.0))
+            params[i, slot_idx, 1] = float(f.get("gain", 0.0))
+            params[i, slot_idx, 2] = float(f.get("q", 0.9))
+            params[i, slot_idx, 3] = 1.0
+            if multi_type:
+                tidx = _TYPE_TO_IDX.get(f.get("type", "LowShelf"), 0)
+                type_targets[i, slot_idx, :] = 0.0
+                type_targets[i, slot_idx, tidx] = 5.0  # one-hot-ish logit
+
+    if multi_type:
+        return params, type_targets
+    return params
 
 
 def train_e85_differentiable_dsp(
@@ -458,11 +634,13 @@ def train_e85_differentiable_dsp(
     if config is None:
         config = E85TrainingConfig()
 
+    multi_type = getattr(config, "multi_type", False)
     predictor = FilterChainPredictor(
         n_features=X_train.shape[1],
         hidden_dim=config.hidden_dim,
         n_hidden_layers=config.n_hidden_layers,
         device=config.device,
+        multi_type=multi_type,
     )
 
     # Band mask for Stage 2 acoustic loss — BEQ only cares about 5-80 Hz.
@@ -487,8 +665,16 @@ def train_e85_differentiable_dsp(
 
     # Stage 1 warm-start target from the XGBoost teacher.
     log.info("E85 prep: cloning teacher's filter-param predictions (MSE warm-start target)…")
-    teacher_params_np = _teacher_predicted_params(teacher_model, X_train)
-    teacher_params = torch.tensor(teacher_params_np, device=config.device)
+    if multi_type:
+        teacher_params_np, teacher_types_np = _teacher_predicted_params(
+            teacher_model, X_train, multi_type=True,
+        )
+        teacher_params = torch.tensor(teacher_params_np, device=config.device)
+        teacher_types = torch.tensor(teacher_types_np, device=config.device)
+    else:
+        teacher_params_np = _teacher_predicted_params(teacher_model, X_train)
+        teacher_params = torch.tensor(teacher_params_np, device=config.device)
+        teacher_types = None
 
     biquad_layer = BiquadResponseLayer(eval_freqs_hz, fs=fs)
 
@@ -510,8 +696,14 @@ def train_e85_differentiable_dsp(
             idx = perm[start:start + config.batch_size]
             xb = X_t[idx]
             yb = teacher_params[idx]
-            pred = predictor(xb)  # (b, NUM_SLOTS, 4)
-            loss = nn.functional.mse_loss(pred, yb)
+            result = predictor(xb)
+            if multi_type:
+                pred_params, pred_type_logits = result
+                loss_params = nn.functional.mse_loss(pred_params, yb)
+                loss_types = nn.functional.mse_loss(pred_type_logits, teacher_types[idx])
+                loss = loss_params + 0.5 * loss_types
+            else:
+                loss = nn.functional.mse_loss(result, yb)
             optim_warm.zero_grad()
             loss.backward()
             optim_warm.step()
@@ -538,8 +730,15 @@ def train_e85_differentiable_dsp(
             idx = perm[start:start + config.batch_size]
             xb = X_t[idx]
             target_b = target_resp[idx]
-            pred_params = predictor(xb)
-            pred_resp = biquad_layer(pred_params)
+            result = predictor(xb)
+            if multi_type:
+                pred_params, pred_type_logits = result
+                # Concatenate type logits into the slot_params tensor so
+                # BiquadResponseLayer can use them for soft blending.
+                full_params = torch.cat([pred_params, pred_type_logits], dim=-1)
+            else:
+                full_params = result
+            pred_resp = biquad_layer(full_params)
             diff = (pred_resp - target_b) * band_mask
             loss = (diff ** 2).sum(dim=-1).mean() / band_mask.sum()
             optim_ac.zero_grad()
@@ -585,6 +784,7 @@ def save_torch_predictor(predictor: FilterChainPredictor, path: str) -> None:
         "n_features": predictor.n_features,
         "hidden_dim": predictor.hidden_dim,
         "n_hidden_layers": predictor.n_hidden_layers,
+        "multi_type": predictor.multi_type,
     }, path)
     log.info("E85 predictor saved to %s", path)
 
@@ -598,6 +798,7 @@ def load_torch_predictor(path: str, device: str = "cpu") -> FilterChainPredictor
         hidden_dim=int(blob["hidden_dim"]),
         n_hidden_layers=int(blob["n_hidden_layers"]),
         device=device,
+        multi_type=bool(blob.get("multi_type", False)),
     )
     predictor.load_state_dict(blob["state_dict"])
     predictor.eval()

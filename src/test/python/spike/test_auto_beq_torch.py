@@ -231,6 +231,129 @@ def test_filter_chain_predictor_predict_filters_roundtrip():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# E86 — Multi-type topology (HighShelf + PeakingEQ parity)
+# ---------------------------------------------------------------------------
+
+
+def test_high_shelf_matches_numpy():
+    """HighShelf biquad: torch layer vs scipy freqz within 0.01 dB."""
+    import torch
+    from model.auto_beq import evaluate_filter_chain
+    from model.auto_beq_torch import BiquadResponseLayer, NUM_SLOTS, PARAMS_PER_SLOT_V2
+
+    freqs = _make_grid()
+    filters = [{"type": "HighShelf", "freq": 40.0, "gain": 4.0, "q": 1.0}]
+    numpy_response = evaluate_filter_chain(filters, freqs, fs=1000)
+
+    slot_params = torch.zeros(1, NUM_SLOTS, PARAMS_PER_SLOT_V2, dtype=torch.float64)
+    slot_params[0, 0, 0] = 40.0    # freq
+    slot_params[0, 0, 1] = 4.0     # gain
+    slot_params[0, 0, 2] = 1.0     # q
+    slot_params[0, 0, 3] = 1.0     # enabled
+    slot_params[0, 0, 4] = -10.0   # LS logit (low)
+    slot_params[0, 0, 5] = 10.0    # HS logit (high → picks HighShelf)
+    slot_params[0, 0, 6] = -10.0   # PEQ logit (low)
+
+    layer = BiquadResponseLayer(eval_freqs_hz=freqs, fs=1000)
+    torch_response = layer(slot_params)[0].detach().numpy()
+
+    band_mask = (freqs >= 5.0) & (freqs <= 80.0)
+    max_diff = float(np.max(np.abs(torch_response[band_mask] - numpy_response[band_mask])))
+    assert max_diff < 0.01, f"HighShelf drift: {max_diff:.4f} dB"
+
+
+def test_peaking_eq_matches_numpy():
+    """PeakingEQ biquad: torch layer vs scipy freqz within 0.01 dB."""
+    import torch
+    from model.auto_beq import evaluate_filter_chain
+    from model.auto_beq_torch import BiquadResponseLayer, NUM_SLOTS, PARAMS_PER_SLOT_V2
+
+    freqs = _make_grid()
+    filters = [{"type": "PeakingEQ", "freq": 25.0, "gain": 3.0, "q": 1.5}]
+    numpy_response = evaluate_filter_chain(filters, freqs, fs=1000)
+
+    slot_params = torch.zeros(1, NUM_SLOTS, PARAMS_PER_SLOT_V2, dtype=torch.float64)
+    slot_params[0, 0, 0] = 25.0
+    slot_params[0, 0, 1] = 3.0
+    slot_params[0, 0, 2] = 1.5
+    slot_params[0, 0, 3] = 1.0
+    slot_params[0, 0, 4] = -10.0   # LS low
+    slot_params[0, 0, 5] = -10.0   # HS low
+    slot_params[0, 0, 6] = 10.0    # PEQ high
+
+    layer = BiquadResponseLayer(eval_freqs_hz=freqs, fs=1000)
+    torch_response = layer(slot_params)[0].detach().numpy()
+
+    band_mask = (freqs >= 5.0) & (freqs <= 80.0)
+    max_diff = float(np.max(np.abs(torch_response[band_mask] - numpy_response[band_mask])))
+    assert max_diff < 0.01, f"PeakingEQ drift: {max_diff:.4f} dB"
+
+
+def test_multi_type_predictor_shape_and_types():
+    """Multi-type predictor outputs 7-dim slot params + type selection works."""
+    import torch
+    from model.auto_beq_torch import FilterChainPredictor, NUM_SLOTS
+
+    predictor = FilterChainPredictor(n_features=102, multi_type=True)
+    predictor.eval()
+    x = torch.randn(4, 102)
+    with torch.no_grad():
+        params, type_logits = predictor(x)
+    assert params.shape == (4, NUM_SLOTS, 4)
+    assert type_logits.shape == (4, NUM_SLOTS, 3)
+
+    # predict_filters should return typed filter dicts.
+    filters = predictor.predict_filters(x[0].numpy())
+    for f in filters:
+        assert f["type"] in ("LowShelf", "HighShelf", "PeakingEQ")
+
+
+def test_multi_type_mixed_chain_matches_numpy():
+    """A chain with one LS + one HS + one PEQ matches numpy evaluate_filter_chain."""
+    import torch
+    from model.auto_beq import evaluate_filter_chain
+    from model.auto_beq_torch import BiquadResponseLayer, NUM_SLOTS, PARAMS_PER_SLOT_V2
+
+    freqs = _make_grid()
+    filters = [
+        {"type": "LowShelf", "freq": 15.0, "gain": 5.0, "q": 0.8},
+        {"type": "HighShelf", "freq": 50.0, "gain": 3.0, "q": 1.0},
+        {"type": "PeakingEQ", "freq": 30.0, "gain": 2.0, "q": 2.0},
+    ]
+    numpy_response = evaluate_filter_chain(filters, freqs, fs=1000)
+
+    slot_params = torch.zeros(1, NUM_SLOTS, PARAMS_PER_SLOT_V2, dtype=torch.float64)
+    type_configs = [
+        (15.0, 5.0, 0.8, [10, -10, -10]),   # LS
+        (50.0, 3.0, 1.0, [-10, 10, -10]),    # HS
+        (30.0, 2.0, 2.0, [-10, -10, 10]),    # PEQ
+    ]
+    for i, (f, g, q, tl) in enumerate(type_configs):
+        slot_params[0, i, 0] = f
+        slot_params[0, i, 1] = g
+        slot_params[0, i, 2] = q
+        slot_params[0, i, 3] = 1.0
+        slot_params[0, i, 4] = tl[0]
+        slot_params[0, i, 5] = tl[1]
+        slot_params[0, i, 6] = tl[2]
+
+    layer = BiquadResponseLayer(eval_freqs_hz=freqs, fs=1000)
+    torch_response = layer(slot_params)[0].detach().numpy()
+
+    band_mask = (freqs >= 5.0) & (freqs <= 80.0)
+    max_diff = float(np.max(np.abs(torch_response[band_mask] - numpy_response[band_mask])))
+    assert max_diff < 0.05, (
+        f"mixed LS+HS+PEQ chain drift: {max_diff:.4f} dB "
+        f"(soft blending introduces slight interpolation — 0.05 dB tolerance)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Save / load round-trip
+# ---------------------------------------------------------------------------
+
+
 def test_save_load_torch_predictor_roundtrip(tmp_path):
     """A saved predictor loads back with identical output for the same input."""
     import torch
