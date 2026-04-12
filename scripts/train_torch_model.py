@@ -47,7 +47,7 @@ def main():
         help="Override output path (default: {beq-dir}/e85_torch_filter.pt).",
     )
     parser.add_argument("--warm-epochs", type=int, default=10)
-    parser.add_argument("--acoustic-epochs", type=int, default=20)
+    parser.add_argument("--acoustic-epochs", type=int, default=100)
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--n-hidden-layers", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -133,6 +133,7 @@ def main():
         hidden_dim=args.hidden_dim,
         n_hidden_layers=args.n_hidden_layers,
         device="cpu",
+        cosine_annealing=True,  # E87: cosine LR schedule → 1.33 dB
     )
     predictor, stats = train_e85_differentiable_dsp(
         X_train=X_train,

@@ -561,6 +561,7 @@ class E85TrainingConfig:
     n_hidden_layers: int = 3
     device: str = "cpu"
     multi_type: bool = False   # E86: softmax over LowShelf/HighShelf/PeakingEQ
+    cosine_annealing: bool = False  # E87: cosine LR schedule for acoustic stage
 
 
 def _target_response_from_entry(entry: dict, eval_freqs_hz: np.ndarray, fs: int) -> np.ndarray:
@@ -721,6 +722,11 @@ def train_e85_differentiable_dsp(
         config.band_lo_hz, config.band_hi_hz,
     )
     optim_ac = torch.optim.Adam(predictor.parameters(), lr=config.learning_rate_acoustic)
+    scheduler = None
+    if config.cosine_annealing:
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optim_ac, T_max=config.n_epochs_acoustic, eta_min=1e-6,
+        )
     predictor.train()
     for epoch in range(config.n_epochs_acoustic):
         perm = torch.randperm(n, device=config.device)
@@ -746,9 +752,12 @@ def train_e85_differentiable_dsp(
             optim_ac.step()
             epoch_loss += float(loss.detach())
             n_batches += 1
+        if scheduler is not None:
+            scheduler.step()
+        cur_lr = optim_ac.param_groups[0]["lr"]
         log.info(
-            "  acoustic epoch %d/%d: band-masked mse_db2=%.4f",
-            epoch + 1, config.n_epochs_acoustic, epoch_loss / max(1, n_batches),
+            "  acoustic epoch %d/%d: band-masked mse_db2=%.4f (lr=%.1e)",
+            epoch + 1, config.n_epochs_acoustic, epoch_loss / max(1, n_batches), cur_lr,
         )
 
     stats = {
