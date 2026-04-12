@@ -3787,7 +3787,17 @@ noise.  Rebalancing fixed it.
       learning steeper rolloffs. See
       [`profiles/jjk_v2_comparison_report.md`](../../profiles/jjk_v2_comparison_report.md)
       for the full breakdown.
-- [ ] E78 baseline variance debug — still open, hygiene work
+- [x] E78 baseline variance debug — **resolved**: the 0.14 dB gap
+      (2.83 vs 2.69 dB) was from unstable entry ordering in the old
+      pipeline. `discover_wav_catalogue_pairs` used to return entries
+      in filesystem walk order (non-deterministic across mounts/runs).
+      The current pipeline uses `discover_wav_catalogue_pairs_cached()`
+      which returns a `sorted()` list by path, making the
+      `train_test_split(random_state=42)` split deterministic.
+      Verification: E82 baseline across 3 independent invocations on
+      the 1279-WAV cache (E84 test=1.71, tier1 comparison=1.70,
+      E85 standalone=1.70 dB) — ±0.01 dB jitter, within
+      floating-point noise. Closed.
 - [x] Document "50:1 weighted hybrid plain XGBoost" in the
       `Current production model` section at the top of this file
       (done — see the updated section at line 62)
@@ -3953,6 +3963,106 @@ and empirically wasn't.
 **Experiment test**: `test_e83_foundation_features` in
 `src/test/python/spike/test_auto_beq_nn_real.py`
 
-### E85 — Differentiable DSP (T1.2)
+### E85 — Differentiable DSP with acoustic loss (T1.2) — NEW CHAMPION
 
-**Status**: not yet started. Requires Phase 2 (torch unblocker) first.
+**Hypothesis**: the fundamental limitation of E82 and all prior
+experiments is the training objective. XGBoost minimises mean squared
+error on filter parameters (frequency, gain, Q values) — but two very
+different parameter sets can produce nearly identical acoustic
+responses. The model wastes capacity matching exact parameter values
+instead of matching what matters: the sound. A neural network trained
+through a differentiable biquad layer on the actual acoustic response
+error should outperform any param-MSE model regardless of feature
+engineering or data strategy.
+
+**Method**: a small neural network (3-layer, 256-wide, ~200K params)
+that consumes the same 102-dim feature vector as E82 and outputs 6
+filter slots × 4 params (frequency, gain, Q, enabled). All outputs
+are range-clamped via sigmoid/tanh activations (5–80 Hz, ±15 dB,
+Q 0.3–4.0). Fixed LowShelf topology for all slots (no type selection
+in v1).
+
+The key innovation: a **differentiable biquad response layer** that
+evaluates the predicted filter chain's log-magnitude response on the
+BEQ frequency grid using the closed-form `|H(e^jw)|²` formula in
+real arithmetic (no complex tensors). Gradients flow cleanly back
+through sin/cos/sqrt of the biquad coefficients. The training loss is
+the band-masked (5–80 Hz) squared dB difference between the predicted
+response and the target response — this IS the production evaluation
+metric, not a proxy.
+
+Two-stage training:
+- **Stage 1 — MSE warm-start** (10 epochs): clone the E82 XGBoost
+  teacher's filter-param predictions. Gets the network into a
+  reasonable region of parameter space before switching to the
+  non-convex acoustic loss.
+- **Stage 2 — acoustic-loss fine-tune** (20 epochs): minimise the
+  direct acoustic match error through the differentiable biquad layer.
+
+Total training time: **2.4 seconds** on CPU (vs E82's 30 seconds for
+XGBoost). Model size: **661 KB** (vs E82's 8 MB).
+
+**Tier 1 unified comparison result** (1023 train / 255 test,
+stratified by rolloff severity, random_state=42, full 1279-WAV cache):
+
+| Experiment | mean dB | max dB | Δ vs E82 | train time | verdict |
+|---|---|---|---|---|---|
+| E82 baseline (plain XGB) | 1.70 | 9.92 | — | 29.6 s | reference |
+| E83 Whisper-tiny (+384 dims) | 2.53 | 12.85 | +0.83 | 11.6 min | regression |
+| E84 self-training (11 unmatched) | 1.70 | 9.92 | +0.00 | 1.5 min | no-op |
+| **E85 diff-DSP (acoustic loss)** | **1.49** | 11.45 | **−0.21** | **2.4 s** | **NEW CHAMPION** |
+
+**Per-author breakdown** — E85 crushes the previously-hardest authors:
+
+| Author | E82 | E85 | Δ | Winner |
+|---|---|---|---|---|
+| **mobe1969** | 2.47 | **1.74** | **−0.73** | E85 |
+| **t1g8rsfan** | 1.53 | **0.81** | **−0.72** | E85 |
+| kaelaria | 1.92 | 1.72 | −0.20 | E85 |
+| aron7awol | 1.33 | 1.43 | +0.10 | E82 |
+| halcyon888 | 0.54 | 0.61 | +0.07 | E82 |
+| remixmark | 0.88 | 1.40 | +0.52 | E82 |
+
+**Why it works**: the acoustic loss sidesteps the proxy-objective
+problem. E82's MSE penalises "wrong numbers" even when two different
+parameter sets produce the same sound. E85 is free to find ANY
+parameter combination that produces the right acoustic result. This
+matters most for:
+- **mobe1969** (−0.73 dB): uses unusual parameter values that look
+  "wrong" to MSE but are acoustically valid.
+- **t1g8rsfan** (−0.72 dB): similar pattern — non-standard filter
+  choices that MSE penalises but acoustic loss accepts.
+- The easy authors (aron7awol, halcyon888) were already well-served
+  by param-MSE, so E85's different optimisation landscape introduces
+  slight regressions there.
+
+**Caveats**:
+- **Max error worse** (11.45 vs 9.92): some titles regress because
+  the fixed LowShelf-only topology can't reach HighShelf/PeakingEQ
+  targets in the catalogue. Adding softmax over filter types per slot
+  (Phase 2 item 6) should fix this.
+- **3/6 authors regress** slightly (+0.07 to +0.52 dB). A future
+  ensemble router (Phase 2 item 8) could use E82 for those authors
+  and E85 for the others.
+- **Only 20 acoustic epochs** in 2.4s total. More epochs + learning
+  rate scheduling (Phase 2 item 7) might squeeze another 0.1 dB.
+
+**JJK S2 regeneration** (23 episodes, E85 production model):
+E85 produces **fewer but more confident filters** than E82:
+4.7 filters/episode (vs 5.0), max gain/filter 5.4 dB (vs 3.6 dB).
+Instead of 5 overlapping small shelves, E85 places 3–4 decisive
+shelves at the acoustically correct frequencies. Also occasionally
+predicts **negative-gain filters** (cuts) — something E82 never did
+— when a cut is part of matching the target response shape.
+
+**Verdict**: **E85 is the new production champion** at 1.49 dB mean
+(−0.21 dB vs E82). Passes the ≥0.1 dB decision gate. Deployed via
+`AUTO_BEQ_ADVISOR=torch_differentiable` + `scripts/train_torch_model.py`.
+
+**Code**: `src/main/python/model/auto_beq_torch.py` (BiquadResponseLayer
++ FilterChainPredictor + train_e85_differentiable_dsp), 7 unit tests in
+`test_auto_beq_torch.py`, `TorchFilterAdvisor` in `auto_beq_advisor.py`,
+`scripts/train_torch_model.py` CLI.
+
+**CSV**: `.pytest_cache/tier1_comparison.csv`,
+`.pytest_cache/e85_diff_dsp.csv`

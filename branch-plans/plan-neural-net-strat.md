@@ -2,83 +2,98 @@
 
 ## Goal
 
-End-to-end NN-based auto-BEQ: train a production model from real WAV
-cache + catalogue metadata, wire it into the production inference path,
-regenerate JJK S1/S2 profiles for visual sanity check.
+Train and deploy a production BEQ filter-prediction model from real
+audio data, then explore paradigm-shift techniques beyond the initial
+XGBoost baseline.
 
-## Parent branches
+## Current champion
 
-- `feats/audio-chunks-strat` — chunked P90 audio feature strategy (E62+).
-- `feats/sharp-goldberg` — per-author alpha router (G8 oracle / I1b).
+**E85 differentiable DSP — 1.49 dB mean** on the 1279-WAV full cache
+(1023 train / 255 test stratified split). Trained in 2.4 seconds on
+CPU. A 3-layer neural network (256 hidden, ~200K params) trained
+through a differentiable biquad layer on the acoustic response match
+error — directly optimising for the production metric instead of the
+parameter-MSE proxy that all prior models used.
 
-## Current state
+Deploy via:
+```bash
+# Train (once, ~40s total including XGBoost teacher):
+BEQ_WAV_CACHE=/Volumes/jetspeed/beqdesigner/wav-cache \
+  poetry run python3 scripts/train_torch_model.py
 
-### Completed
+# Generate profiles (sub-second per episode):
+AUTO_BEQ_ADVISOR=torch_differentiable \
+  poetry run python3 scripts/generate_beq_profile.py --media-dir ... --output-dir ...
+```
 
-- **E77–E82 experiment series**: real-audio training regime, per-author
-  isolation, weighted hybrid router. Champion: E82 **50:1 sample-weighted
-  hybrid plain XGBoost, 1.99 dB mean per-title error** on the 219-title
-  test split. Matches real-only accuracy AND retains synthetic coverage
-  for the ~7k catalogue titles without real WAVs.
-- **A1**: `train_production_weighted_hybrid()` in `auto_beq_nn.py` —
-  canonical training function for the production model.
-- **A2**: `scripts/train_production_model.py` — CLI wrapper. Discovers
-  WAV cache, extracts features in parallel, trains, saves model +
-  metadata sidecar to `{beq-dir}/production_model.joblib`.
-- **A3**: `get_advisor("trained_model")` in `auto_beq_advisor.py` now
-  falls back to `{beq-dir}/production_model.joblib` when
-  `AUTO_BEQ_MODEL_PATH` is unset, and warns when the model is >7 days old.
-- **A4**: Unit tests for the training function in
-  `test_auto_beq_nn.py` (happy-path metadata + model shape, empty-real
-  rejection). 24 → 26 unit tests, all passing in ~9 s.
-- **B1**: Cherry-picked 4 commits from `feats/magic-wand` to port
-  `scripts/generate_beq_profile.py` (end-to-end + temp-dir fix + Blu-ray
-  ISO support + author in spectrograph title).
-- **B2**: `generate_beq_profile.py` now loads the saved production
-  model once in `main()` and passes it to `generate_profile()`. Falls
-  back to inline late-fusion α=0.3 training + warning if the saved
-  model is missing. Batch mode no longer retrains per-episode.
+## Progression
 
-### In progress
+| Milestone | Mean dB | Cache | Key change |
+|---|---|---|---|
+| E25b (hash encoding) | 7.43 | 7 | Initial baseline |
+| E34 + late fusion α=0.7 | 2.45 | 220 | One-hot + late fusion |
+| F1 (augmentation σ=0.5) | 2.02 | 67 | Synthetic augmentation |
+| G8 (per-author α) | 1.86–1.92 | 67 | Author lookup at inference |
+| I1b (soft routing) | 2.01 | 67 | Auto author from metadata |
+| E77 (real-only plain XGB) | 2.12 | 932 | Real-audio regime switch |
+| E82 (50:1 weighted hybrid) | 1.99 | 1091 | Real accuracy + synth coverage |
+| E82 on 1279-WAV cache | 1.70 | 1279 | More data alone |
+| **E85 (differentiable DSP)** | **1.49** | **1279** | **Acoustic loss via differentiable biquad** |
 
-- **B3**: Run `generate_beq_profile.py` on JJK S1/S2 episode directories,
-  output to `profiles/jjk_s1_v2/` and `profiles/jjk_s2_v2/`. Prerequisite:
-  train the production model on the current WAV cache via
-  `train_production_model.py`.
+## Shipped this session
 
-### Pending
+| Commit | What |
+|---|---|
+| `b94ad45` | Production model deployment + test segregation (unit/integration/experiment) |
+| `d33e44e` | Paradigm-shift research menu (T1/T2/T3 brainstorm doc) |
+| `1014d99` | E83 foundation-model infra + curve-feature/discovery caches (17.5× speedup) |
+| `563a8c8` | E84 self-training (negative: only 11 unmatched WAVs) |
+| `e347f87` | XGBoost native serializer (unblocks torch coinstall) |
+| `04faac7` | extract_lfe.py uncatalogued-media mode + selection heuristic |
+| `96a2454` | Logging cleanup + 10% progress ticks for long operations |
+| `144804c` | E83 result: Whisper-tiny regresses +0.83 dB |
+| `ec97207` | E85 module + 7 BiquadResponseLayer unit tests |
+| `97aeabd` | Tier 1 unified comparison: E85 = 1.49 dB, new champion |
+| `ff319e7` | E85 production promotion: TorchFilterAdvisor + CLI + JJK S2 regen |
 
-- **B4**: Visual compare new profiles against the earlier I1b-trained
-  profiles (if they exist from earlier runs). Spectrograph overlays +
-  filter-table diffs.
-- **E78**: Baseline variance debug — 0.14 dB gap between harness
-  (2.83 dB) and standalone (2.690 dB) baseline runs. Not blocking
-  production deployment; debug when convenient.
+## What's next
+
+### Immediate (Phase 2)
+
+- **Multi-type topology**: add softmax over (LowShelf, HighShelf,
+  PeakingEQ) per slot. Targets the max-error regression (11.45 vs
+  E82's 9.92) from titles needing non-LowShelf filters.
+- **More epochs + LR schedule**: cosine annealing, 100 acoustic
+  epochs. May squeeze another 0.1 dB.
+- **E82+E85 ensemble router**: dispatch by author (aron7awol/
+  halcyon888/remixmark → E82, mobe1969/t1g8rsfan/kaelaria → E85).
+  Combines both models' strengths at inference via a routing table.
+
+### Blocked on user action
+
+- **NAS unmatched extraction**: re-run extract_lfe.py with
+  `--extract-unmatched 50` on fatman. Then re-run E84 self-training
+  with a real unlabelled pool.
+
+### Later
+
+- A/B profile comparison tool (overlay spectrographs + before/after
+  WAV files for listening tests)
+- Tier 2 experiments (classical DSP features, uncertainty gating,
+  LightGBM/CatBoost, multi-task stacking)
+- Tier 3 speculative bets (RL, diffusion, meta-learning, large LLM)
 
 ## Key files
 
 | File | Role |
 |---|---|
-| `src/main/python/model/auto_beq_nn.py` | `train_production_weighted_hybrid()` + `save_model()` + `load_model()` |
-| `src/main/python/model/auto_beq_advisor.py` | `get_advisor("trained_model")` with `{beq-dir}/production_model.joblib` fallback |
-| `scripts/train_production_model.py` | CLI: train + save production model |
-| `scripts/generate_beq_profile.py` | CLI: load production model, generate per-episode BEQ profiles |
-| `src/test/python/spike/test_auto_beq_nn.py` | 26 unit tests incl. production-weighted-hybrid coverage |
-| `docs/design/auto_beq_experiments.md` | E77–E82 results documented |
-
-## How to use the production model
-
-```bash
-# 1. Train (once per WAV cache update — takes a few minutes on 1k WAVs)
-BEQ_WAV_CACHE=/Volumes/jetspeed/beqdesigner/wav-cache \
-  poetry run python3 scripts/train_production_model.py
-
-# 2. Generate profiles (sub-second per episode)
-poetry run python3 scripts/generate_beq_profile.py \
-  --media-dir "/path/to/Show (2020)/Season 01/" \
-  --output-dir profiles/show_s1/
-```
-
-Or use from tests / other scripts via
-`AUTO_BEQ_ADVISOR=trained_model` (no `AUTO_BEQ_MODEL_PATH` needed —
-will auto-discover the saved model).
+| `src/main/python/model/auto_beq_torch.py` | E85: BiquadResponseLayer + FilterChainPredictor + training |
+| `src/main/python/model/auto_beq_nn.py` | E82 XGBoost + E84 self-training + feature pipeline |
+| `src/main/python/model/auto_beq_advisor.py` | Advisor protocol + TorchFilterAdvisor + get_advisor() |
+| `scripts/train_torch_model.py` | CLI: train E85 production model |
+| `scripts/train_production_model.py` | CLI: train E82 production model |
+| `scripts/generate_beq_profile.py` | End-to-end profile generation (E82 or E85) |
+| `scripts/extract_lfe.py` | LFE WAV cache builder + uncatalogued extraction mode |
+| `scripts/run_tier1_comparison.py` | Unified comparison runner (all 4 experiments) |
+| `docs/design/auto_beq_nn_paradigm_shifts.md` | Research menu (T1/T2/T3) |
+| `docs/design/auto_beq_experiments.md` | Experiment log (E1–E85) |
