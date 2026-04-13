@@ -57,46 +57,50 @@ def menu_select(
     choices: list[tuple[str, object]],
     default: str | None = None,
 ) -> object | None:
-    """Show a menu with section headers rendered via Rich, selection via InquirerPy.
+    """Show a numbered menu rendered with Rich. User types a number to select.
 
-    Section headers (value=None) are printed as styled Rich text above
-    the select prompt. Only the selectable items go into InquirerPy.
-
-    Returns the value of the selected choice, or None if cancelled (Esc).
+    Section headers (value=None) are rendered as styled text.
+    Returns the value of the selected choice, or None if cancelled.
     """
-    from InquirerPy import inquirer
-
-    # Render headers and descriptions with Rich, build flat select list.
     selectable: list[tuple[str, object]] = []
+    idx = 1
+
+    console.print()
+    console.print(f"  [bold]{message}[/bold]")
+
     for label, val in choices:
         if val is None:
-            # Section header — render with Rich.
             console.print()
             console.print(f"  [bold yellow]{label}[/bold yellow]")
         else:
-            # Split into title + description.
             parts = label.split("\n", 1)
             title = parts[0].strip()
+            console.print(f"    [cyan]{idx:>2}[/cyan]. {title}")
             if len(parts) > 1:
-                desc = parts[1].strip()
-                console.print(f"    [dim]{title}[/dim]")
-                for line in desc.split("\n"):
-                    console.print(f"      [dim]{line.strip()}[/dim]")
+                for line in parts[1].strip().split("\n"):
+                    console.print(f"        [dim]{line.strip()}[/dim]")
             selectable.append((title, val))
+            idx += 1
 
     console.print()
 
-    # Simple select with just the titles (no descriptions — they're above).
-    iq_choices = [{"name": title, "value": val} for title, val in selectable]
+    try:
+        raw = console.input("  [dim]Enter number (or Enter to go back):[/dim] ")
+    except (KeyboardInterrupt, EOFError):
+        return None
 
-    return inquirer.select(
-        message=message,
-        choices=iq_choices,
-        default=default,
-        mandatory=False,
-        keybindings={"skip": [{"key": "escape"}, {"key": "left"}]},
-        long_instruction="(↑↓ select, Enter confirm, Esc back)",
-    ).execute()
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        n = int(raw)
+        if 1 <= n <= len(selectable):
+            return selectable[n - 1][1]
+    except ValueError:
+        pass
+
+    console.print("  [red]Invalid choice.[/red]")
+    return "invalid"
 
 
 def fuzzy_select(
