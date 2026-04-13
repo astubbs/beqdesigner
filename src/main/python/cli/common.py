@@ -48,150 +48,67 @@ MEDIA_EXTENSIONS = {".mkv", ".iso", ".mp4", ".m2ts", ".ts", ".avi"}
 
 
 # ---------------------------------------------------------------------------
-# Filterable select — built on prompt_toolkit
+# Filterable select — InquirerPy fuzzy prompt
 # ---------------------------------------------------------------------------
 
 
-def filterable_select(
+def menu_select(
     message: str,
     choices: list[tuple[str, object]],
     default: str | None = None,
 ) -> object | None:
-    """Show a list that filters as the user types.
+    """Show a menu with optional section headers. Arrow keys + Enter to select.
 
     Args:
         message: prompt text shown above the list
         choices: list of (label, value) pairs. If value is ``None``,
-                 the entry is rendered as a non-selectable section header.
-        default: label to pre-select
+                 the entry is rendered as a non-selectable separator.
+        default: default value to pre-select
 
-    Returns the value of the selected choice, or None if cancelled.
+    Returns the value of the selected choice, or None if cancelled (Esc).
     """
-    from prompt_toolkit import Application
-    from prompt_toolkit.formatted_text import FormattedText
-    from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl
+    from InquirerPy import inquirer
+    from InquirerPy.separator import Separator
 
-    # Separate selectable items from section headers.
-    selectable = [(label, val) for label, val in choices if val is not None]
-
-    filter_text = ""
-    selected_idx = 0
-    result: list[object | None] = [None]
-
-    def _filtered() -> list[tuple[str, object]]:
-        if not filter_text:
-            return selectable
-        q = filter_text.lower()
-        return [(label, val) for label, val in selectable if q in label.lower()]
-
-    def _get_display() -> FormattedText:
-        items = _filtered()
-        lines: list[tuple[str, str]] = []
-        # Header.
-        lines.append(("bold", f"? {message}"))
-        if filter_text:
-            lines.append(("", "  (filter: "))
-            lines.append(("fg:yellow bold", filter_text))
-            lines.append(("", ", Esc to clear)"))
+    iq_choices = []
+    for label, val in choices:
+        if val is None:
+            iq_choices.append(Separator(f"── {label} ──"))
         else:
-            lines.append(("fg:ansigray", "  (type to filter, Esc to go back)"))
-        lines.append(("", "\n"))
-        if not items:
-            lines.append(("fg:red", "  No matches.\n"))
-            return FormattedText(lines)
+            iq_choices.append({"name": label, "value": val})
 
-        if filter_text:
-            # When filtering, show flat list (no headers).
-            for i, (label, _val) in enumerate(items):
-                if i == selected_idx:
-                    lines.append(("fg:cyan bold", f"  > {label}\n"))
-                else:
-                    lines.append(("", f"    {label}\n"))
-        else:
-            # Show full list with section headers.
-            sel_idx = 0
-            for label, val in choices:
-                if val is None:
-                    # Section header.
-                    lines.append(("", "\n"))
-                    lines.append(("fg:yellow bold", f"  {label}\n"))
-                else:
-                    if sel_idx == selected_idx:
-                        lines.append(("fg:cyan bold", f"    > {label}\n"))
-                    else:
-                        lines.append(("", f"      {label}\n"))
-                    sel_idx += 1
-        return FormattedText(lines)
+    return inquirer.select(
+        message=message,
+        choices=iq_choices,
+        default=default,
+        mandatory=False,
+    ).execute()
 
-    kb = KeyBindings()
 
-    @kb.add("up")
-    def _up(event):
-        nonlocal selected_idx
-        if selected_idx > 0:
-            selected_idx -= 1
+def fuzzy_select(
+    message: str,
+    choices: list[tuple[str, object]],
+    default: object | None = None,
+) -> object | None:
+    """Show a filterable list for browsing (directories, files). Type to search.
 
-    @kb.add("down")
-    def _down(event):
-        nonlocal selected_idx
-        items = _filtered()
-        if selected_idx < len(items) - 1:
-            selected_idx += 1
+    Args:
+        message: prompt text shown above the list
+        choices: list of (label, value) pairs
+        default: default value to pre-select
 
-    @kb.add("enter")
-    def _enter(event):
-        items = _filtered()
-        if items:
-            result[0] = items[selected_idx][1]
-        event.app.exit()
+    Returns the value of the selected choice, or None if cancelled (Esc).
+    """
+    from InquirerPy import inquirer
 
-    @kb.add("c-c")
-    @kb.add("c-d")
-    def _cancel(event):
-        event.app.exit()
+    iq_choices = [{"name": label, "value": val} for label, val in choices]
 
-    @kb.add("backspace")
-    def _backspace(event):
-        nonlocal filter_text, selected_idx
-        if filter_text:
-            filter_text = filter_text[:-1]
-            selected_idx = 0
-
-    @kb.add("escape")
-    def _escape(event):
-        nonlocal filter_text, selected_idx
-        if filter_text:
-            # Clear filter first.
-            filter_text = ""
-            selected_idx = 0
-        else:
-            # No filter active — go back / cancel.
-            event.app.exit()
-
-    @kb.add("<any>")
-    def _type(event):
-        nonlocal filter_text, selected_idx
-        char = event.data
-        if char.isprintable() and len(char) == 1:
-            filter_text += char
-            selected_idx = 0
-
-    # Set initial selection to default.
-    if default:
-        for i, (label, _) in enumerate(choices):
-            if label == default:
-                selected_idx = i
-                break
-
-    control = FormattedTextControl(_get_display)
-    app: Application = Application(
-        layout=Layout(HSplit([Window(control)])),
-        key_bindings=kb,
-        full_screen=False,
-    )
-    app.run()
-    return result[0]
+    return inquirer.fuzzy(
+        message=message,
+        choices=iq_choices,
+        default=default,
+        mandatory=False,
+    ).execute()
 
 
 # ---------------------------------------------------------------------------

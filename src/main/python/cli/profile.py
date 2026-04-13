@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-import questionary
+from InquirerPy import inquirer
 import typer
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
@@ -24,7 +24,7 @@ from cli.common import (
     CliConfig,
     MEDIA_EXTENSIONS,
     console,
-    filterable_select,
+    fuzzy_select,
     load_config,
     save_config,
     setup_log_file,
@@ -34,20 +34,20 @@ from cli.generate import generate_profile
 
 
 # ---------------------------------------------------------------------------
-# Interactive prompts (questionary)
+# Interactive prompts
 # ---------------------------------------------------------------------------
 
 
 def _prompt_mode() -> str:
     """Ask what the user wants to do."""
-    return questionary.select(
-        "What would you like to do?",
+    return inquirer.select(
+        message="What would you like to do?",
         choices=[
-            questionary.Choice("Generate profile for a single file", value="single"),
-            questionary.Choice("Generate profiles for a directory (batch)", value="batch"),
-            questionary.Choice("Configure preferences", value="config"),
+            {"name": "Generate profile for a single file", "value": "single"},
+            {"name": "Generate profiles for a directory (batch)", "value": "batch"},
+            {"name": "Configure preferences", "value": "config"},
         ],
-    ).ask()
+    ).execute()
 
 
 def _discover_media(directory: Path, recursive: bool = True) -> list[Path]:
@@ -87,20 +87,20 @@ def _prompt_directory(prompt_text: str, config: CliConfig) -> Path | None:
         if not shown_tip:
             console.print("[dim]Tip: press Tab to autocomplete paths, type to filter[/dim]")
             shown_tip = True
-        path_str = questionary.path(
-            prompt_text,
+        path_str = inquirer.filepath(
+            message=prompt_text,
             default=default,
             only_directories=True,
-        ).ask()
+        ).execute()
         if not path_str:
             return None
         selected = Path(path_str).resolve()
         subdirs = [d for d in selected.iterdir() if d.is_dir()] if selected.is_dir() else []
         if len(subdirs) > _LARGE_DIR_THRESHOLD:
-            proceed = questionary.confirm(
-                f"This directory contains {len(subdirs)} subdirectories. Are you sure?",
+            proceed = inquirer.confirm(
+                message=f"This directory contains {len(subdirs)} subdirectories. Are you sure?",
                 default=False,
-            ).ask()
+            ).execute()
             if not proceed:
                 default = path_str
                 continue
@@ -146,7 +146,7 @@ def _prompt_media_file_in(media_dir: Path, config: CliConfig) -> Path | None:
             if not shown_tip:
                 console.print("[dim]Tip: type to filter, arrow keys to navigate, Esc to clear filter[/dim]")
                 shown_tip = True
-            result = filterable_select(
+            result = fuzzy_select(
                 f"Select file or folder ({current.name}):",
                 choices=items,
                 default=default_choice,
@@ -176,7 +176,7 @@ def _prompt_media_file_in(media_dir: Path, config: CliConfig) -> Path | None:
             if not shown_tip:
                 console.print("[dim]Tip: type to filter, arrow keys to navigate, Esc to clear filter[/dim]")
                 shown_tip = True
-            selected = filterable_select(
+            selected = fuzzy_select(
                 f"Select folder ({current.name}):",
                 choices=items,
                 default=default_choice,
@@ -197,20 +197,20 @@ def _prompt_file_select(files: list[Path], base_dir: Path, config: CliConfig) ->
         return None
 
     last = config.last_media_file
-    default_choice = None
-    choices = []
+    default_val = None
+    iq_choices = []
     for f in files:
         rel = str(f.relative_to(base_dir))
-        choices.append(questionary.Choice(title=rel, value=f))
+        iq_choices.append({"name": rel, "value": f})
         if last and str(f) == last:
-            default_choice = rel
+            default_val = f
 
-    selected = questionary.select(
-        "Select media file:",
-        choices=choices,
-        default=default_choice,
-        use_jk_keys=False,
-    ).ask()
+    selected = inquirer.fuzzy(
+        message="Select media file:",
+        choices=iq_choices,
+        default=default_val,
+        mandatory=False,
+    ).execute()
     return selected
 
 
@@ -236,38 +236,37 @@ def _prompt_select_files(media_dir: Path, output_dir: Path) -> list[Path]:
         return []
 
     # Pre-select files that don't already have a profile in the output dir.
-    choices = []
+    iq_choices = []
     for f in files:
         profile_path = Path(output_dir) / f"{f.stem}_beq.json"
         already_done = profile_path.exists()
         label = str(f.relative_to(media_dir))
         if already_done:
             label += "  (profile exists)"
-        choices.append(questionary.Choice(title=label, value=f, checked=not already_done))
+        iq_choices.append({"name": label, "value": f, "enabled": not already_done})
 
-    console.print("[dim]Tip: Space to toggle, a to select all, arrow keys to navigate[/dim]")
-    selected = questionary.checkbox(
-        f"Found {len(files)} media files — select which to process:",
-        choices=choices,
-    ).ask()
+    selected = inquirer.checkbox(
+        message=f"Found {len(files)} media files — select which to process:",
+        choices=iq_choices,
+    ).execute()
     return selected or []
 
 
 def _prompt_author(config: CliConfig) -> str:
     """Prompt for author style, offering saved default."""
-    return questionary.text(
-        "Author style:",
+    return inquirer.text(
+        message="Author style:",
         default=config.author,
-    ).ask() or config.author
+    ).execute() or config.author
 
 
 def _prompt_output_dir(config: CliConfig) -> str:
     """Prompt for output directory."""
-    return questionary.path(
-        "Output directory:",
+    return inquirer.filepath(
+        message="Output directory:",
         default=config.output_dir,
         only_directories=True,
-    ).ask() or config.output_dir
+    ).execute() or config.output_dir
 
 
 def _configure_preferences(config: CliConfig) -> CliConfig:

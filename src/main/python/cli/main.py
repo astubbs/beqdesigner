@@ -24,7 +24,7 @@ from cli.common import (
     REPO_ROOT,
     CliConfig,
     console,
-    filterable_select,
+    menu_select,
     load_config,
     save_config,
     setup_log_file,
@@ -80,7 +80,7 @@ def _interactive_menu_loop(config: CliConfig, verbose: bool) -> None:
     """Show the main menu in a loop until the user quits."""
     while True:
         try:
-            action = filterable_select("What would you like to do?", _MAIN_MENU)
+            action = menu_select("What would you like to do?", _MAIN_MENU)
         except KeyboardInterrupt:
             break
 
@@ -105,7 +105,7 @@ def _advanced_menu_loop(config: CliConfig, verbose: bool) -> None:
     """Show the advanced submenu until the user goes back."""
     while True:
         try:
-            action = filterable_select("Advanced options:", _ADVANCED_MENU)
+            action = menu_select("Advanced options:", _ADVANCED_MENU)
         except KeyboardInterrupt:
             break
 
@@ -151,7 +151,7 @@ def _do_profile(config: CliConfig, verbose: bool) -> None:
 
 def _do_extract(config: CliConfig, verbose: bool) -> None:
     """Extract LFE cache — delegates to extract_lfe."""
-    import questionary
+    from InquirerPy import inquirer
     from spike._auto_beq_helpers import audio_cache_dir
 
     try:
@@ -162,7 +162,7 @@ def _do_extract(config: CliConfig, verbose: bool) -> None:
     media_roots = []
     console.print("[bold]Add media library roots[/bold] (press Enter with empty path to finish):")
     while True:
-        root = questionary.path("Media root (empty to finish):", default="").ask()
+        root = inquirer.filepath(message="Media root (empty to finish):", default="").execute()
         if not root:
             break
         p = Path(root).resolve()
@@ -175,7 +175,7 @@ def _do_extract(config: CliConfig, verbose: bool) -> None:
         console.print("[yellow]No media roots provided.[/yellow]")
         return
 
-    limit = questionary.text("Max titles to extract (0 = unlimited):", default="0").ask()
+    limit = inquirer.text(message="Max titles to extract (0 = unlimited):", default="0").execute()
 
     argv = []
     for r in media_roots:
@@ -199,7 +199,7 @@ def _do_cache_status(config: CliConfig, verbose: bool) -> None:
 
 def _do_verify(config: CliConfig, verbose: bool) -> None:
     """Verify cache integrity — delegates to verify_wav_cache."""
-    import questionary
+    from InquirerPy import inquirer
     from spike._auto_beq_helpers import wav_cache_dir
 
     try:
@@ -207,10 +207,10 @@ def _do_verify(config: CliConfig, verbose: bool) -> None:
     except Exception:
         default_cache = ""
 
-    cache_root = questionary.path("WAV cache root:", default=default_cache).ask()
+    cache_root = inquirer.filepath(message="WAV cache root:", default=default_cache).execute()
     if not cache_root:
         return
-    delete = questionary.confirm("Delete corrupt files?", default=False).ask()
+    delete = inquirer.confirm(message="Delete corrupt files?", default=False).execute()
 
     argv = [cache_root]
     if delete:
@@ -224,9 +224,9 @@ def _do_verify(config: CliConfig, verbose: bool) -> None:
 
 def _do_nn_report(config: CliConfig, verbose: bool) -> None:
     """NN comparison report — delegates to nn_comparison_report."""
-    import questionary
+    from InquirerPy import inquirer
 
-    output = questionary.path("Save report to (empty for stdout):", default="").ask()
+    output = inquirer.filepath(message="Save report to (empty for stdout):", default="").execute()
     argv = []
     if output:
         argv.extend(["--output", output])
@@ -243,10 +243,10 @@ def _do_sweep_discover(config: CliConfig, verbose: bool) -> None:
 
 def _do_sweep_run(config: CliConfig, verbose: bool) -> None:
     """Run sweep pipeline — runs pytest in a subprocess."""
-    import questionary
+    from InquirerPy import inquirer
 
-    limit = questionary.text("Max files to process:", default="10").ask()
-    parallel = questionary.confirm("Run in parallel?", default=False).ask()
+    limit = inquirer.text(message="Max files to process:", default="10").execute()
+    parallel = inquirer.confirm(message="Run in parallel?", default=False).execute()
 
     test_module = "src/test/python/spike/test_auto_beq_library_sweep.py"
     test_func = "test_library_sweep_parallel" if parallel else "test_library_sweep"
