@@ -333,8 +333,9 @@ The three-tier roadmap from the vision brief:
 
 1. **Magic wand button** - wire `propose_filters` to a QPushButton in
    the signal-analysis view.
-2. **Batch CLI** - thin wrapper that walks a folder of media files,
-   calls `propose_filters` per file, writes sidecar `.beq` files.
+2. **Unified CLI** (`scripts/beq.py`) - interactive menu + subcommands
+   for profile generation, LFE extraction, cache management, and sweep
+   analysis. Includes batch processing of directories. *(done)*
 3. **ezBEQ send** - HTTP POST of the filter chain to ezBEQ's `/api/`
    endpoint.
 
@@ -372,13 +373,56 @@ The three-tier roadmap from the vision brief:
 
 ## 8. File layout
 
+### Core model
+
 | Path | Role |
 |---|---|
-| `src/main/python/model/auto_beq.py` | Optimizer module (pure Python, Qt-free) |
+| `src/main/python/model/auto_beq.py` | Filter optimizer (grid, smoothing, evaluate_filter_chain) |
+| `src/main/python/model/auto_beq_nn.py` | NN model (XGBoost late fusion, feature vectors, label encoding) |
+| `src/main/python/model/auto_beq_advisor.py` | Metadata structures (MediaMetadata, CurveFeatures, Advice) |
+| `src/main/python/model/auto_beq_catalogue.py` | BEQ catalogue fetch + disk cache |
+| `src/main/python/model/auto_beq_metadata.py` | TMDb metadata enrichment |
+| `src/main/python/model/iir.py` | Biquad coefficient computation (LowShelf, HighShelf, PeakingEQ) |
+| `src/main/python/model/signal.py` | Audio I/O (Signal class, read_wav_data) |
+| `src/main/python/model/wav_integrity.py` | WAV header validation |
+| `src/test/python/spike/_auto_beq_helpers.py` | Shared helpers: WAV cache, config, audio probing, extraction |
+
+### CLI scripts (user-facing)
+
+| Path | Role | In unified CLI? |
+|---|---|---|
+| `scripts/beq.py` | **Unified CLI** — single entry point, interactive menu + subcommands | Entry point |
+| `scripts/cli_common.py` | Shared CLI utilities (filterable_select, config, banner) | Library |
+| `scripts/beq_profile_cli.py` | Profile generation CLI (menus, progress, directory browser) | `beq.py profile` |
+| `scripts/generate_beq_profile.py` | End-to-end profile generation pipeline | Called by beq_profile_cli |
+| `scripts/extract_lfe.py` | LFE extraction to portable WAV cache (standalone, Docker-safe) | `beq.py extract` |
+| `scripts/wav_cache_status.py` | WAV cache summary: counts, titles, author breakdown | `beq.py cache-status` |
+| `scripts/verify_wav_cache.py` | WAV cache integrity check, optional corrupt file deletion | `beq.py verify` |
+| `scripts/nn_comparison_report.py` | Compare NN-predicted vs hand-coded BEQ filters (markdown) | `beq.py nn-report` |
+| `scripts/sweep_report.py` | Experiment sweep comparison report from CSV results | `beq.py sweep report` |
+
+### Shell wrappers (orchestration)
+
+| Path | Role | In unified CLI? |
+|---|---|---|
+| `scripts/run-sweep-discover.sh` | Discover media + match catalogue (sets PYTHONPATH, calls module) | `beq.py sweep discover` |
+| `scripts/run-sweep-tests.sh` | Run auto-BEQ pipeline on discovered media (pytest wrapper) | `beq.py sweep run` |
+| `scripts/run-spike-tests.sh` | Run spike test suite (unit + integration) | No (dev tooling) |
+| `scripts/run-advisor-comparison.sh` | Compare all advisor implementations side-by-side | No (research) |
+
+### Internal / dev-only
+
+| Path | Role |
+|---|---|
+| `scripts/spike_auto_beq.py` | CLI playground for testing filter proposals on synthetic data |
+| `scripts/regen_ui.py` | Regenerate Python source from Qt Designer `.ui` files |
+
+### Tests and resources
+
+| Path | Role |
+|---|---|
 | `src/test/python/spike/test_auto_beq.py` | Primary deliverable — parametrised integration test |
+| `src/test/python/spike/test_beq_profile_cli.py` | CLI integration tests (25 tests) |
 | `src/test/python/conftest.py` | `catalogue_snapshot` session fixture |
 | `src/test/resources/auto_beq/database.json` | Committed catalogue snapshot (~55 KB) |
-| `scripts/spike_auto_beq.py` | CLI playground (secondary) |
 | `docs/design/auto_beq.md` | This document |
-
-No changes to existing `model/*.py` modules.

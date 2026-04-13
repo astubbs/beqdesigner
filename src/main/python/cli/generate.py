@@ -4,22 +4,9 @@
 End-to-end pipeline: extract LFE → NN inference → biquad coefficients →
 spectrograph images → TMDb metadata → catalogue-compatible JSON profile.
 
-Usage:
-    # Single episode:
-    poetry run python3 scripts/generate_beq_profile.py \
-      --media "/path/to/Show S01E01.mkv" \
-      --output profile.json
-
-    # Batch (directory of episodes):
-    poetry run python3 scripts/generate_beq_profile.py \
-      --media-dir "/path/to/Show (2020)/Season 01/" \
-      --output-dir profiles/
-
-    # With author style:
-    poetry run python3 scripts/generate_beq_profile.py \
-      --media "/path/to/movie.mkv" \
-      --author aron7awol \
-      --output profile.json
+Usage via unified CLI:
+    bin/beq-designer profile "Show S01E01.mkv"
+    bin/beq-designer profile --batch "./Show (2020)/Season 01/"
 """
 
 from __future__ import annotations
@@ -28,15 +15,8 @@ import argparse
 import hashlib
 import json
 import logging
-import sys
 import time
 from pathlib import Path
-
-# Allow running from repo root.
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-for p in (_REPO_ROOT / "src" / "main" / "python", _REPO_ROOT / "src" / "test" / "python"):
-    if str(p) not in sys.path:
-        sys.path.insert(0, str(p))
 
 import numpy as np
 

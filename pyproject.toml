@@ -46,7 +46,7 @@ xgboost = "^3.2.0"
 scikit-learn = "^1.8.0"
 
 [tool.poetry.scripts]
-ui-gen = "scripts.regen_ui:main"
+ui-gen = "build.regen_ui:main"
 
 [tool.ruff]
 target-version = "py313"

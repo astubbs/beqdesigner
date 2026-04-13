@@ -6,20 +6,15 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Copy only the Python source needed — no heavy deps (scipy, PyQt, etc).
-# All modules used by extract_lfe.py are stdlib-only.
-COPY src/main/python/model/wav_integrity.py src/main/python/model/
-COPY src/main/python/model/auto_beq_catalogue.py src/main/python/model/
-COPY src/main/python/model/media_constants.py src/main/python/model/
-# No spike/ modules needed — extract_lfe.py imports only from model.*
+# Copy the full source tree — simpler than cherry-picking files.
+COPY src/main/python/ src/main/python/
+COPY src/test/python/ src/test/python/
+COPY bin/ bin/
 
 # Make Python packages importable.
-RUN touch src/main/python/model/__init__.py
-
-COPY scripts/extract_lfe.py scripts/
-COPY scripts/verify_wav_cache.py scripts/
-# wav_cache_status.py needs numpy (via spike imports) — run on dev machine, not Docker
+RUN touch src/main/python/model/__init__.py \
+    && touch src/main/python/cli/__init__.py
 
 ENV PYTHONPATH=/app/src/main/python:/app/src/test/python
 
-ENTRYPOINT ["python3", "scripts/extract_lfe.py"]
+ENTRYPOINT ["python3", "src/main/python/cli/extract.py"]

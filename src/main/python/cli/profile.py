@@ -1,202 +1,36 @@
 #!/usr/bin/env python3
 """Interactive CLI for generating BEQ bass-correction profiles.
 
-Run with no arguments for guided menus, or pass a media path directly:
+Run via the unified CLI:
 
-    ./scripts/beq_profile_cli.py                      # interactive menus
-    ./scripts/beq_profile_cli.py "Avatar (2009).mkv"  # single file shortcut
-    ./scripts/beq_profile_cli.py ./media-dir/          # batch shortcut
+    bin/beq-designer profile                      # interactive menus
+    bin/beq-designer profile "Avatar (2009).mkv"  # single file shortcut
+    bin/beq-designer profile ./media-dir/         # batch shortcut
 """
 
 from __future__ import annotations
 
-import os
-import sys
-from pathlib import Path
-
-# Re-exec under poetry if we're not already in the venv.
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-if not os.environ.get("VIRTUAL_ENV"):
-    os.execvp("poetry", ["poetry", "run", "python", str(Path(__file__).resolve()), *sys.argv[1:]])
-
-import json
 import logging
-from dataclasses import dataclass
+import os
+from pathlib import Path
 from typing import Optional
-
-# Allow running from repo root (same hack as other scripts/).
-for _p in (_REPO_ROOT, _REPO_ROOT / "src" / "main" / "python", _REPO_ROOT / "src" / "test" / "python"):
-    if str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
 
 import questionary
 import typer
-from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from scripts.generate_beq_profile import generate_profile
-from spike._auto_beq_helpers import audio_cache_dir, load_settings, save_settings
-
-console = Console()
-
-
-# ---------------------------------------------------------------------------
-# Filterable select — built on prompt_toolkit
-# ---------------------------------------------------------------------------
-
-
-def filterable_select(
-    message: str,
-    choices: list[tuple[str, object]],
-    default: str | None = None,
-) -> object | None:
-    """Show a list that filters as the user types.
-
-    Args:
-        message: prompt text shown above the list
-        choices: list of (label, value) pairs
-        default: label to pre-select
-
-    Returns the value of the selected choice, or None if cancelled.
-    """
-    from prompt_toolkit import Application
-    from prompt_toolkit.formatted_text import FormattedText
-    from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl
-
-    filter_text = ""
-    selected_idx = 0
-    result: list[object | None] = [None]
-
-    def _filtered() -> list[tuple[str, object]]:
-        if not filter_text:
-            return choices
-        q = filter_text.lower()
-        return [(label, val) for label, val in choices if q in label.lower()]
-
-    def _get_display() -> FormattedText:
-        items = _filtered()
-        lines: list[tuple[str, str]] = []
-        # Header.
-        lines.append(("bold", f"? {message}"))
-        if filter_text:
-            lines.append(("", f"  (filter: "))
-            lines.append(("fg:yellow bold", filter_text))
-            lines.append(("", ", Esc to clear)"))
-        else:
-            lines.append(("fg:ansigray", "  (type to filter)"))
-        lines.append(("", "\n"))
-        if not items:
-            lines.append(("fg:red", "  No matches.\n"))
-            return FormattedText(lines)
-        for i, (label, _val) in enumerate(items):
-            if i == selected_idx:
-                lines.append(("fg:cyan bold", f"  > {label}\n"))
-            else:
-                lines.append(("", f"    {label}\n"))
-        return FormattedText(lines)
-
-    kb = KeyBindings()
-
-    @kb.add("up")
-    def _up(event):
-        nonlocal selected_idx
-        if selected_idx > 0:
-            selected_idx -= 1
-
-    @kb.add("down")
-    def _down(event):
-        nonlocal selected_idx
-        items = _filtered()
-        if selected_idx < len(items) - 1:
-            selected_idx += 1
-
-    @kb.add("enter")
-    def _enter(event):
-        items = _filtered()
-        if items:
-            result[0] = items[selected_idx][1]
-        event.app.exit()
-
-    @kb.add("c-c")
-    @kb.add("c-d")
-    def _cancel(event):
-        event.app.exit()
-
-    @kb.add("backspace")
-    def _backspace(event):
-        nonlocal filter_text, selected_idx
-        if filter_text:
-            filter_text = filter_text[:-1]
-            selected_idx = 0
-
-    @kb.add("escape")
-    def _clear_filter(event):
-        nonlocal filter_text, selected_idx
-        filter_text = ""
-        selected_idx = 0
-
-    @kb.add("<any>")
-    def _type(event):
-        nonlocal filter_text, selected_idx
-        char = event.data
-        if char.isprintable() and len(char) == 1:
-            filter_text += char
-            selected_idx = 0
-
-    # Set initial selection to default.
-    if default:
-        for i, (label, _) in enumerate(choices):
-            if label == default:
-                selected_idx = i
-                break
-
-    control = FormattedTextControl(_get_display)
-    app: Application = Application(
-        layout=Layout(HSplit([Window(control)])),
-        key_bindings=kb,
-        full_screen=False,
-    )
-    app.run()
-    return result[0]
-
-MEDIA_EXTENSIONS = {".mkv", ".iso", ".mp4", ".m2ts", ".ts", ".avi"}
-
-# ---------------------------------------------------------------------------
-# Config — reads/writes the shared ~/.config/beqdesigner/settings.json
-# ---------------------------------------------------------------------------
-
-_CLI_KEYS = ("cli_author", "cli_output_dir", "cli_last_media_dir")
-
-
-@dataclass
-class CliConfig:
-    author: str = "auto"
-    output_dir: str = "profiles"
-    last_media_dir: str = ""
-    last_media_file: str = ""
-
-
-def load_config() -> CliConfig:
-    """Load CLI preferences from shared settings.json."""
-    settings = load_settings()
-    return CliConfig(
-        author=settings.get("cli_author", "auto"),
-        output_dir=settings.get("cli_output_dir", "profiles"),
-        last_media_dir=settings.get("cli_last_media_dir", ""),
-        last_media_file=settings.get("cli_last_media_file", ""),
-    )
-
-
-def save_config(config: CliConfig) -> None:
-    """Persist CLI preferences to shared settings.json."""
-    save_settings({
-        "cli_author": config.author,
-        "cli_output_dir": config.output_dir,
-        "cli_last_media_dir": config.last_media_dir,
-        "cli_last_media_file": config.last_media_file,
-    })
+from cli.common import (
+    CliConfig,
+    MEDIA_EXTENSIONS,
+    console,
+    filterable_select,
+    load_config,
+    save_config,
+    setup_log_file,
+    show_banner,
+)
+from cli.generate import generate_profile
 
 
 # ---------------------------------------------------------------------------
@@ -690,47 +524,10 @@ def generate(
 
     config = load_config()
 
-    # Startup banner — show version, branch, and active configuration.
-    import subprocess as _sp
-    try:
-        _branch = _sp.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                          capture_output=True, text=True, cwd=str(_REPO_ROOT)).stdout.strip()
-        _commit = _sp.run(["git", "rev-parse", "--short", "HEAD"],
-                          capture_output=True, text=True, cwd=str(_REPO_ROOT)).stdout.strip()
-    except Exception:
-        _branch, _commit = "unknown", "unknown"
-    try:
-        from importlib.metadata import version as _pkg_version
-        _version = _pkg_version("beqdesigner")
-    except Exception:
-        _version = "dev"
-    try:
-        cache_dir = str(audio_cache_dir())
-    except RuntimeError:
-        cache_dir = "[red]NOT CONFIGURED[/red]"
-    console.print()
-    from rich.panel import Panel
-    # Log file — write all pipeline output to a log alongside profiles.
-    _out_dir = Path(output_dir or config.output_dir)
-    _out_dir.mkdir(parents=True, exist_ok=True)
-    _log_file = _out_dir / "beq_profile.log"
-
-    banner = (
-        f"[bold]Version:[/bold]   {_version} ({_branch} @ {_commit})\n"
-        f"[bold]Output:[/bold]    {config.output_dir}\n"
-        f"[bold]WAV cache:[/bold] {cache_dir}\n"
-        f"[bold]Log file:[/bold]  {_log_file}"
-    )
-    console.print(Panel(banner, title="BEQ Profile Generator", border_style="blue"))
-    _file_handler = logging.FileHandler(_log_file, mode="a", encoding="utf-8")
-    _file_handler.setLevel(logging.DEBUG)
-    _file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-5s %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
-    logging.getLogger().addHandler(_file_handler)
-    # Write banner to log file too.
-    _log_banner = logging.getLogger("beq_profile_cli")
-    # Strip Rich markup for the plain-text log — same content as the banner.
-    import re
-    _log_banner.info(re.sub(r"\[/?[^\]]+\]", "", banner))
+    # Startup banner and log file.
+    _log_file = setup_log_file(output_dir or config.output_dir, log_name="beq_profile.log")
+    plain_banner = show_banner("BEQ Profile Generator", config, log_file=_log_file)
+    logging.getLogger("beq_profile_cli").info(plain_banner)
 
     # --- Interactive mode (no positional arg) ---
     if media is None:

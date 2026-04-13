@@ -108,23 +108,42 @@ accuracy tests.**
 When running accuracy tests, process **one media file at a time**
 so the user can see results incrementally: `AUTO_BEQ_SWEEP_LIMIT=1`.
 
-## Scripts
+## CLI
 
-| Script | Purpose | Executable | Standalone? |
-|---|---|---|---|
-| `scripts/run-sweep-discover.sh` | Discover media + match catalogue | yes | no |
-| `scripts/run-sweep-tests.sh` | Run auto-BEQ pipeline on discovered media | yes | no |
-| `scripts/run-spike-tests.sh` | Full spike test suite (unit + integration) | yes | no |
-| `scripts/spike_auto_beq.py` | Interactive single-title CLI playground | no (run via poetry) | no |
-| `scripts/sweep_report.py` | Generate unified sweep report + session summary | yes | no |
-| `scripts/extract_lfe.py` | Extract LFE WAVs to portable cache. **Standalone** — no project deps, scp to NAS | yes | **yes** |
-| `scripts/verify_wav_cache.py` | Verify WAV cache integrity, delete corrupt files | yes | no (imports wav_integrity) |
-| `scripts/wav_cache_status.py` | Summarise WAV cache: counts, titles, author breakdown, growth | yes | no (imports helpers) |
-| `scripts/nn_comparison_report.py` | Compare NN-predicted vs hand-coded BEQ filters, markdown output | yes | no (imports model + helpers) |
-| `scripts/generate_beq_profile.py` | Generate complete BEQ profiles for uncatalogued media | yes | no (imports model + helpers) |
-| `scripts/beq_profile_cli.py` | Interactive CLI for profile generation (menus, progress bars) | yes (auto-enters poetry venv) | no (imports generate_beq_profile + model) |
-| `docker/Dockerfile` | Docker image: Python 3.13-slim + ffmpeg + project source | — | — |
-| `docker/docker-compose.example.yml` | Example compose config — copy, edit paths, run | — | — |
+All operations are accessed through a single entry point: `bin/beq-designer`.
+Run with no arguments for an interactive menu, or use subcommands directly.
+
+```bash
+bin/beq-designer                        # interactive menu
+bin/beq-designer profile movie.mkv      # generate BEQ profile
+bin/beq-designer extract --media-root . # extract LFE to cache
+bin/beq-designer dev test               # run spike tests
+bin/beq-designer --help                 # list all subcommands
+```
+
+### CLI module layout (`src/main/python/cli/`)
+
+| Module | Purpose |
+|---|---|
+| `cli/main.py` | Unified typer app — menu + all subcommands |
+| `cli/common.py` | Shared utilities (filterable_select, config, banner) |
+| `cli/profile.py` | Profile generation (interactive directory browser, progress) |
+| `cli/generate.py` | Profile pipeline (LFE → NN → biquads → spectrographs → JSON) |
+| `cli/extract.py` | LFE extraction to portable WAV cache |
+| `cli/cache_status.py` | WAV cache summary report |
+| `cli/verify_cache.py` | WAV cache integrity check |
+| `cli/nn_report.py` | NN vs catalogue comparison report |
+| `cli/sweep_report.py` | Experiment sweep comparison report |
+| `cli/spike_playground.py` | Dev: single-title filter proposal test |
+
+### Other files
+
+| Path | Purpose |
+|---|---|
+| `bin/beq-designer` | Entry point (executable, auto-enters poetry venv) |
+| `build/regen_ui.py` | Build tool: regenerate Python from Qt `.ui` files |
+| `docker/Dockerfile` | Docker image for NAS deployment |
+| `docker/docker-compose.example.yml` | Example compose config |
 
 ## Docker (NAS LFE extraction)
 
@@ -155,7 +174,7 @@ docker compose run extract
 docker compose run verify
 
 # Check training set status (run on dev machine, not Docker — needs numpy)
-poetry run python3 scripts/wav_cache_status.py /path/to/wav-cache
+bin/beq-designer cache-status
 ```
 
 **After code changes:** rebuild image and redeploy:
@@ -164,52 +183,26 @@ docker build -f docker/Dockerfile -t beq-extract .
 docker save beq-extract | ssh nas docker load
 ```
 
-All `.sh` scripts must have the executable flag set (`chmod +x`).
-
 ## Running spike tests
 
-**Always use `bash scripts/run-spike-tests.sh` to run spike tests.** Never
-invoke `poetry run pytest` directly for spike tests. The wrapper exists
-so that repeated runs share a single permission approval — each
-distinct `poetry run pytest ...` command line requires a fresh
-approval, which is disruptive during iteration.
-
-The wrapper honours these env vars (set them inline on the same line):
-
-| Var | Purpose | Default |
-|---|---|---|
-| `SPIKE_TEST` | pytest selector (file path or nodeid) | `src/test/python/spike/` (all) |
-| `AUTO_BEQ_ADVISOR` | advisor impl: heuristic / mock / ollama / measurement | `mock` |
-| `SPIKE_VERBOSE` | `1` enables `-s` (no capture) | `0` |
-| Any test-specific env var | passed through to pytest | — |
-
-Canonical invocation pattern (works from the repo root):
+**Use `bin/beq-designer dev test` to run spike tests.**
 
 ```bash
-SPIKE_TEST=src/test/python/spike/test_auto_beq.py \
-  bash scripts/run-spike-tests.sh
+# All spike tests
+bin/beq-designer dev test
+
+# Specific test file
+bin/beq-designer dev test --file src/test/python/spike/test_auto_beq.py
+
+# Single test
+bin/beq-designer dev test --file 'src/test/python/spike/test_auto_beq.py::test_synthetic_roundtrip'
+
+# With specific advisor and verbose output
+bin/beq-designer dev test --advisor measurement --verbose
+
+# Run sweep pipeline
+bin/beq-designer dev sweep --limit 3 --advisor measurement
 ```
-
-For a single test within a file, use `::`:
-
-```bash
-SPIKE_TEST='src/test/python/spike/test_auto_beq.py::test_synthetic_roundtrip' \
-  bash scripts/run-spike-tests.sh
-```
-
-Stack env vars for configuration:
-
-```bash
-AUTO_BEQ_SWEEP_CONFIG=/tmp/sweep.json \
-AUTO_BEQ_SWEEP_LIMIT=3 \
-AUTO_BEQ_ADVISOR=measurement \
-SPIKE_TEST=src/test/python/spike/test_auto_beq_library_sweep.py \
-  bash scripts/run-spike-tests.sh
-```
-
-**Do not** invoke the venv python, `poetry run python`, or `poetry run
-pytest` directly for spike tests. If a new script/runner is needed, add
-it under `scripts/` with a fixed command line.
 
 ## Verifying behaviour
 

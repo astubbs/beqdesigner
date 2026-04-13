@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""BEQ Designer — unified CLI (Bass EQ Designer).
+
+Run with no arguments for interactive menus, or use subcommands:
+
+    bin/beq-designer                        # interactive menu
+    bin/beq-designer profile movie.mkv      # generate profile
+    bin/beq-designer --help                 # list all subcommands
+"""
+
+import os
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[1]
+
+# Re-exec under poetry if we're not already in the venv.
+if not os.environ.get("VIRTUAL_ENV"):
+    os.execvp("poetry", ["poetry", "run", "python", str(Path(__file__).resolve()), *sys.argv[1:]])
+
+# Add source trees to path.
+for p in (_ROOT / "src" / "main" / "python", _ROOT / "src" / "test" / "python"):
+    if str(p) not in sys.path:
+        sys.path.insert(0, str(p))
+
+from cli.main import app
+
+app()

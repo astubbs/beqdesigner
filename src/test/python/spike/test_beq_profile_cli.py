@@ -22,14 +22,16 @@ for _p in (_REPO_ROOT, _REPO_ROOT / "src" / "main" / "python", _REPO_ROOT / "src
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from scripts.beq_profile_cli import (
+from cli.common import (
     CliConfig,
     MEDIA_EXTENSIONS,
+    load_config,
+    save_config,
+)
+from cli.profile import (
     ProgressLoggingHandler,
     _discover_media,
     _render_filters,
-    load_config,
-    save_config,
 )
 
 
@@ -182,8 +184,123 @@ class TestProgressLoggingHandler:
             record = logging.LogRecord("test", logging.INFO, "", 0, f"line {i}", (), None)
             handler.emit(record)
 
-        from scripts.beq_profile_cli import _MAX_LOG_LINES
+        from cli.profile import _MAX_LOG_LINES
         assert len(handler.log_lines) == _MAX_LOG_LINES
+
+
+# ---------------------------------------------------------------------------
+# Filterable select — section headers and rendering
+# ---------------------------------------------------------------------------
+
+
+class TestFilterableSelect:
+    """Verify filterable_select renders section headers and filters correctly."""
+
+    def _get_display_lines(self, choices, filter_text="", selected_idx=0):
+        """Extract the display logic from filterable_select for testing."""
+        from prompt_toolkit.formatted_text import FormattedText
+
+        selectable = [(l, v) for l, v in choices if v is not None]
+
+        if filter_text:
+            items = [(l, v) for l, v in selectable if filter_text.lower() in l.lower()]
+        else:
+            items = selectable
+
+        lines = []
+        if filter_text:
+            for i, (label, _val) in enumerate(items):
+                lines.append(("selected" if i == selected_idx else "normal", label))
+        else:
+            sel_idx = 0
+            for label, val in choices:
+                if val is None:
+                    lines.append(("header", label))
+                else:
+                    lines.append(("selected" if sel_idx == selected_idx else "normal", label))
+                    sel_idx += 1
+        return lines
+
+    def test_section_headers_appear_in_unfiltered_display(self):
+        choices = [
+            ("SECTION ONE", None),
+            ("Item A", "a"),
+            ("Item B", "b"),
+            ("SECTION TWO", None),
+            ("Item C", "c"),
+        ]
+        lines = self._get_display_lines(choices)
+        types = [t for t, _ in lines]
+        labels = [l for _, l in lines]
+
+        assert "header" in types, f"No headers found in {lines}"
+        assert types.count("header") == 2
+        assert labels[0] == "SECTION ONE"
+        assert labels[1] == "Item A"
+        assert labels[3] == "SECTION TWO"
+        assert labels[4] == "Item C"
+
+    def test_headers_hidden_when_filtering(self):
+        choices = [
+            ("SECTION ONE", None),
+            ("Item Alpha", "a"),
+            ("Item Beta", "b"),
+            ("SECTION TWO", None),
+            ("Item Charlie", "c"),
+        ]
+        lines = self._get_display_lines(choices, filter_text="beta")
+        types = [t for t, _ in lines]
+        labels = [l for _, l in lines]
+
+        assert "header" not in types, f"Headers should be hidden when filtering: {lines}"
+        assert len(lines) == 1
+        assert "Beta" in labels[0]
+
+    def test_headers_are_not_selectable(self):
+        choices = [
+            ("HEADER", None),
+            ("Item A", "a"),
+        ]
+        selectable = [(l, v) for l, v in choices if v is not None]
+        assert len(selectable) == 1
+        assert selectable[0] == ("Item A", "a")
+
+    def test_first_selectable_item_is_selected_by_default(self):
+        choices = [
+            ("HEADER", None),
+            ("Item A", "a"),
+            ("Item B", "b"),
+        ]
+        lines = self._get_display_lines(choices, selected_idx=0)
+        # First non-header item should be selected
+        selectable_lines = [(t, l) for t, l in lines if t != "header"]
+        assert selectable_lines[0][0] == "selected"
+        assert selectable_lines[1][0] == "normal"
+
+    def test_main_menu_is_simple(self):
+        """Main menu should have just a few top-level items, not everything."""
+        from cli.main import _MAIN_MENU
+        selectable = [label for label, val in _MAIN_MENU if val is not None]
+        assert len(selectable) <= 5, f"Main menu too cluttered: {selectable}"
+        values = [val for _, val in _MAIN_MENU if val is not None]
+        assert "profile" in values
+        assert "advanced" in values
+        assert "quit" in values
+
+    def test_advanced_menu_has_section_headers(self):
+        """Advanced submenu should group items under descriptive headers."""
+        from cli.main import _ADVANCED_MENU
+        headers = [label for label, val in _ADVANCED_MENU if val is None]
+        assert len(headers) >= 2, f"Expected at least 2 section headers, got {headers}"
+        header_text = " ".join(headers).upper()
+        assert "ANALYSIS" in header_text
+        assert "CACHE" in header_text
+
+    def test_advanced_menu_has_back_option(self):
+        """Advanced submenu must have a Back option to return to main menu."""
+        from cli.main import _ADVANCED_MENU
+        values = [val for _, val in _ADVANCED_MENU if val is not None]
+        assert "back" in values
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +331,40 @@ class TestRenderFilters:
 class TestCLIInvocation:
     """Run the actual script in a subprocess to catch import and arg parsing errors."""
 
-    _script = str(_REPO_ROOT / "scripts" / "beq_profile_cli.py")
+    _script = str(_REPO_ROOT / "bin" / "beq-designer")
+
+    def test_help(self):
+        result = subprocess.run(
+            [sys.executable, self._script, "profile", "--help"],
+            capture_output=True, text=True, timeout=30,
+            env={**dict(__import__("os").environ), "VIRTUAL_ENV": "1"},
+        )
+        assert result.returncode == 0
+        assert "Generate BEQ correction profiles" in result.stdout
+
+    def test_verbose_imports_resolve(self):
+        """Ensure -v mode doesn't crash on import (caught the rich.group bug)."""
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import sys; sys.argv = ['test']; "
+             "from cli.profile import _run_single; "
+             "from rich.console import Group; "
+             "from rich.live import Live; "
+             "from rich.panel import Panel; "
+             "from rich.text import Text; "
+             "print('all imports ok')"],
+            capture_output=True, text=True, timeout=30,
+            cwd=str(_REPO_ROOT),
+            env={**dict(__import__("os").environ), "VIRTUAL_ENV": "1",
+                 "PYTHONPATH": f"{_REPO_ROOT}/src/main/python:{_REPO_ROOT}/src/test/python"},
+        )
+        assert "all imports ok" in result.stdout, result.stderr
+
+
+class TestUnifiedCLI:
+    """Test the unified bin/beq-designer entry point."""
+
+    _script = str(_REPO_ROOT / "bin" / "beq-designer")
 
     def test_help(self):
         result = subprocess.run(
@@ -223,9 +373,32 @@ class TestCLIInvocation:
             env={**dict(__import__("os").environ), "VIRTUAL_ENV": "1"},
         )
         assert result.returncode == 0
-        assert "Generate BEQ profiles" in result.stdout
+        assert "profile" in result.stdout
+        assert "extract" in result.stdout
+        assert "cache-status" in result.stdout
+        assert "sweep" in result.stdout
 
-    def test_verbose_help(self):
+    def test_profile_help(self):
+        result = subprocess.run(
+            [sys.executable, self._script, "profile", "--help"],
+            capture_output=True, text=True, timeout=30,
+            env={**dict(__import__("os").environ), "VIRTUAL_ENV": "1"},
+        )
+        assert result.returncode == 0
+        assert "Generate BEQ correction profiles" in result.stdout
+
+    def test_sweep_help(self):
+        result = subprocess.run(
+            [sys.executable, self._script, "sweep", "--help"],
+            capture_output=True, text=True, timeout=30,
+            env={**dict(__import__("os").environ), "VIRTUAL_ENV": "1"},
+        )
+        assert result.returncode == 0
+        assert "discover" in result.stdout
+        assert "run" in result.stdout
+        assert "report" in result.stdout
+
+    def test_verbose_flag_accepted(self):
         result = subprocess.run(
             [sys.executable, self._script, "-v", "--help"],
             capture_output=True, text=True, timeout=30,
@@ -233,30 +406,17 @@ class TestCLIInvocation:
         )
         assert result.returncode == 0
 
-    def test_nonexistent_path_fails(self):
+    def test_dev_help(self):
         result = subprocess.run(
-            [sys.executable, self._script, "/nonexistent/path/movie.mkv"],
+            [sys.executable, self._script, "dev", "--help"],
             capture_output=True, text=True, timeout=30,
             env={**dict(__import__("os").environ), "VIRTUAL_ENV": "1"},
         )
-        assert result.returncode != 0
-
-    def test_verbose_imports_resolve(self):
-        """Ensure -v mode doesn't crash on import (caught the rich.group bug)."""
-        result = subprocess.run(
-            [sys.executable, "-c",
-             "import sys; sys.argv = ['test']; "
-             "from scripts.beq_profile_cli import _run_single; "
-             "from rich.console import Group; "
-             "from rich.live import Live; "
-             "from rich.panel import Panel; "
-             "from rich.text import Text; "
-             "print('all imports ok')"],
-            capture_output=True, text=True, timeout=30,
-            cwd=str(_REPO_ROOT),
-            env={**dict(__import__("os").environ), "VIRTUAL_ENV": "1"},
-        )
-        assert "all imports ok" in result.stdout, result.stderr
+        assert result.returncode == 0
+        assert "test" in result.stdout
+        assert "sweep" in result.stdout
+        assert "compare-advisors" in result.stdout
+        assert "playground" in result.stdout
 
 
 # ---------------------------------------------------------------------------

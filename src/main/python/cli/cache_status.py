@@ -4,9 +4,7 @@
 Reports total WAVs, catalogue-matched counts, movie/TV breakdown,
 unique titles, and growth since last check.
 
-Usage:
-    poetry run python3 scripts/wav_cache_status.py
-    BEQ_WAV_CACHE=/Volumes/nas/beqdesigner/wav-cache poetry run python3 scripts/wav_cache_status.py
+Usage: bin/beq-designer cache-status
 """
 
 from __future__ import annotations
@@ -125,11 +123,10 @@ def main():
 
     # Usage hints.
     print()
-    print("Usage:")
-    print(f"  Check a specific cache:   python3 scripts/wav_cache_status.py /path/to/wav-cache")
-    print(f"  Verify integrity:         python3 scripts/verify_wav_cache.py {cache}")
-    print(f"  Extract more WAVs:        python3 scripts/extract_lfe.py --beq-dir {cache.parent}")
-    print(f"  Run NN training:          BEQ_WAV_CACHE={cache} bash scripts/run-spike-tests.sh")
+    print("Next steps:")
+    print(f"  Repair cache:      bin/beq-designer verify")
+    print(f"  Extract more:      bin/beq-designer extract")
+    print(f"  Generate profile:  bin/beq-designer profile")
 
 
 if __name__ == "__main__":
