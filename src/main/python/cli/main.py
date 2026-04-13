@@ -58,15 +58,21 @@ _MAIN_MENU = [
     ("Quit", "quit"),
 ]
 
+_cached_wav_count: int | None = None
+
+
 def _cache_status_line() -> str:
-    """Quick status: how many WAVs in cache."""
+    """Quick status: how many WAVs in cache. Cached after first call."""
+    global _cached_wav_count
+    if _cached_wav_count is not None:
+        return f"✓ {_cached_wav_count} WAVs cached"
     try:
         from spike._auto_beq_helpers import wav_cache_dir
         cache = wav_cache_dir()
-        wavs = list(cache.rglob("*.wav"))
-        return f"✓ {len(wavs)} WAVs cached"
+        _cached_wav_count = sum(1 for _ in cache.rglob("*.wav"))
+        return f"✓ {_cached_wav_count} WAVs cached"
     except Exception:
-        return "✗ not configured — set wav_cache_dir in settings.json"
+        return "✗ not configured"
 
 
 def _model_status_line() -> str:
