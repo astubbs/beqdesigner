@@ -41,7 +41,7 @@ from scripts.beq_profile_cli import (
 class TestCliConfig:
     def test_defaults(self):
         config = CliConfig()
-        assert config.author == "aron7awol"
+        assert config.author == "auto"
         assert config.output_dir == "profiles"
         assert config.last_media_dir == ""
 
@@ -63,14 +63,14 @@ class TestCliConfig:
     def test_load_missing_file_returns_defaults(self, tmp_path, monkeypatch):
         monkeypatch.setattr("spike._auto_beq_helpers._SETTINGS_PATH", tmp_path / "nonexistent.json")
         config = load_config()
-        assert config.author == "aron7awol"
+        assert config.author == "auto"
 
     def test_load_corrupt_file_returns_defaults(self, tmp_path, monkeypatch):
         settings_file = tmp_path / "settings.json"
         settings_file.write_text("not json{{{")
         monkeypatch.setattr("spike._auto_beq_helpers._SETTINGS_PATH", settings_file)
         config = load_config()
-        assert config.author == "aron7awol"
+        assert config.author == "auto"
 
     def test_load_ignores_unknown_fields(self, tmp_path, monkeypatch):
         settings_file = tmp_path / "settings.json"

@@ -172,7 +172,7 @@ _CLI_KEYS = ("cli_author", "cli_output_dir", "cli_last_media_dir")
 
 @dataclass
 class CliConfig:
-    author: str = "aron7awol"
+    author: str = "auto"
     output_dir: str = "profiles"
     last_media_dir: str = ""
     last_media_file: str = ""
@@ -182,7 +182,7 @@ def load_config() -> CliConfig:
     """Load CLI preferences from shared settings.json."""
     settings = load_settings()
     return CliConfig(
-        author=settings.get("cli_author", "aron7awol"),
+        author=settings.get("cli_author", "auto"),
         output_dir=settings.get("cli_output_dir", "profiles"),
         last_media_dir=settings.get("cli_last_media_dir", ""),
         last_media_file=settings.get("cli_last_media_file", ""),
@@ -690,19 +690,47 @@ def generate(
 
     config = load_config()
 
-    # Startup banner — show active configuration.
+    # Startup banner — show version, branch, and active configuration.
+    import subprocess as _sp
+    try:
+        _branch = _sp.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                          capture_output=True, text=True, cwd=str(_REPO_ROOT)).stdout.strip()
+        _commit = _sp.run(["git", "rev-parse", "--short", "HEAD"],
+                          capture_output=True, text=True, cwd=str(_REPO_ROOT)).stdout.strip()
+    except Exception:
+        _branch, _commit = "unknown", "unknown"
+    try:
+        from importlib.metadata import version as _pkg_version
+        _version = _pkg_version("beqdesigner")
+    except Exception:
+        _version = "dev"
     try:
         cache_dir = str(audio_cache_dir())
     except RuntimeError:
         cache_dir = "[red]NOT CONFIGURED[/red]"
     console.print()
     from rich.panel import Panel
+    # Log file — write all pipeline output to a log alongside profiles.
+    _out_dir = Path(output_dir or config.output_dir)
+    _out_dir.mkdir(parents=True, exist_ok=True)
+    _log_file = _out_dir / "beq_profile.log"
+
     banner = (
-        f"[bold]Author:[/bold]    {config.author}\n"
+        f"[bold]Version:[/bold]   {_version} ({_branch} @ {_commit})\n"
         f"[bold]Output:[/bold]    {config.output_dir}\n"
-        f"[bold]WAV cache:[/bold] {cache_dir}"
+        f"[bold]WAV cache:[/bold] {cache_dir}\n"
+        f"[bold]Log file:[/bold]  {_log_file}"
     )
     console.print(Panel(banner, title="BEQ Profile Generator", border_style="blue"))
+    _file_handler = logging.FileHandler(_log_file, mode="a", encoding="utf-8")
+    _file_handler.setLevel(logging.DEBUG)
+    _file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-5s %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+    logging.getLogger().addHandler(_file_handler)
+    # Write banner to log file too.
+    _log_banner = logging.getLogger("beq_profile_cli")
+    # Strip Rich markup for the plain-text log — same content as the banner.
+    import re
+    _log_banner.info(re.sub(r"\[/?[^\]]+\]", "", banner))
 
     # --- Interactive mode (no positional arg) ---
     if media is None:
