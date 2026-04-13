@@ -59,21 +59,44 @@ _MAIN_MENU = [
 ]
 
 _TOOLS_MENU = [
-    ("MODEL — train or retrain the prediction model (required before first use)", None),
-    ("Train model            Train the production model from your WAV cache (E82, ~1 min)", "dev-train"),
-    ("Train torch model      Train the differentiable-DSP model (E85, slower)", "dev-train-torch"),
+    ("MODEL — you need a trained model before generating profiles", None),
+    ("Train model (recommended)\n"
+     "      Builds the production XGBoost model (E82) from your WAV cache.\n"
+     "      Takes ~1 minute if the WAV cache is populated. If not, you need\n"
+     "      to extract audio first (Pre-extract audio below, or it happens\n"
+     "      automatically but can take hours for a large library).", "dev-train"),
+    ("Train torch model\n"
+     "      Builds the differentiable-DSP model (E85). More accurate but\n"
+     "      requires PyTorch and takes longer to train. Also needs a\n"
+     "      populated WAV cache. Experimental.", "dev-train-torch"),
 
-    ("ANALYSIS — investigate model accuracy and experiment results", None),
-    ("NN accuracy report     Compare the model's predicted filters vs hand-tuned BEQ entries", "nn-report"),
-    ("Discover media         Scan media library folders and match against the BEQ catalogue", "sweep-discover"),
-    ("Test predictions       Run the model against all discovered media and measure accuracy", "sweep-run"),
-    ("Experiment results     View and compare results from different test runs", "sweep-report"),
+    ("ANALYSIS — check how well the model predicts, compare against known corrections", None),
+    ("NN accuracy report\n"
+     "      Run the model against your WAV cache and compare its predicted\n"
+     "      filters to the hand-tuned BEQ catalogue entries.", "nn-report"),
+    ("Discover media\n"
+     "      Scan your media library folders and match titles against the\n"
+     "      BEQ catalogue to find what can be used for training/testing.", "sweep-discover"),
+    ("Test predictions\n"
+     "      Run the model against all discovered media and measure how\n"
+     "      close its predictions are to the expert-authored corrections.", "sweep-run"),
+    ("Experiment results\n"
+     "      View and compare results from different experiment runs\n"
+     "      (E82 vs E85, different hyperparameters, etc).", "sweep-report"),
 
-    ("CACHE — audio extraction happens automatically; use these to pre-populate"
-     " or troubleshoot the cache", None),
-    ("Pre-extract audio      Extract bass/LFE from media ahead of time to speed up analysis", "extract"),
-    ("Check cache health     See how many files are cached and ready for analysis", "cache-status"),
-    ("Repair cache           Scan for corrupt audio files and optionally re-extract them", "verify"),
+    ("CACHE — audio extraction happens automatically during profile generation;"
+     " use these to pre-populate or troubleshoot", None),
+    ("Pre-extract audio\n"
+     "      Extract the bass/LFE channel from media files ahead of time\n"
+     "      so profile generation doesn't have to wait for ffmpeg.\n"
+     "      Best run on the machine with fastest access to your media\n"
+     "      drives (e.g. directly on the NAS, or via Docker).", "extract"),
+    ("Check cache health\n"
+     "      See how many files are in the cache, how many match the BEQ\n"
+     "      catalogue, and whether you have enough for training.", "cache-status"),
+    ("Repair cache\n"
+     "      Scan for corrupt or truncated audio files and optionally\n"
+     "      delete them so they get re-extracted on next use.", "verify"),
 
     ("Back", "back"),
 ]
