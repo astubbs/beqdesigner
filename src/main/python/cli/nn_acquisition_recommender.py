@@ -131,9 +131,13 @@ def _load_library_inventory(
     """
     explicit = inventory_path is not None
     if inventory_path is None:
-        # Default location next to the WAV cache.
-        beq_dir = Path.home() / "Downloads" / "beqdesigner"
-        inventory_path = beq_dir / "media_inventory.json"
+        # Default location: next to the WAV cache in the BEQ working dir.
+        try:
+            from spike._auto_beq_helpers import beq_dir
+            _beq = beq_dir()
+        except Exception:
+            _beq = Path.home() / "Downloads" / "beqdesigner"
+        inventory_path = _beq / "media_inventory.json"
     if not inventory_path.exists():
         if explicit:
             raise FileNotFoundError(
@@ -511,7 +515,7 @@ def main():
     parser.add_argument("-o", "--output", type=Path, default=None)
     parser.add_argument("--inventory", type=Path, default=None,
                         help="Path to media_inventory.json (default: "
-                             "~/Downloads/beqdesigner/media_inventory.json)")
+                             "{beq-dir}/media_inventory.json)")
     args = parser.parse_args()
 
     if args.output:

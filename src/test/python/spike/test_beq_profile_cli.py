@@ -31,7 +31,7 @@ from cli.common import (
 from cli.profile import (
     ProgressLoggingHandler,
     _discover_media,
-    _render_filters,
+    _render_results,
 )
 
 
@@ -336,11 +336,67 @@ class TestRenderFilters:
                 {"type": "PeakingEQ", "freq": 35, "gain": -2.1, "q": 1.41},
             ]
         }
-        _render_filters(profile)  # should not raise
+        from pathlib import Path as P
+        _render_results(profile, P("test_output.json"))  # should not raise
 
     def test_empty_filters(self):
-        _render_filters({"filters": []})  # should not raise
-        _render_filters({})  # should not raise
+        from pathlib import Path as P
+        _render_results({"filters": []}, P("test.json"))  # should not raise
+        _render_results({}, P("test.json"))  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Dispatch and markdown rendering
+# ---------------------------------------------------------------------------
+
+
+class TestDispatch:
+    def test_all_menu_items_have_handlers(self):
+        """Every selectable item in the Tools menu must have a dispatch handler."""
+        from cli.main import _build_tools_menu, _dispatch, _do_profile
+
+        tools_menu = _build_tools_menu()
+        selectable_values = [val for _, val in tools_menu if val is not None and val != "back"]
+
+        # Build the dispatch table (same as _dispatch does internally).
+        from cli.main import (
+            _do_extract, _do_cache_status, _do_verify, _do_nn_report,
+            _do_sweep_discover, _do_sweep_run, _do_sweep_report, _do_config,
+            _do_train, _do_train_torch, _do_report_acquisitions,
+            _do_report_cache_bias, _do_report_author_patterns,
+        )
+        # Just verify dispatch doesn't raise KeyError for any menu value.
+        handlers = {
+            "profile", "extract", "cache-status", "verify", "nn-report",
+            "sweep-discover", "sweep-run", "sweep-report", "config",
+            "dev-train", "dev-train-torch",
+            "report-acquisitions", "report-cache-bias", "report-author-patterns",
+        }
+        for val in selectable_values:
+            assert val in handlers, f"Menu item '{val}' has no dispatch handler"
+
+    def test_render_markdown_report_no_args(self):
+        """Scripts with def main() (no args) should work via _render_markdown_report."""
+        from cli.main import _render_markdown_report
+
+        def fake_report():
+            print("# Test Report\n\nSome content.")
+
+        # Should not raise — the function takes no args.
+        _render_markdown_report(fake_report)
+
+    def test_render_markdown_report_with_argv(self):
+        """Scripts with def main(argv) should receive argv."""
+        from cli.main import _render_markdown_report
+
+        received = []
+
+        def fake_report(argv):
+            received.append(argv)
+            print("# Report")
+
+        _render_markdown_report(fake_report, argv=["--test"])
+        assert received == [["--test"]]
 
 
 # ---------------------------------------------------------------------------

@@ -57,50 +57,91 @@ def menu_select(
     choices: list[tuple[str, object]],
     default: str | None = None,
 ) -> object | None:
-    """Show a numbered menu rendered with Rich. User types a number to select.
+    """Show a menu with arrow-key selection and Rich-style formatting.
 
-    Section headers (value=None) are rendered as styled text.
-    Returns the value of the selected choice, or None if cancelled.
+    Section headers (value=None) are rendered as non-selectable labels.
+    Arrow keys navigate, Enter selects, Esc goes back.
     """
-    selectable: list[tuple[str, object]] = []
-    idx = 1
+    from prompt_toolkit import Application
+    from prompt_toolkit.formatted_text import FormattedText
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import Layout, HSplit, Window, FormattedTextControl
 
-    console.print()
-    console.print(f"  [bold]{message}[/bold]")
+    selectable = [(label, val) for label, val in choices if val is not None]
+    selected_idx = 0
+    result: list[object | None] = [None]
 
-    for label, val in choices:
-        if val is None:
-            console.print()
-            console.print(f"  [bold yellow]{label}[/bold yellow]")
-        else:
-            parts = label.split("\n", 1)
-            title = parts[0].strip()
-            console.print(f"    [cyan]{idx:>2}[/cyan]. {title}")
-            if len(parts) > 1:
-                for line in parts[1].strip().split("\n"):
-                    console.print(f"        [dim]{line.strip()}[/dim]")
-            selectable.append((title, val))
-            idx += 1
+    # Find default index.
+    if default:
+        for i, (_, val) in enumerate(selectable):
+            if val == default:
+                selected_idx = i
+                break
 
-    console.print()
+    def _get_display() -> FormattedText:
+        lines: list[tuple[str, str]] = []
+        lines.append(("bold", f"\n  {message}\n"))
 
-    try:
-        raw = console.input("  [dim]Enter number (or Enter to go back):[/dim] ")
-    except (KeyboardInterrupt, EOFError):
-        return None
+        sel_idx = 0
+        for label, val in choices:
+            if val is None:
+                # Section header.
+                lines.append(("", "\n"))
+                lines.append(("fg:yellow bold", f"  {label}\n"))
+            else:
+                parts = label.split("\n", 1)
+                title = parts[0].strip()
+                if sel_idx == selected_idx:
+                    lines.append(("fg:cyan bold", f"  ❯ {title}\n"))
+                else:
+                    lines.append(("", f"    {title}\n"))
+                if len(parts) > 1:
+                    style = "fg:ansigray"
+                    for line in parts[1].strip().split("\n"):
+                        lines.append((style, f"      {line.strip()}\n"))
+                sel_idx += 1
 
-    raw = raw.strip()
-    if not raw:
-        return None
-    try:
-        n = int(raw)
-        if 1 <= n <= len(selectable):
-            return selectable[n - 1][1]
-    except ValueError:
-        pass
+        lines.append(("", "\n"))
+        lines.append(("fg:ansigray", "  ↑↓ navigate, Enter select, Esc back\n"))
+        return FormattedText(lines)
 
-    console.print("  [red]Invalid choice.[/red]")
-    return "invalid"
+    kb = KeyBindings()
+
+    @kb.add("up")
+    def _up(event):
+        nonlocal selected_idx
+        if selected_idx > 0:
+            selected_idx -= 1
+
+    @kb.add("down")
+    def _down(event):
+        nonlocal selected_idx
+        if selected_idx < len(selectable) - 1:
+            selected_idx += 1
+
+    @kb.add("enter")
+    def _enter(event):
+        result[0] = selectable[selected_idx][1]
+        event.app.exit()
+
+    @kb.add("escape")
+    @kb.add("left")
+    def _back(event):
+        event.app.exit()
+
+    @kb.add("c-c")
+    @kb.add("c-d")
+    def _cancel(event):
+        event.app.exit()
+
+    control = FormattedTextControl(_get_display)
+    app: Application = Application(
+        layout=Layout(HSplit([Window(control)])),
+        key_bindings=kb,
+        full_screen=False,
+    )
+    app.run()
+    return result[0]
 
 
 def fuzzy_select(
@@ -226,14 +267,16 @@ def show_banner(title: str, config: CliConfig, log_file: Path | None = None) -> 
         except Exception:
             model_info = "[yellow]no production model — will train inline (slow)[/yellow]"
 
+    out_abs = str(Path(config.output_dir).resolve())
     lines = [
         f"[bold]Version:[/bold]   {version} ({branch} @ {commit})",
         f"[bold]Model:[/bold]     {model_info}",
-        f"[bold]Output:[/bold]    {config.output_dir}",
+        f"[bold]Output:[/bold]    [link=file://{out_abs}]{config.output_dir}[/link]",
         f"[bold]WAV cache:[/bold] {cache_dir}",
     ]
     if log_file:
-        lines.append(f"[bold]Log file:[/bold]  {log_file}")
+        log_abs = str(log_file.resolve())
+        lines.append(f"[bold]Log file:[/bold]  [link=file://{log_abs}]{log_file}[/link]")
 
     banner = "\n".join(lines)
     console.print()

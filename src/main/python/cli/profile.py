@@ -368,30 +368,59 @@ class ProgressLoggingHandler(logging.Handler):
 # ---------------------------------------------------------------------------
 
 
-def _render_filters(profile: dict) -> None:
-    """Print a rich table of the predicted filters."""
+def _render_results(profile: dict, output_path: Path) -> None:
+    """Print a markdown-formatted summary of the generated profile."""
+    from rich.markdown import Markdown
+
     filters = profile.get("filters", [])
-    if not filters:
-        return
+    title = profile.get("title", "Unknown")
+    year = profile.get("year", "")
+    audio = profile.get("audioTypes", [""])[0] if profile.get("audioTypes") else ""
+    mv = profile.get("mv", "0")
+    note = profile.get("note", "")
 
-    table = Table(title="Predicted Filters", show_header=True, header_style="bold cyan")
-    table.add_column("Type", style="cyan")
-    table.add_column("Freq (Hz)", justify="right")
-    table.add_column("Gain (dB)", justify="right")
-    table.add_column("Q", justify="right")
-
+    # Build markdown summary.
+    lines = [
+        f"## {title} ({year})",
+        "",
+        f"**Audio:** {audio}  ",
+        f"**Master volume adjust:** {mv} dB  ",
+        f"**Model:** {note}  ",
+        "",
+        "### Predicted Filters",
+        "",
+        "| Type | Freq (Hz) | Gain (dB) | Q |",
+        "|------|-----------|-----------|---|",
+    ]
     for f in filters:
-        gain = f.get("gain", 0)
-        gain_style = "red" if gain > 0 else "green"
-        table.add_row(
-            f.get("type", "?"),
-            f"{f.get('freq', 0):.0f}",
-            f"[{gain_style}]{gain:+.1f}[/]",
-            f"{f.get('q', 0):.2f}",
+        lines.append(
+            f"| {f.get('type', '?')} | {f.get('freq', 0):.0f} | {f.get('gain', 0):+.1f} | {f.get('q', 0):.2f} |"
         )
 
+    lines.append("")
+
+    # Output paths.
+    abs_path = output_path.resolve()
+    lines.append("### Output")
+    lines.append("")
+    lines.append(f"- **Profile:** `{output_path}`")
+
+    img_dir = output_path.parent
+    spect = list(img_dir.glob(f"*spectrograph*.png"))
+    if spect:
+        lines.append(f"- **Spectrograph:** `{spect[0].name}`")
+
+    md_text = "\n".join(lines)
+
     console.print()
-    console.print(table)
+    console.print(Markdown(md_text))
+
+    # Clickable links (separate from markdown — Rich markdown doesn't support file:// links).
+    console.print()
+    console.print(f"  [link=file://{abs_path}]{output_path}[/link]")
+    if spect:
+        spect_abs = spect[0].resolve()
+        console.print(f"  [link=file://{spect_abs}]{spect[0].name}[/link]")
 
 
 # ---------------------------------------------------------------------------
@@ -483,8 +512,7 @@ def _run_single(
             for lgr in loggers:
                 lgr.removeHandler(handler)
 
-    _render_filters(profile)
-    console.print(f"\n[green]Profile saved:[/green] {output_path}")
+    _render_results(profile, output_path)
     return profile
 
 

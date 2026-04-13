@@ -58,21 +58,37 @@ _MAIN_MENU = [
     ("Quit", "quit"),
 ]
 
+import threading
+
 _cached_wav_count: int | None = None
+_wav_count_ready = threading.Event()
 
 
-def _cache_status_line() -> str:
-    """Quick status: how many WAVs in cache. Cached after first call."""
+def _scan_wav_cache_background() -> None:
+    """Scan WAV cache in background thread so menus load instantly."""
     global _cached_wav_count
-    if _cached_wav_count is not None:
-        return f"✓ {_cached_wav_count} WAVs cached"
     try:
         from spike._auto_beq_helpers import wav_cache_dir
         cache = wav_cache_dir()
         _cached_wav_count = sum(1 for _ in cache.rglob("*.wav"))
-        return f"✓ {_cached_wav_count} WAVs cached"
     except Exception:
+        _cached_wav_count = -1  # -1 = not configured
+    _wav_count_ready.set()
+
+
+def _start_wav_scan() -> None:
+    """Kick off the background scan (idempotent)."""
+    if not _wav_count_ready.is_set() and _cached_wav_count is None:
+        threading.Thread(target=_scan_wav_cache_background, daemon=True).start()
+
+
+def _cache_status_line() -> str:
+    """Quick status line — returns immediately, uses cached count if available."""
+    if _cached_wav_count is None:
+        return "scanning..."
+    if _cached_wav_count < 0:
         return "✗ not configured"
+    return f"✓ {_cached_wav_count} WAVs cached"
 
 
 def _model_status_line() -> str:
@@ -168,6 +184,12 @@ def _interactive_menu_loop(config: CliConfig, verbose: bool) -> None:
 
 def _tools_menu_loop(config: CliConfig, verbose: bool) -> None:
     """Show the tools submenu until the user goes back."""
+    # Wait for background WAV scan if still running (first visit only).
+    if not _wav_count_ready.is_set():
+        console.print("[dim]Scanning WAV cache (first time only)...[/dim]", end="")
+        _wav_count_ready.wait()
+        console.print("[dim] done.[/dim]")
+
     while True:
         try:
             action = menu_select("Tools:", _build_tools_menu())
@@ -292,17 +314,34 @@ def _do_verify(config: CliConfig, verbose: bool) -> None:
     verify_main(argv)
 
 
+def _render_markdown_report(report_main_func, argv=None) -> None:
+    """Run a report script, capture its markdown stdout, render with Rich."""
+    import inspect
+    import io
+    import contextlib
+    from rich.markdown import Markdown
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        # Some scripts take argv, some take no args.
+        sig = inspect.signature(report_main_func)
+        if sig.parameters:
+            report_main_func(argv)
+        else:
+            report_main_func()
+
+    md_text = buf.getvalue()
+    if md_text.strip():
+        console.print()
+        console.print(Markdown(md_text))
+    else:
+        console.print("[dim]No output.[/dim]")
+
+
 def _do_nn_report(config: CliConfig, verbose: bool) -> None:
     """NN comparison report — delegates to nn_comparison_report."""
-    from InquirerPy import inquirer
-
-    output = inquirer.filepath(message="Save report to (empty for stdout):", default="").execute()
-    argv = []
-    if output:
-        argv.extend(["--output", output])
-
     from cli.nn_report import main as nn_main
-    nn_main(argv)
+    _render_markdown_report(nn_main)
 
 
 def _do_sweep_discover(config: CliConfig, verbose: bool) -> None:
@@ -335,7 +374,7 @@ def _do_sweep_run(config: CliConfig, verbose: bool) -> None:
 def _do_sweep_report(config: CliConfig, verbose: bool) -> None:
     """Sweep report — delegates to sweep_report."""
     from cli.sweep_report import main as report_main
-    report_main()
+    _render_markdown_report(report_main)
 
 
 def _do_config(config: CliConfig, verbose: bool) -> None:
@@ -359,19 +398,19 @@ def _do_train_torch(config: CliConfig, verbose: bool) -> None:
 def _do_report_acquisitions(config: CliConfig, verbose: bool) -> None:
     """Acquisition recommendations."""
     from cli.nn_acquisition_recommender import main as acq_main
-    acq_main()
+    _render_markdown_report(acq_main)
 
 
 def _do_report_cache_bias(config: CliConfig, verbose: bool) -> None:
     """Cache bias report."""
     from cli.nn_cache_bias_report import main as bias_main
-    bias_main()
+    _render_markdown_report(bias_main)
 
 
 def _do_report_author_patterns(config: CliConfig, verbose: bool) -> None:
     """Author patterns report."""
     from cli.nn_author_pattern_report import main as author_main
-    author_main()
+    _render_markdown_report(author_main)
 
 
 # ---------------------------------------------------------------------------
@@ -677,6 +716,7 @@ def main_callback(
     )
 
     cfg = load_config()
+    _start_wav_scan()  # background scan — menu shows "scanning..." until ready
     log_file = setup_log_file(cfg.output_dir)
     plain_banner = show_banner("BEQ Designer CLI", cfg, log_file=log_file)
     logging.getLogger("beq_cli").info(plain_banner)
