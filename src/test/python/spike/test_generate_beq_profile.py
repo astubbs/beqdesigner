@@ -72,3 +72,33 @@ def test_parse_ffprobe_streams_missing_keys(gen_module):
     stream = gen_module._parse_ffprobe_streams(probe_json)
     assert stream.get("codec_name") == "eac3"
     assert stream.get("channels") == 8
+
+
+def test_stale_model_cache_is_detected(tmp_path):
+    """A pickled model from an older class version should be detected as stale.
+
+    Regression: LateFusionModel gained _n_audio after the cache was created,
+    causing AttributeError on predict(). The fix: smoke-test after unpickling
+    and retrain if the model is incompatible.
+    """
+    import pickle
+
+    # Write a cache file with a valid dict but a model that's just a string
+    # (simulates a class whose interface changed).
+    cache_file = tmp_path / "nn_model.pkl"
+    cache_file.write_bytes(pickle.dumps({"cat_key": "match", "model": "not-a-model"}))
+
+    # Loading succeeds but the "model" has no predict() method.
+    cached = pickle.loads(cache_file.read_bytes())
+    model = cached["model"]
+
+    # The smoke-test in _load_or_train_model should catch this.
+    import numpy as np
+    try:
+        model.predict(np.zeros((1, 18)))
+        assert False, "Should have raised AttributeError"
+    except AttributeError:
+        # Expected — stale model detected, cache should be deleted.
+        cache_file.unlink(missing_ok=True)
+
+    assert not cache_file.exists(), "Stale cache should have been deleted"

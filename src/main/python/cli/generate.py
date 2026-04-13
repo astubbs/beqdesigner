@@ -197,10 +197,16 @@ def _load_or_train_model() -> object:
         try:
             cached = pickle.loads(cache_path.read_bytes())
             if cached.get("cat_key") == cat_key:
+                model = cached["model"]
+                # Smoke-test: ensure the model's predict() still works with
+                # the current class definition (catches stale pickles after
+                # code changes like adding new attributes).
+                _dummy = np.zeros((1, model.predict(np.zeros((1, 18))).shape[1]))
                 log.info("  loaded cached model (%d catalogue entries)", len(deduped))
-                return cached["model"], deduped
+                return model, deduped
         except Exception:
-            pass
+            log.info("  cached model incompatible, retraining...")
+            cache_path.unlink(missing_ok=True)
 
     log.info("  training model (%d catalogue entries)...", len(deduped))
     tmdb_cache = load_cache()
