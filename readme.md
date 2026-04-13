@@ -23,6 +23,20 @@ PYTHONPATH=./src/main/python poetry run python src/main/python/app.py
 The `PYTHONPATH` prefix matches how CI invokes the app and tests — the source
 root is `src/main/python`, not the repo root.
 
+### Generating BEQ profiles (CLI)
+
+Generate bass-correction profiles for media files. Run with no arguments for
+interactive menus, or pass a media path directly:
+
+```sh
+./scripts/beq_profile_cli.py                       # interactive menus
+./scripts/beq_profile_cli.py "Avatar (2009).mkv"   # single file
+./scripts/beq_profile_cli.py ./media-dir/           # batch (whole directory)
+```
+
+Preferences (author style, output directory) are saved on first run and
+remembered for future invocations.
+
 ### Tests
 
 ```sh

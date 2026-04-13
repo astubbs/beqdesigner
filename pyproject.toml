@@ -29,6 +29,9 @@ graphviz = "^0.21"
 sanitize-filename = "^1.2"
 matplotlib = "^3.10"
 soxr = "^1.0"
+typer = "^0.15"
+rich = "^14.0"
+questionary = "^2.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0"

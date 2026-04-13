@@ -52,10 +52,20 @@ from model.auto_beq_nn import (
     train_late_fusion,
 )
 from model.iir import HighShelf, LowShelf, PeakingEQ
-from spike._auto_beq_helpers import extract_lfe_wav, STRATEGY_WELCH, extract_features_with_strategy
+from spike._auto_beq_helpers import (
+    beq_config_dir,
+    extract_lfe_wav,
+    extract_features_with_strategy,
+    load_settings,
+    probe_audio_stream,
+    STRATEGY_WELCH,
+)
 from spike.sweep_discover import parse_media_filename
 
 log = logging.getLogger("generate_beq_profile")
+
+_SAMPLE_RATE = 1000  # coupled to analysis algorithm
+_MODEL_ALPHA = 0.3   # late-fusion regularization parameter
 
 _BIQUAD_FS = 96000  # Sample rate for biquad coefficients (catalogue standard)
 
@@ -157,6 +167,74 @@ def _generate_spectrographs(
 
 
 # ---------------------------------------------------------------------------
+# Model caching
+# ---------------------------------------------------------------------------
+
+
+def _model_cache_path() -> Path:
+    """Return the path for the cached trained model."""
+    return beq_config_dir() / "nn_model.pkl"
+
+
+def _load_or_train_model() -> object:
+    """Load a cached model if the catalogue hasn't changed, otherwise retrain.
+
+    The cache is keyed by a hash of the catalogue content so it auto-invalidates
+    when the BEQ catalogue is updated.
+    """
+    import pickle
+
+    catalogue = _fetch_or_cache()
+    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
+
+    # Hash catalogue to detect changes.
+    cat_key = hashlib.sha256(
+        json.dumps([e.get("title", "") for e in deduped], sort_keys=True).encode()
+    ).hexdigest()[:16]
+
+    cache_path = _model_cache_path()
+    if cache_path.exists():
+        try:
+            cached = pickle.loads(cache_path.read_bytes())
+            if cached.get("cat_key") == cat_key:
+                log.info("  loaded cached model (%d catalogue entries)", len(deduped))
+                return cached["model"], deduped
+        except Exception:
+            pass
+
+    log.info("  training model (%d catalogue entries)...", len(deduped))
+    tmdb_cache = load_cache()
+    tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
+
+    def _synthetic_features(entry, freqs):
+        correction = evaluate_filter_chain(entry["filters"], freqs, fs=_SAMPLE_RATE)
+        rolloff = -correction
+        a = int(np.argmin(np.abs(freqs - 80.0)))
+        rolloff -= rolloff[a]
+        return extract_curve_features(rolloff, freqs)
+
+    X_train, Y_train = [], []
+    for e in deduped:
+        f = _synthetic_features(e, DEFAULT_GRID)
+        m = enrich_media_metadata(e, tmdb_cache)
+        X_train.append(build_feature_vector(f, m))
+        Y_train.append(catalogue_entry_to_labels(e))
+    X_train = np.array(X_train, dtype=np.float32)
+    Y_train = np.array(Y_train, dtype=np.float32)
+
+    model = train_late_fusion(X_train, Y_train, alpha=_MODEL_ALPHA)
+
+    # Cache for next run.
+    try:
+        cache_path.write_bytes(pickle.dumps({"cat_key": cat_key, "model": model}))
+        log.info("  model cached to %s", cache_path)
+    except Exception as exc:
+        log.warning("  could not cache model: %s", exc)
+
+    return model, deduped
+
+
+# ---------------------------------------------------------------------------
 # Profile assembly
 # ---------------------------------------------------------------------------
 
@@ -199,66 +277,16 @@ def generate_profile(
              f"{season:02d}" if season else "?",
              f"{episode:02d}" if episode else "?")
 
-    # Extract LFE to a temp directory (avoids long path issues with the
-    # legacy path-mirrored cache when filenames have many codec tags).
-    import tempfile
-    tmp_dir = Path(tempfile.mkdtemp(prefix="beq_lfe_"))
-    safe_stem = "".join(c if c.isalnum() or c in " -_()" else "_" for c in media_path.stem)[:80]
-    tmp_wav = tmp_dir / f"{safe_stem}.lfe-1000hz.wav"
-
+    # Extract LFE via shared WAV cache (skips extraction if cached).
     log.info("  extracting LFE...")
-    import subprocess
-
-    # Handle Blu-ray ISOs: use bluray: protocol for ffprobe and ffmpeg.
-    is_iso = media_path.suffix.lower() == ".iso"
-    ffmpeg_input = f"bluray:{media_path}" if is_iso else str(media_path)
-    probe_input = ffmpeg_input
-
-    probe_cmd = [
-        "ffprobe", "-v", "error", "-select_streams", "a:0",
-        "-show_entries", "stream=codec_name,channels,channel_layout,sample_rate",
-        "-of", "json", probe_input,
-    ]
-    probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
-    if probe_result.returncode == 0:
-        import json as _json
-        streams = _json.loads(probe_result.stdout).get("programs", [{}])[0].get("streams", [])
-        if not streams:
-            streams = _json.loads(probe_result.stdout).get("streams", [])
-        stream = streams[0] if streams else {}
-    else:
-        stream = {}
-
-    layout = stream.get("channel_layout", "")
-    has_lfe = "LFE" in layout.upper() or any(
-        layout.lower().startswith(p) for p in ("5.1", "6.1", "7.1")
-    )
-    af_filter = "pan=mono|c0=LFE" if has_lfe else "aresample"
-    if not has_lfe:
-        log.info("  no LFE channel — falling back to mono downmix")
-    else:
-        log.info("  LFE channel detected: %s", layout)
-
-    cmd = [
-        "ffmpeg", "-y", "-v", "error",
-        "-i", ffmpeg_input,
-        "-af", af_filter, "-ac", "1", "-ar", "1000",
-        "-sample_fmt", "s16", "-f", "wav",
-        str(tmp_wav),
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    if result.returncode != 0:
-        log.error("ffmpeg failed: %s", result.stderr.strip()[:200])
-        raise RuntimeError(f"ffmpeg failed (exit {result.returncode})")
-
-    wav_path = tmp_wav
+    wav_path = extract_lfe_wav(media_path, target_fs=_SAMPLE_RATE)
     log.info("  WAV: %s (%d bytes)", wav_path.name, wav_path.stat().st_size)
 
     # Measure spectrum.
     from model.signal import Signal, read_wav_data
     samples, read_fs, _ = read_wav_data(str(wav_path))
     mono = samples[:, 0] if samples.ndim > 1 else samples
-    sig = Signal(wav_path.stem, mono, fs=1000)
+    sig = Signal(wav_path.stem, mono, fs=_SAMPLE_RATE)
     measured_freqs, measured_db = sig.avg_spectrum()
 
     curve = np.interp(DEFAULT_GRID, measured_freqs, measured_db)
@@ -269,8 +297,7 @@ def generate_profile(
 
     features = extract_curve_features(curve, DEFAULT_GRID)
 
-    # Probe audio metadata.
-    from spike._auto_beq_helpers import probe_audio_stream
+    # Probe audio metadata via shared helper.
     try:
         stream = probe_audio_stream(media_path)
         audio_codec = stream.get("codec_name", "unknown")
@@ -291,33 +318,8 @@ def generate_profile(
         author=author if author != "auto" else None,
     )
 
-    # Fetch TMDb metadata for richer profile.
-    tmdb_cache = load_cache()
-    # TODO: TMDb lookup by title+year for full metadata
-
-    # Train model (or load cached).
-    log.info("  training model...")
-    catalogue = _fetch_or_cache()
-    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
-    tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
-
-    def _synthetic_features(entry, freqs):
-        correction = evaluate_filter_chain(entry["filters"], freqs, fs=1000)
-        rolloff = -correction
-        a = int(np.argmin(np.abs(freqs - 80.0)))
-        rolloff -= rolloff[a]
-        return extract_curve_features(rolloff, freqs)
-
-    X_train, Y_train = [], []
-    for e in deduped:
-        f = _synthetic_features(e, DEFAULT_GRID)
-        m = enrich_media_metadata(e, tmdb_cache)
-        X_train.append(build_feature_vector(f, m))
-        Y_train.append(catalogue_entry_to_labels(e))
-    X_train = np.array(X_train, dtype=np.float32)
-    Y_train = np.array(Y_train, dtype=np.float32)
-
-    model = train_late_fusion(X_train, Y_train, alpha=0.3)
+    # Load or train model (cached to disk, auto-invalidates on catalogue update).
+    model, deduped = _load_or_train_model()
 
     # Predict.
     log.info("  predicting filters...")

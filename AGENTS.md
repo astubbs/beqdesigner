@@ -47,6 +47,22 @@ feature extraction, smoothing, caching) lives in common modules.
 Only the decision-making (gain formula, knee detection, topology
 classification) differs between experiments.
 
+### Shared infrastructure — no forking
+
+**Never duplicate audio extraction, probing, or configuration loading.**
+Use the single shared implementations in `spike/_auto_beq_helpers.py`:
+
+- **LFE extraction**: `extract_lfe_wav()` — handles caching, LFE detection,
+  atomic writes, WAV validation. Never inline ffmpeg extraction.
+- **Audio probing**: `probe_audio_stream()` — single ffprobe wrapper.
+- **Configuration**: `load_settings()` / `save_settings()` — reads/writes
+  `~/.config/beqdesigner/settings.json`. Never create separate config files.
+- **Cache directories**: `audio_cache_dir()`, `wav_cache_dir()`,
+  `beq_config_dir()` — single source of truth for paths.
+
+If a shared function is missing a feature you need, extend it rather
+than writing a parallel implementation.
+
 ### Documentation
 
 **README and design docs must be updated alongside code changes.**
@@ -106,6 +122,7 @@ so the user can see results incrementally: `AUTO_BEQ_SWEEP_LIMIT=1`.
 | `scripts/wav_cache_status.py` | Summarise WAV cache: counts, titles, author breakdown, growth | yes | no (imports helpers) |
 | `scripts/nn_comparison_report.py` | Compare NN-predicted vs hand-coded BEQ filters, markdown output | yes | no (imports model + helpers) |
 | `scripts/generate_beq_profile.py` | Generate complete BEQ profiles for uncatalogued media | yes | no (imports model + helpers) |
+| `scripts/beq_profile_cli.py` | Interactive CLI for profile generation (menus, progress bars) | yes (auto-enters poetry venv) | no (imports generate_beq_profile + model) |
 | `docker/Dockerfile` | Docker image: Python 3.13-slim + ffmpeg + project source | — | — |
 | `docker/docker-compose.example.yml` | Example compose config — copy, edit paths, run | — | — |
 

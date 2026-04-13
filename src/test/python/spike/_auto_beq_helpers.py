@@ -140,6 +140,27 @@ def beq_config_dir() -> Path:
     return path
 
 
+_SETTINGS_PATH = Path.home() / ".config" / "beqdesigner" / "settings.json"
+
+
+def load_settings() -> dict:
+    """Load the shared settings.json, returning {} on any error."""
+    if _SETTINGS_PATH.exists():
+        try:
+            return json.loads(_SETTINGS_PATH.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def save_settings(settings: dict) -> None:
+    """Persist the shared settings.json (merges with existing)."""
+    existing = load_settings()
+    existing.update(settings)
+    beq_config_dir()  # ensure directory exists
+    _SETTINGS_PATH.write_text(json.dumps(existing, indent=2) + "\n")
+
+
 def have_tool(name: str) -> bool:
     return shutil.which(name) is not None
 
@@ -251,6 +272,8 @@ def extract_lfe_wav(
         "-af", af_filter,
         "-ar", str(target_fs),
         "-ac", "1",
+        "-sample_fmt", "s16",
+        "-f", "wav",
         str(tmp_path),
     ]
     proc = subprocess.run(ff_args, capture_output=True, text=True)
