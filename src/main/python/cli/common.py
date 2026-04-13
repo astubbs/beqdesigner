@@ -246,7 +246,8 @@ def show_banner(title: str, config: CliConfig, log_file: Path | None = None) -> 
     version, branch, commit = get_version_info()
     try:
         cache_dir = str(wav_cache_dir())
-    except RuntimeError:
+    except RuntimeError as exc:
+        logging.getLogger("beq_cli").warning("wav_cache_dir not configured: %s", exc)
         cache_dir = "[red]NOT CONFIGURED[/red]"
 
     # Detect which model will be used (without loading it).

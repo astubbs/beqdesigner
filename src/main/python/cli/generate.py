@@ -193,7 +193,8 @@ def _load_or_train_model() -> tuple[object, str]:
         if not torch_path:
             try:
                 torch_path = str(beq_dir() / "e85_torch_filter.pt")
-            except Exception:
+            except RuntimeError as exc:
+                log.debug("beq_dir() unavailable for torch model discovery: %s", exc)
                 torch_path = None
         if torch_path and Path(torch_path).exists():
             from model.auto_beq_torch import load_torch_predictor
@@ -221,8 +222,8 @@ def _load_or_train_model() -> tuple[object, str]:
             from model.auto_beq_nn import load_model
             log.info("  loaded production model: %s", prod_path)
             return load_model(str(prod_path)), "production"
-    except Exception:
-        pass
+    except RuntimeError as exc:
+        log.debug("beq_dir() unavailable for production model discovery: %s", exc)
 
     # --- Tier 4: inline fallback (slow, warns user) ---
     log.warning(
@@ -323,7 +324,9 @@ def generate_profile(
         audio_codec = stream.get("codec_name", "unknown")
         channels = stream.get("channels", 2)
         layout = stream.get("channel_layout", "stereo")
-    except Exception:
+    except Exception as exc:
+        log.warning("failed to probe audio stream for %s: %s — using defaults",
+                    media_path.name, exc)
         audio_codec = "unknown"
         channels = 2
         layout = "stereo"
@@ -356,7 +359,11 @@ def generate_profile(
         log.info("    %s(%.0fHz, %+.1fdB, Q=%.1f)", f["type"], f["freq"], f["gain"], f["q"])
 
     # Generate spectrographs.
-    img_dir = (output_dir or output_path.parent if output_path else Path("."))
+    img_dir = output_dir or (output_path.parent if output_path else None)
+    if img_dir is None:
+        img_dir = Path(".")
+        log.warning("no output directory specified — saving spectrographs to CWD: %s",
+                    img_dir.resolve())
     ep_label = f"S{season:02d}E{episode:02d}" if season and episode else ""
     author_label = f" [{author}]" if author != "auto" else ""
     full_title = f"{title} ({year}) {ep_label}{author_label}".strip()

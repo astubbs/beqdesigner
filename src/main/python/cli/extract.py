@@ -539,7 +539,9 @@ def _load_or_prompt_config(
             if p.exists():
                 media_roots.append(p)
             else:
-                print(f"    WARNING: {p} does not exist, skipping")
+                log.warning("path does not exist: %s", p)
+                print(f"    ERROR: '{p}' does not exist. Please enter a valid path.")
+                continue  # re-prompt
 
     config_data = {"media_roots": [str(p) for p in media_roots]}
     config_path.write_text(json.dumps(config_data, indent=2) + "\n")
@@ -898,6 +900,18 @@ def main(argv: list[str] | None = None):
     # Extraction mode.
     if not media_roots:
         parser.error("no media roots configured — use --media-root or run interactively")
+
+    # Validate media roots — any invalid root is a fatal config error.
+    invalid_roots = [r for r in media_roots if not r.exists()]
+    if invalid_roots:
+        for r in invalid_roots:
+            log.error("media root does not exist: %s", r)
+        log.error(
+            "Fix the invalid paths above, or run `bin/beq-designer extract` "
+            "to reconfigure. If these are NAS paths, make sure the drives "
+            "are mounted."
+        )
+        sys.exit(1)
 
     # Fetch BEQ catalogue.
     catalogue = fetch_catalogue(beq_dir)

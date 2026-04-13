@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+
+log = logging.getLogger("nn_acquisition_recommender")
 
 
 def _classify_format(audio_types) -> str:
@@ -152,7 +155,14 @@ def _load_library_inventory(
             file=sys.stderr,
         )
         return set(), []
-    data = json.loads(inventory_path.read_text())
+    try:
+        data = json.loads(inventory_path.read_text())
+    except (json.JSONDecodeError, ValueError) as exc:
+        log.warning("failed to parse %s: %s — skipping inventory", inventory_path, exc)
+        return set(), []
+    except OSError as exc:
+        log.warning("could not read %s: %s", inventory_path, exc)
+        return set(), []
     library_tmdb = set()
     for m in data.get("media", []):
         if m.get("id_type") == "tmdb":

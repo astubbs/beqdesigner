@@ -253,8 +253,10 @@ def _do_extract(config: CliConfig, verbose: bool) -> None:
     try:
         from spike._auto_beq_helpers import beq_dir
         argv.extend(["--beq-dir", str(beq_dir())])
-    except Exception:
-        pass
+    except RuntimeError as exc:
+        logging.getLogger("beq_cli").warning(
+            "beq_dir not configured — extract will use defaults: %s", exc
+        )
     from cli.extract import main as extract_main
     extract_main(argv)
 

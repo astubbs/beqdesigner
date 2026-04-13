@@ -22,9 +22,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+
+log = logging.getLogger("nn_cache_bias_report")
 
 
 def _classify_format(audio_types) -> str:
@@ -89,12 +92,17 @@ def _load_inventory(inventory_path: Path | None) -> dict | None:
 
     **Fail-fast semantics**: if the caller explicitly passes an
     ``inventory_path``, the file must exist.  Only the default fallback
-    path (``~/Downloads/beqdesigner/media_inventory.json``) is tolerated
-    as missing (returns ``None``).
+    path (``{beq_dir}/media_inventory.json``) is tolerated as missing
+    (returns ``None``).
     """
     explicit = inventory_path is not None
     if inventory_path is None:
-        inventory_path = Path.home() / "Downloads" / "beqdesigner" / "media_inventory.json"
+        try:
+            from spike._auto_beq_helpers import beq_dir
+            _beq = beq_dir()
+        except RuntimeError:
+            _beq = Path.home() / "Downloads" / "beqdesigner"
+        inventory_path = _beq / "media_inventory.json"
     if not inventory_path.exists():
         if explicit:
             raise FileNotFoundError(
@@ -103,7 +111,14 @@ def _load_inventory(inventory_path: Path | None) -> dict | None:
                 f"that the mount is active.",
             )
         return None
-    return json.loads(inventory_path.read_text())
+    try:
+        return json.loads(inventory_path.read_text())
+    except (json.JSONDecodeError, ValueError) as exc:
+        log.warning("failed to parse %s: %s — skipping inventory", inventory_path, exc)
+        return None
+    except OSError as exc:
+        log.warning("could not read %s: %s", inventory_path, exc)
+        return None
 
 
 def generate_report(output=None, inventory_path: Path | None = None) -> None:

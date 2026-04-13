@@ -120,8 +120,8 @@ def audio_cache_dir() -> Path:
                 try:
                     data = json.load(_f)
                     raw = data.get("audio_cache_dir")
-                except Exception:
-                    pass
+                except (json.JSONDecodeError, ValueError) as exc:
+                    log.warning("failed to parse %s: %s", cfg_path, exc)
     if not raw:
         raise RuntimeError(
             "audio cache dir not configured. Set AUTO_BEQ_AUDIO_CACHE env var "
@@ -148,8 +148,11 @@ def load_settings() -> dict:
     if _SETTINGS_PATH.exists():
         try:
             return json.loads(_SETTINGS_PATH.read_text())
-        except Exception:
-            pass
+        except (json.JSONDecodeError, ValueError) as exc:
+            log.warning("failed to parse %s: %s — returning empty settings",
+                        _SETTINGS_PATH, exc)
+        except OSError as exc:
+            log.warning("could not read %s: %s", _SETTINGS_PATH, exc)
     return {}
 
 

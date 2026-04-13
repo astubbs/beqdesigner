@@ -545,6 +545,39 @@ class TestUnifiedCLI:
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Extract config validation
+# ---------------------------------------------------------------------------
+
+
+class TestExtractConfigValidation:
+    """Config with non-existent media roots must fail, not silently succeed."""
+
+    def test_any_invalid_media_root_exits_nonzero(self, tmp_path):
+        """Any invalid media root is a fatal config error — must not silently continue."""
+        from cli.extract import main as extract_main
+
+        valid_dir = tmp_path / "valid_media"
+        valid_dir.mkdir()
+
+        config_file = tmp_path / ".extract_config.json"
+        config_file.write_text(json.dumps({
+            "media_roots": [
+                str(valid_dir),
+                "/nonexistent/path",
+            ]
+        }))
+
+        with pytest.raises(SystemExit) as exc_info:
+            extract_main(["--beq-dir", str(tmp_path)])
+
+        assert exc_info.value.code != 0, (
+            "Extract should fail when ANY media root is invalid, "
+            "not silently skip it and produce 0 results"
+        )
+
+
+# ---------------------------------------------------------------------------
 # extract_lfe_wav integration
 # ---------------------------------------------------------------------------
 
