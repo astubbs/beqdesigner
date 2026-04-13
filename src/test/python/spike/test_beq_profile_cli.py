@@ -150,7 +150,8 @@ class TestProgressLoggingHandler:
         progress.update.assert_called_once()
         args, kwargs = progress.update.call_args
         assert args == (task_id,)
-        assert kwargs["advance"] == 30  # LFE extraction weight
+        assert kwargs["advance"] == 30
+        assert kwargs["description"] == "Extracting audio"
 
     def test_ignores_duplicate_triggers(self):
         from unittest.mock import MagicMock

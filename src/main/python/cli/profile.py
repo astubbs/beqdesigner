@@ -287,15 +287,21 @@ def _configure_preferences(config: CliConfig) -> CliConfig:
 # Progress tracking via log interception
 # ---------------------------------------------------------------------------
 
-_STAGE_TRIGGERS: list[tuple[str, int]] = [
-    ("extracting LFE", 30),
-    ("cached LFE WAV found", 30),   # cache hit — same weight, instant advance
-    ("WAV:", 5),
-    ("training model", 20),
-    ("loaded cached model", 20),     # cache hit
-    ("predicting filters", 5),
-    ("spectrograph saved", 5),
-    ("profile saved", 5),
+_STAGE_TRIGGERS: list[tuple[str, str, int]] = [
+    # (log trigger, display label, weight)
+    # Audio extraction — one of these fires (30%)
+    ("extracting LFE", "Extracting audio", 30),
+    ("cached LFE WAV found", "Audio cached", 30),
+    # Spectrum analysis (10%)
+    ("WAV:", "Analysing spectrum", 10),
+    # Model loading — one of these fires (30%)
+    ("loaded E85 torch", "Loading model", 30),
+    ("loaded production model", "Loading model", 30),
+    ("training inline fallback", "Training model (slow — no production model)", 30),
+    # Prediction + output (30%)
+    ("predicting filters", "Predicting filters", 10),
+    ("spectrograph saved", "Generating plots", 10),
+    ("profile saved", "Saving profile", 10),
 ]
 
 
@@ -324,12 +330,10 @@ class ProgressLoggingHandler(logging.Handler):
             if len(self.log_lines) > _MAX_LOG_LINES:
                 self.log_lines.pop(0)
 
-        for trigger, weight in _STAGE_TRIGGERS:
+        for trigger, label, weight in _STAGE_TRIGGERS:
             if trigger in msg and trigger not in self._seen:
                 self._seen.add(trigger)
-                desc = trigger.rstrip(":. ")
-                desc = desc[0].upper() + desc[1:]
-                self._progress.update(self._task_id, description=desc, advance=weight)
+                self._progress.update(self._task_id, description=label, advance=weight)
                 break
 
 
