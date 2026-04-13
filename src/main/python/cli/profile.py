@@ -404,11 +404,11 @@ def _run_single(
 
         def _make_display():
             log_text = Text("\n".join(handler.log_lines) or "Waiting for output...")
-            log_panel = Panel(log_text, title="Log", border_style="dim", height=min(len(handler.log_lines) + 2, _MAX_LOG_LINES + 2))
+            log_panel = Panel(log_text, title="Log", border_style="dim")
             return Group(progress, log_panel)
 
         try:
-            with Live(_make_display(), console=console, refresh_per_second=4, transient=True) as live:
+            with Live(_make_display(), console=console, refresh_per_second=4, transient=False) as live:
                 live.update(_make_display())
                 # Run pipeline in a thread so Live can refresh.
                 import threading
