@@ -57,27 +57,37 @@ def menu_select(
     choices: list[tuple[str, object]],
     default: str | None = None,
 ) -> object | None:
-    """Show a menu with optional section headers. Arrow keys + Enter to select.
+    """Show a menu with section headers rendered via Rich, selection via InquirerPy.
 
-    Args:
-        message: prompt text shown above the list
-        choices: list of (label, value) pairs. If value is ``None``,
-                 the entry is rendered as a non-selectable separator.
-        default: default value to pre-select
+    Section headers (value=None) are printed as styled Rich text above
+    the select prompt. Only the selectable items go into InquirerPy.
 
     Returns the value of the selected choice, or None if cancelled (Esc).
     """
     from InquirerPy import inquirer
-    from InquirerPy.separator import Separator
 
-    iq_choices = []
+    # Render headers and descriptions with Rich, build flat select list.
+    selectable: list[tuple[str, object]] = []
     for label, val in choices:
         if val is None:
-            # Add newline before header for visual spacing between sections.
-            prefix = "\n" if iq_choices else ""
-            iq_choices.append(Separator(f"{prefix}  {label}"))
+            # Section header — render with Rich.
+            console.print()
+            console.print(f"  [bold yellow]{label}[/bold yellow]")
         else:
-            iq_choices.append({"name": label, "value": val})
+            # Split into title + description.
+            parts = label.split("\n", 1)
+            title = parts[0].strip()
+            if len(parts) > 1:
+                desc = parts[1].strip()
+                console.print(f"    [dim]{title}[/dim]")
+                for line in desc.split("\n"):
+                    console.print(f"      [dim]{line.strip()}[/dim]")
+            selectable.append((title, val))
+
+    console.print()
+
+    # Simple select with just the titles (no descriptions — they're above).
+    iq_choices = [{"name": title, "value": val} for title, val in selectable]
 
     return inquirer.select(
         message=message,
@@ -85,7 +95,7 @@ def menu_select(
         default=default,
         mandatory=False,
         keybindings={"skip": [{"key": "escape"}, {"key": "left"}]},
-        long_instruction="(Esc or ← to go back)",
+        long_instruction="(↑↓ select, Enter confirm, Esc back)",
     ).execute()
 
 
