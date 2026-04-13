@@ -9,8 +9,8 @@ Run via Docker (recommended) or directly with PYTHONPATH set.
 
 Usage:
     docker compose run extract                          # via Docker
-    python3 scripts/extract_lfe.py --beq-dir /path      # direct
-    python3 scripts/extract_lfe.py                       # uses saved config
+    bin/beq-designer extract --beq-dir /path              # direct
+    bin/beq-designer extract                              # uses saved config
 
 Directory structure (managed by the script):
     beq-dir/
@@ -557,7 +557,7 @@ def _load_or_prompt_config(
 # Unmatched media selection (E84 unlabelled-pool growth)
 # ---------------------------------------------------------------------------
 #
-# Inverse of scripts/nn_acquisition_recommender.py: that tool picks catalogue
+# Inverse of `bin/beq-designer report acquisitions`: that tool picks catalogue
 # titles we DON'T have media for, to guide shopping. This picks media files
 # we HAVE but the catalogue doesn't — to grow the E84 self-training
 # unlabelled pool. Both use greedy bias-correction scoring against the
@@ -921,8 +921,8 @@ def main(argv: list[str] | None = None):
 
     # Persist the full media inventory (every file with a DB ID, whether
     # catalogue-matched or not, plus the missing-ID files).  Used by
-    # scripts/nn_acquisition_recommender.py to filter out titles already
-    # in the library, and by scripts/nn_cache_bias_report.py to surface
+    # `bin/beq-designer report acquisitions` to filter out titles already
+    # in the library, and by `bin/beq-designer report cache-bias` to surface
     # files that need their tmdb tags fixed.
     inventory_file = beq_dir / "media_inventory.json"
     inventory_file.write_text(json.dumps({

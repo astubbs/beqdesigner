@@ -7,11 +7,11 @@ interactively without editing test fixtures.
 
 Examples:
     # Synthetic roundtrip from the committed catalogue snapshot:
-    poetry run python scripts/spike_auto_beq.py \
+    bin/beq-designer dev playground \
         --entry-title "Battle: Los Angeles" --filter-count 1
 
     # Synthetic + optional matplotlib plot:
-    poetry run python scripts/spike_auto_beq.py \
+    bin/beq-designer dev playground \
         --entry-title "Battle: Los Angeles" --filter-count 1 --plot
 """
 

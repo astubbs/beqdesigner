@@ -9,9 +9,9 @@ Outputs a markdown report showing per-title predicted vs catalogue filters,
 grouped by quality tier (< 2 dB, 2-4 dB, > 5 dB).
 
 Usage:
-    poetry run python3 scripts/nn_comparison_report.py
-    BEQ_WAV_CACHE=/Volumes/nas/wav-cache poetry run python3 scripts/nn_comparison_report.py
-    poetry run python3 scripts/nn_comparison_report.py --output report.md
+    bin/beq-designer nn-report
+    BEQ_WAV_CACHE=/Volumes/nas/wav-cache bin/beq-designer nn-report
+    bin/beq-designer nn-report --output report.md
 """
 
 from __future__ import annotations

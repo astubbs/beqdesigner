@@ -15,8 +15,7 @@ Usage:
     python3 verify_wav_cache.py ~/Downloads/beqdesigner/audio-cache -v
 
 Requires PYTHONPATH to include src/main/python (uses model.wav_integrity).
-Run via: PYTHONPATH=src/main/python python3 scripts/verify_wav_cache.py ...
-Or via: poetry run python3 scripts/verify_wav_cache.py ...
+Run via: bin/beq-designer verify ...
 """
 
 from __future__ import annotations

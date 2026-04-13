@@ -6,9 +6,9 @@ consolidated comparison report showing how each experiment/config
 performs across the library.
 
 Usage:
-    python scripts/sweep_report.py
-    python scripts/sweep_report.py --csv report.csv   # also write CSV
-    python scripts/sweep_report.py --dir /path/to/csvs  # custom CSV dir
+    bin/beq-designer sweep report
+    bin/beq-designer sweep report --csv report.csv   # also write CSV
+    bin/beq-designer sweep report --dir /path/to/csvs  # custom CSV dir
 
 Reports generated:
     1. Per-experiment summary: P/M/F counts, grade changes, avg delta
@@ -395,7 +395,7 @@ def main():
     if not results:
         print(f"No experiment CSVs found in {args.dir}/", file=sys.stderr)
         print("Run experiments first:", file=sys.stderr)
-        print("  SPIKE_TEST=...::test_library_sweep bash scripts/run-spike-tests.sh", file=sys.stderr)
+        print("  bin/beq-designer dev test --file '...::test_library_sweep'", file=sys.stderr)
         sys.exit(1)
 
     print_summary_table(results)

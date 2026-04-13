@@ -58,48 +58,86 @@ _MAIN_MENU = [
     ("Quit", "quit"),
 ]
 
-_TOOLS_MENU = [
-    ("MODEL — you need a trained model before generating profiles", None),
-    ("Train model (recommended)\n"
-     "      Builds the production XGBoost model (E82) from your WAV cache.\n"
-     "      Takes ~1 minute if the WAV cache is populated. If not, you need\n"
-     "      to extract audio first (Pre-extract audio below, or it happens\n"
-     "      automatically but can take hours for a large library).", "dev-train"),
-    ("Train torch model\n"
-     "      Builds the differentiable-DSP model (E85). More accurate but\n"
-     "      requires PyTorch and takes longer to train. Also needs a\n"
-     "      populated WAV cache. Experimental.", "dev-train-torch"),
+def _cache_status_line() -> str:
+    """Quick status: how many WAVs in cache."""
+    try:
+        from spike._auto_beq_helpers import wav_cache_dir
+        cache = wav_cache_dir()
+        wavs = list(cache.rglob("*.wav"))
+        return f"✓ {len(wavs)} WAVs cached"
+    except Exception:
+        return "✗ not configured — set wav_cache_dir in settings.json"
 
-    ("ANALYSIS — check how well the model predicts, compare against known corrections", None),
-    ("NN accuracy report\n"
-     "      Run the model against your WAV cache and compare its predicted\n"
-     "      filters to the hand-tuned BEQ catalogue entries.", "nn-report"),
-    ("Discover media\n"
-     "      Scan your media library folders and match titles against the\n"
-     "      BEQ catalogue to find what can be used for training/testing.", "sweep-discover"),
-    ("Test predictions\n"
-     "      Run the model against all discovered media and measure how\n"
-     "      close its predictions are to the expert-authored corrections.", "sweep-run"),
-    ("Experiment results\n"
-     "      View and compare results from different experiment runs\n"
-     "      (E82 vs E85, different hyperparameters, etc).", "sweep-report"),
 
-    ("CACHE — audio extraction happens automatically during profile generation;"
-     " use these to pre-populate or troubleshoot", None),
-    ("Pre-extract audio\n"
-     "      Extract the bass/LFE channel from media files ahead of time\n"
-     "      so profile generation doesn't have to wait for ffmpeg.\n"
-     "      Best run on the machine with fastest access to your media\n"
-     "      drives (e.g. directly on the NAS, or via Docker).", "extract"),
-    ("Check cache health\n"
-     "      See how many files are in the cache, how many match the BEQ\n"
-     "      catalogue, and whether you have enough for training.", "cache-status"),
-    ("Repair cache\n"
-     "      Scan for corrupt or truncated audio files and optionally\n"
-     "      delete them so they get re-extracted on next use.", "verify"),
+def _model_status_line() -> str:
+    """Quick status: is production model present."""
+    from cli.profile import _check_production_model
+    if _check_production_model():
+        return "✓ production model found"
+    return "✗ no model — train one first"
 
-    ("Back", "back"),
-]
+
+def _build_tools_menu() -> list[tuple[str, object]]:
+    """Build the Tools menu dynamically with live status."""
+    cache_status = _cache_status_line()
+    model_status = _model_status_line()
+
+    return [
+        # --- Step 1: Cache ---
+        (f"STEP 1: EXTRACT AUDIO ({cache_status})", None),
+
+        ("Pre-extract audio\n"
+         "      Extract bass/LFE from media files ahead of time so profile\n"
+         "      generation is instant. Best run on the machine closest to\n"
+         "      your media drives (NAS, or via Docker).", "extract"),
+        ("Check cache health\n"
+         "      How many files are cached, how many match the BEQ catalogue,\n"
+         "      and whether you have enough for training.", "cache-status"),
+        ("Repair cache\n"
+         "      Scan for corrupt audio files and optionally delete them\n"
+         "      so they get re-extracted on next use.", "verify"),
+
+        # --- Step 2: Train ---
+        (f"STEP 2: TRAIN MODEL ({model_status})", None),
+
+        ("Train model (recommended)\n"
+         "      Builds the production XGBoost model (E82) from your WAV\n"
+         "      cache. Takes ~1 minute. Required once before generating\n"
+         "      profiles.", "dev-train"),
+        ("Train torch model\n"
+         "      Builds the differentiable-DSP model (E85). More accurate\n"
+         "      but requires PyTorch and takes longer. Experimental.", "dev-train-torch"),
+
+        # --- Step 3: Analyse ---
+        ("STEP 3: ANALYSE & TEST (requires trained model)", None),
+
+        ("NN accuracy report\n"
+         "      Compare the model's predictions against hand-tuned BEQ\n"
+         "      catalogue entries across your WAV cache.", "nn-report"),
+        ("Discover media\n"
+         "      Scan media library folders and match titles against the\n"
+         "      BEQ catalogue for training and testing.", "sweep-discover"),
+        ("Test predictions\n"
+         "      Run the model against all discovered media and measure\n"
+         "      prediction accuracy.", "sweep-run"),
+        ("Experiment results\n"
+         "      Compare results from different experiment runs.", "sweep-report"),
+
+        # --- Reports ---
+        ("REPORTS — data about your cache and the BEQ catalogue", None),
+
+        ("Acquisition recommendations\n"
+         "      Which BEQ catalogue titles are missing from your library?\n"
+         "      Suggests titles to improve training coverage.", "report-acquisitions"),
+        ("Cache bias report\n"
+         "      Compare your cache distribution to the full catalogue —\n"
+         "      find gaps in genre, era, or author coverage.", "report-cache-bias"),
+        ("Author patterns\n"
+         "      Per-author analysis of how different BEQ authors apply\n"
+         "      correction filters.", "report-author-patterns"),
+
+        ("Back", "back"),
+    ]
 
 
 def _interactive_menu_loop(config: CliConfig, verbose: bool) -> None:
@@ -131,7 +169,7 @@ def _tools_menu_loop(config: CliConfig, verbose: bool) -> None:
     """Show the tools submenu until the user goes back."""
     while True:
         try:
-            action = menu_select("Tools:", _TOOLS_MENU)
+            action = menu_select("Tools:", _build_tools_menu())
         except KeyboardInterrupt:
             break
 
@@ -160,6 +198,9 @@ def _dispatch(action: str, config: CliConfig, verbose: bool) -> None:
         "config": _do_config,
         "dev-train": _do_train,
         "dev-train-torch": _do_train_torch,
+        "report-acquisitions": _do_report_acquisitions,
+        "report-cache-bias": _do_report_cache_bias,
+        "report-author-patterns": _do_report_author_patterns,
     }
     handler = handlers.get(action)
     if handler:
@@ -312,6 +353,24 @@ def _do_train_torch(config: CliConfig, verbose: bool) -> None:
     """Train the differentiable-DSP model."""
     from cli.train_torch_model import main as train_main
     train_main()
+
+
+def _do_report_acquisitions(config: CliConfig, verbose: bool) -> None:
+    """Acquisition recommendations."""
+    from cli.nn_acquisition_recommender import main as acq_main
+    acq_main()
+
+
+def _do_report_cache_bias(config: CliConfig, verbose: bool) -> None:
+    """Cache bias report."""
+    from cli.nn_cache_bias_report import main as bias_main
+    bias_main()
+
+
+def _do_report_author_patterns(config: CliConfig, verbose: bool) -> None:
+    """Author patterns report."""
+    from cli.nn_author_pattern_report import main as author_main
+    author_main()
 
 
 # ---------------------------------------------------------------------------

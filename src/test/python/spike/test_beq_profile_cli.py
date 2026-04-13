@@ -290,24 +290,36 @@ class TestFilterableSelect:
 
     def test_tools_menu_has_section_headers(self):
         """Tools submenu should group items under descriptive headers."""
-        from cli.main import _TOOLS_MENU
+        from cli.main import _build_tools_menu
+        _TOOLS_MENU = _build_tools_menu()
         headers = [label for label, val in _TOOLS_MENU if val is None]
-        assert len(headers) >= 2, f"Expected at least 2 section headers, got {headers}"
+        assert len(headers) >= 4, f"Expected at least 4 section headers, got {headers}"
         header_text = " ".join(headers).upper()
-        assert "ANALYSIS" in header_text
-        assert "CACHE" in header_text
+        assert "STEP 1" in header_text
+        assert "STEP 2" in header_text
+        assert "STEP 3" in header_text
+        assert "REPORT" in header_text
 
     def test_tools_menu_has_model_training(self):
         """Tools menu must include model training options."""
-        from cli.main import _TOOLS_MENU
+        from cli.main import _build_tools_menu
+        _TOOLS_MENU = _build_tools_menu()
         values = [val for _, val in _TOOLS_MENU if val is not None]
         assert "dev-train" in values
         assert "dev-train-torch" in values
 
+    def test_tools_menu_has_reports(self):
+        """Tools menu must include report options."""
+        from cli.main import _build_tools_menu
+        values = [val for _, val in _build_tools_menu() if val is not None]
+        assert "report-acquisitions" in values
+        assert "report-cache-bias" in values
+        assert "report-author-patterns" in values
+
     def test_tools_menu_has_back_option(self):
         """Tools submenu must have a Back option to return to main menu."""
-        from cli.main import _TOOLS_MENU
-        values = [val for _, val in _TOOLS_MENU if val is not None]
+        from cli.main import _build_tools_menu
+        values = [val for _, val in _build_tools_menu() if val is not None]
         assert "back" in values
 
 
