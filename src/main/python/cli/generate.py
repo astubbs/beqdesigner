@@ -167,50 +167,72 @@ def _generate_spectrographs(
 
 
 # ---------------------------------------------------------------------------
-# Model caching
+# Model resolution — four-tier lookup
 # ---------------------------------------------------------------------------
 
 
-def _model_cache_path() -> Path:
-    """Return the path for the cached trained model."""
-    return beq_config_dir() / "nn_model.pkl"
+def _load_or_train_model() -> tuple[object, str]:
+    """Load the production BEQ model, or train a legacy fallback inline.
 
+    Resolution order:
+      1. AUTO_BEQ_ADVISOR=torch_differentiable + torch model file — E85 diff-DSP
+      2. AUTO_BEQ_MODEL_PATH env var — explicit XGBoost override
+      3. {beq-dir}/production_model.joblib — E82 auto-discover
+      4. Inline late-fusion α=0.3 training (legacy fallback + warning)
 
-def _load_or_train_model() -> object:
-    """Load a cached model if the catalogue hasn't changed, otherwise retrain.
-
-    The cache is keyed by a hash of the catalogue content so it auto-invalidates
-    when the BEQ catalogue is updated.
+    Returns (model, source) where source identifies the experiment for provenance.
     """
-    import pickle
+    import os as _os
 
+    from spike._auto_beq_helpers import beq_dir
+
+    # --- Tier 1: E85 torch model ---
+    advisor_name = _os.environ.get("AUTO_BEQ_ADVISOR", "").lower()
+    if advisor_name == "torch_differentiable":
+        torch_path = _os.environ.get("AUTO_BEQ_TORCH_MODEL_PATH")
+        if not torch_path:
+            try:
+                torch_path = str(beq_dir() / "e85_torch_filter.pt")
+            except Exception:
+                torch_path = None
+        if torch_path and Path(torch_path).exists():
+            from model.auto_beq_torch import load_torch_predictor
+            log.info("  loaded E85 torch model: %s", torch_path)
+            return load_torch_predictor(torch_path), "E85-diff-dsp"
+        raise FileNotFoundError(
+            f"AUTO_BEQ_ADVISOR=torch_differentiable but no model found "
+            f"at {torch_path}. Run `bin/beq-designer dev train-torch` first.",
+        )
+
+    # --- Tier 2: explicit XGBoost override ---
+    override = _os.environ.get("AUTO_BEQ_MODEL_PATH")
+    if override:
+        prod_path = Path(override)
+        if not prod_path.exists():
+            raise FileNotFoundError(f"AUTO_BEQ_MODEL_PATH={override} does not exist")
+        from model.auto_beq_nn import load_model
+        log.info("  loaded production model (AUTO_BEQ_MODEL_PATH): %s", prod_path)
+        return load_model(str(prod_path)), "production"
+
+    # --- Tier 3: auto-discover production model ---
+    try:
+        prod_path = beq_dir() / "production_model.joblib"
+        if prod_path.exists():
+            from model.auto_beq_nn import load_model
+            log.info("  loaded production model: %s", prod_path)
+            return load_model(str(prod_path)), "production"
+    except Exception:
+        pass
+
+    # --- Tier 4: inline fallback (slow, warns user) ---
+    log.warning(
+        "  No production model found — falling back to inline training. "
+        "Run `bin/beq-designer dev train` to train the production model.",
+    )
+    log.info("  training inline fallback (late fusion α=%s)...", _MODEL_ALPHA)
     catalogue = _fetch_or_cache()
     deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
-
-    # Hash catalogue to detect changes.
-    cat_key = hashlib.sha256(
-        json.dumps([e.get("title", "") for e in deduped], sort_keys=True).encode()
-    ).hexdigest()[:16]
-
-    cache_path = _model_cache_path()
-    if cache_path.exists():
-        try:
-            cached = pickle.loads(cache_path.read_bytes())
-            if cached.get("cat_key") == cat_key:
-                model = cached["model"]
-                # Smoke-test: ensure the model's predict() still works with
-                # the current class definition (catches stale pickles after
-                # code changes like adding new attributes).
-                _dummy = np.zeros((1, model.predict(np.zeros((1, 18))).shape[1]))
-                log.info("  loaded cached model (%d catalogue entries)", len(deduped))
-                return model, deduped
-        except Exception:
-            log.info("  cached model incompatible, retraining...")
-            cache_path.unlink(missing_ok=True)
-
-    log.info("  training model (%d catalogue entries)...", len(deduped))
-    tmdb_cache = load_cache()
-    tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
+    tmdb_cache = fetch_metadata_batch(deduped, cache=load_cache())
 
     def _synthetic_features(entry, freqs):
         correction = evaluate_filter_chain(entry["filters"], freqs, fs=_SAMPLE_RATE)
@@ -229,15 +251,7 @@ def _load_or_train_model() -> object:
     Y_train = np.array(Y_train, dtype=np.float32)
 
     model = train_late_fusion(X_train, Y_train, alpha=_MODEL_ALPHA)
-
-    # Cache for next run.
-    try:
-        cache_path.write_bytes(pickle.dumps({"cat_key": cat_key, "model": model}))
-        log.info("  model cached to %s", cache_path)
-    except Exception as exc:
-        log.warning("  could not cache model: %s", exc)
-
-    return model, deduped
+    return model, "inline-late-fusion"
 
 
 # ---------------------------------------------------------------------------
@@ -324,8 +338,9 @@ def generate_profile(
         author=author if author != "auto" else None,
     )
 
-    # Load or train model (cached to disk, auto-invalidates on catalogue update).
-    model, deduped = _load_or_train_model()
+    # Load production model (or fall back to inline training).
+    model, model_source = _load_or_train_model()
+    log.info("  model: %s", model_source)
 
     # Predict.
     log.info("  predicting filters...")
@@ -364,7 +379,7 @@ def generate_profile(
         "mv": str(mv),
         "sortTitle": title.lower(),
         "edition": "",
-        "note": f"Auto-generated by NN model (late fusion α=0.3, style={author})",
+        "note": f"Auto-generated by {model_source} (style={author})",
         "language": "Japanese",
         "source": metadata.source or "",
         "overview": "",  # TODO: TMDb lookup

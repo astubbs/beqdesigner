@@ -188,8 +188,27 @@ def show_banner(title: str, config: CliConfig, log_file: Path | None = None) -> 
     except RuntimeError:
         cache_dir = "[red]NOT CONFIGURED[/red]"
 
+    # Detect which model will be used (without loading it).
+    import os as _os
+    advisor = _os.environ.get("AUTO_BEQ_ADVISOR", "measurement")
+    if advisor == "torch_differentiable":
+        model_info = "E85 differentiable-DSP (torch)"
+    elif _os.environ.get("AUTO_BEQ_MODEL_PATH"):
+        model_info = f"custom ({_os.environ['AUTO_BEQ_MODEL_PATH']})"
+    else:
+        try:
+            from spike._auto_beq_helpers import beq_dir
+            prod = beq_dir() / "production_model.joblib"
+            if prod.exists():
+                model_info = f"E82 production ({prod.name})"
+            else:
+                model_info = "[yellow]no production model — will train inline (slow)[/yellow]"
+        except Exception:
+            model_info = "[yellow]no production model — will train inline (slow)[/yellow]"
+
     lines = [
         f"[bold]Version:[/bold]   {version} ({branch} @ {commit})",
+        f"[bold]Model:[/bold]     {model_info}",
         f"[bold]Output:[/bold]    {config.output_dir}",
         f"[bold]WAV cache:[/bold] {cache_dir}",
     ]
