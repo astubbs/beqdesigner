@@ -606,6 +606,87 @@ class TestExtractConfigValidation:
         with pytest.raises(RuntimeError, match="Invalid media roots"):
             extract_main(["--beq-dir", str(tmp_path)])
 
+    def test_extract_validates_roots_before_catalogue_fetch(self, tmp_path):
+        """Extract must fail on invalid roots BEFORE fetching the catalogue (no HTTP)."""
+        from unittest.mock import patch
+        from cli.extract import main as extract_main
+
+        config_file = tmp_path / ".extract_config.json"
+        config_file.write_text(json.dumps({
+            "media_roots": ["/nonexistent/nas/path"]
+        }))
+
+        fetch_called = []
+
+        def mock_fetch(beq_dir):
+            fetch_called.append(True)
+            return []
+
+        with patch("cli.extract.fetch_catalogue", mock_fetch):
+            with pytest.raises(RuntimeError, match="Invalid media roots"):
+                extract_main(["--beq-dir", str(tmp_path)])
+
+        assert not fetch_called, (
+            "fetch_catalogue was called before media root validation — "
+            "user would see a 4-second HTTP pause before the error"
+        )
+
+
+class TestStartupConfigValidation:
+    """Startup must detect and offer to fix invalid config paths."""
+
+    def test_detects_invalid_media_roots(self, tmp_path, monkeypatch):
+        """_validate_config_paths warns about non-existent media roots."""
+        from unittest.mock import patch
+        from io import StringIO
+        from rich.console import Console
+        from cli.main import _validate_config_paths
+
+        beq = tmp_path / "beq"
+        beq.mkdir()
+        config = beq / ".extract_config.json"
+        config.write_text(json.dumps({
+            "media_roots": ["/nonexistent/nas/path", "/also/missing"]
+        }))
+
+        captured = StringIO()
+        with patch("cli.main.console", Console(file=captured)):
+            with patch("spike._auto_beq_helpers.beq_dir", return_value=beq):
+                with patch("spike._auto_beq_helpers.wav_cache_dir", return_value=beq / "wav-cache"):
+                    # Prevent interactive prompt in non-tty test.
+                    monkeypatch.setattr("sys.stdin", StringIO())
+                    _validate_config_paths()
+
+        output = captured.getvalue()
+        assert "/nonexistent/nas/path" in output
+        assert "/also/missing" in output
+        assert "WARNING" in output
+
+    def test_no_warnings_when_paths_valid(self, tmp_path, monkeypatch):
+        """No warnings when all configured paths exist."""
+        from unittest.mock import patch
+        from io import StringIO
+        from rich.console import Console
+        from cli.main import _validate_config_paths
+
+        beq = tmp_path / "beq"
+        beq.mkdir()
+        wav_cache = beq / "wav-cache"
+        wav_cache.mkdir()
+        valid_root = tmp_path / "media"
+        valid_root.mkdir()
+        config = beq / ".extract_config.json"
+        config.write_text(json.dumps({"media_roots": [str(valid_root)]}))
+
+        captured = StringIO()
+        with patch("cli.main.console", Console(file=captured)):
+            with patch("spike._auto_beq_helpers.beq_dir", return_value=beq):
+                with patch("spike._auto_beq_helpers.wav_cache_dir", return_value=wav_cache):
+                    _validate_config_paths()
+
+        output = captured.getvalue()
+        assert "WARNING" not in output
+
 
 # ---------------------------------------------------------------------------
 # extract_lfe_wav integration

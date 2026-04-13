@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -644,12 +645,105 @@ def main_callback(
     logging.getLogger().addHandler(_stderr)
 
     cfg = load_config()
+
+    # Validate all configured paths before anything else.
+    _validate_config_paths()
+
     log_file = setup_log_file(cfg.output_dir)
     plain_banner = show_banner("BEQ Designer CLI", cfg, log_file=log_file)
     logging.getLogger("beq_cli").info(plain_banner)
 
     if ctx.invoked_subcommand is None:
         _interactive_menu_loop(cfg, verbose)
+
+
+# ---------------------------------------------------------------------------
+# Startup config validation
+# ---------------------------------------------------------------------------
+
+
+def _validate_config_paths() -> None:
+    """Check all configured paths at startup. Warn and offer to fix if invalid."""
+    import json as _json
+
+    problems: list[str] = []
+    _beq = None
+
+    # WAV cache.
+    try:
+        from spike._auto_beq_helpers import wav_cache_dir
+        cache = wav_cache_dir()
+        if not cache.exists():
+            problems.append(f"WAV cache does not exist: {cache}")
+    except RuntimeError:
+        pass  # not configured — banner will show NOT CONFIGURED
+
+    # BEQ dir + extract config media roots.
+    try:
+        from spike._auto_beq_helpers import beq_dir as _bd
+        _beq = _bd()
+        extract_config = _beq / ".extract_config.json"
+        if extract_config.exists():
+            roots = _json.loads(extract_config.read_text()).get("media_roots", [])
+            for r in roots:
+                if not Path(r).exists():
+                    problems.append(f"Media root does not exist: {r}")
+    except Exception:
+        pass
+
+    if not problems:
+        return
+
+    console.print()
+    for p in problems:
+        console.print(f"  [yellow]WARNING:[/yellow] {p}")
+    console.print()
+
+    # Offer to fix invalid media roots interactively.
+    media_problems = [p for p in problems if "Media root" in p]
+    if media_problems and _beq and sys.stdin.isatty():
+        from InquirerPy import inquirer
+        fix = inquirer.confirm(
+            message="Update media roots now?",
+            default=True,
+        ).execute()
+        if fix:
+            _repair_media_roots(_beq / ".extract_config.json")
+
+
+def _repair_media_roots(config_path: Path) -> None:
+    """Prompt user for new media roots, save to .extract_config.json.
+
+    Supports:
+    - One path per prompt (empty to finish)
+    - Comma-separated paths: /path/a, /path/b
+    - Escaped spaces (backslash) or unescaped spaces
+    """
+    import json as _json
+    from InquirerPy import inquirer
+
+    new_roots: list[str] = []
+    console.print("[bold]Enter media library paths[/bold]")
+    console.print("[dim]One per line, or comma-separated. Empty to finish.[/dim]")
+    while True:
+        raw = inquirer.filepath(message="Media root:", default="").execute()
+        if not raw:
+            break
+        # Support comma-separated paths.
+        parts = [p.strip() for p in raw.split(",") if p.strip()]
+        for part in parts:
+            part = part.replace("\\ ", " ")
+            p = Path(part).resolve()
+            if p.is_dir():
+                new_roots.append(str(p))
+                console.print(f"  [green]✓[/green] {p}")
+            else:
+                console.print(f"  [red]✗ Not a directory: {p}[/red]")
+    if new_roots:
+        config_path.write_text(_json.dumps({"media_roots": new_roots}, indent=2) + "\n")
+        console.print(f"\n[green]Saved {len(new_roots)} media roots to {config_path}[/green]")
+    else:
+        console.print("[yellow]No valid roots entered — config unchanged.[/yellow]")
 
 
 def main():
