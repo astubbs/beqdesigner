@@ -1,28 +1,25 @@
-# BEQ LFE Extractor — docker-compose configuration
+# BEQ Designer — docker-compose configuration
 #
 # Copy this file to docker-compose.yml and edit the volume paths to match
 # your NAS/server layout. Then run:
 #
-#   docker compose run beq-lfe-extract   # Extract LFE WAVs (resumes from cache)
-#   docker compose run beq-wav-verify    # Check WAV cache integrity
+#   docker compose run beq extract        # Extract LFE WAVs (resumes from cache)
+#   docker compose run beq verify         # Check WAV cache integrity
+#   docker compose run beq cache-status   # Show cache summary
+#   docker compose run beq --help         # List all subcommands
 #
 # The extractor runs breadth-first: alternates movies and TV, one episode
 # per show per round. Already-extracted titles are skipped instantly. Safe
 # to interrupt and re-run — atomic writes prevent corrupt WAVs.
-#
-# Service names are deliberately prefixed with `beq-` so they don't collide
-# with other compose projects on the same host (e.g. another `extract`
-# service from a different stack).
 
 services:
 
-  # ── Main extraction: scan media library + extract LFE WAVs ──────────
-  beq-lfe-extract:
+  beq:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: beq-extract:latest
-    container_name: beq-lfe-extract
+    image: beq-designer:latest
+    container_name: beq-designer
     volumes:
       # BEQ working directory — stores config, catalogue cache, WAV output,
       # and media_inventory.json. WAVs go in {beq-dir}/wav-cache/ automatically.
@@ -34,23 +31,13 @@ services:
       - /volume1/media/TV:/media/TV:ro
       - /volume2/media/Anime Movies:/media/Anime_Movies:ro
       - /volume2/media/Anime TV:/media/Anime_TV:ro
+
+    # Default command: extract LFE from all media roots.
+    # Override with: docker compose run beq <subcommand>
     command: >
+      extract
       --beq-dir /beq
       --media-root /media/Movies
       --media-root /media/TV
       --media-root /media/Anime_Movies
       --media-root /media/Anime_TV
-
-  # ── Verify WAV cache integrity (header check + duration vs catalogue) ──
-  beq-wav-verify:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    image: beq-extract:latest
-    container_name: beq-wav-verify
-    volumes:
-      - /volume3/jetspeed/beqdesigner:/beq
-    command: --beq-dir /beq --verify
-
-  # Training set status: run on the dev machine (needs numpy), not in Docker.
-  # poetry run python3 scripts/wav_cache_status.py /path/to/wav-cache

@@ -1,20 +1,26 @@
 FROM python:3.13-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends ffmpeg git \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir poetry
 
 WORKDIR /app
 
-# Copy the full source tree — simpler than cherry-picking files.
-COPY src/main/python/ src/main/python/
-COPY src/test/python/ src/test/python/
+# Copy project files for poetry install.
+COPY pyproject.toml poetry.lock ./
+COPY src/ src/
 COPY bin/ bin/
+COPY build/ build/
 
-# Make Python packages importable.
-RUN touch src/main/python/model/__init__.py \
-    && touch src/main/python/cli/__init__.py
+# Install dependencies (no dev deps, no interactive prompts).
+RUN poetry config virtualenvs.create false \
+    && poetry install --no-interaction --only main
+
+# Make entry point executable.
+RUN chmod +x bin/beq-designer
 
 ENV PYTHONPATH=/app/src/main/python:/app/src/test/python
 
-ENTRYPOINT ["python3", "src/main/python/cli/extract.py"]
+ENTRYPOINT ["python3", "bin/beq-designer"]
+CMD ["--help"]
