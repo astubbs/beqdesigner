@@ -398,6 +398,55 @@ class TestDispatch:
         _render_markdown_report(fake_report, argv=["--test"])
         assert received == [["--test"]]
 
+    def test_wav_count_cache_only_scans_once(self, tmp_path, capsys):
+        """WAV cache scan must only run once — subsequent calls use cached count."""
+        from unittest.mock import patch
+        import cli.main as main_mod
+
+        # Reset the cache.
+        main_mod._cached_wav_count = None
+
+        # Create some fake WAVs.
+        for i in range(3):
+            (tmp_path / f"test_{i}.wav").touch()
+
+        with patch("spike._auto_beq_helpers.wav_cache_dir", return_value=tmp_path):
+            # First call: should scan and print message.
+            main_mod._ensure_wav_count()
+            assert main_mod._cached_wav_count == 3
+
+            # Second call: should return immediately without printing.
+            main_mod._ensure_wav_count()
+            # If it scanned twice, _cached_wav_count would still be 3
+            # but the key test is that the function returns immediately.
+            assert main_mod._cached_wav_count == 3
+
+        # Verify the guard works: set to a value, call again — no change.
+        main_mod._cached_wav_count = 42
+        main_mod._ensure_wav_count()  # should not scan
+        assert main_mod._cached_wav_count == 42, "Cache was overwritten — guard broken"
+
+        # Clean up for other tests.
+        main_mod._cached_wav_count = None
+
+    def test_extract_handler_always_verbose(self):
+        """Extract handler must always pass -v so output is never silent."""
+        from unittest.mock import patch
+        from cli.common import CliConfig
+
+        config = CliConfig()
+        captured_argv = []
+
+        def fake_extract_main(argv):
+            captured_argv.extend(argv)
+
+        with patch("cli.extract.main", fake_extract_main):
+            with patch("spike._auto_beq_helpers.beq_dir", return_value=Path("/tmp/fake-beq")):
+                from cli.main import _do_extract
+                _do_extract(config, verbose=False)
+
+        assert "-v" in captured_argv, f"Extract must always be verbose, got: {captured_argv}"
+
 
 # ---------------------------------------------------------------------------
 # CLI invocation (subprocess — catches import errors, arg parsing bugs)

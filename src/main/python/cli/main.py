@@ -58,34 +58,33 @@ _MAIN_MENU = [
     ("Quit", "quit"),
 ]
 
-import threading
-
 _cached_wav_count: int | None = None
-_wav_count_ready = threading.Event()
 
 
-def _scan_wav_cache_background() -> None:
-    """Scan WAV cache in background thread so menus load instantly."""
+def _ensure_wav_count() -> None:
+    """Scan WAV cache once and cache the result. Shows message on first scan."""
     global _cached_wav_count
+    if _cached_wav_count is not None:
+        return
+    import time
+    t0 = time.monotonic()
     try:
         from spike._auto_beq_helpers import wav_cache_dir
         cache = wav_cache_dir()
+        console.print("[dim]Scanning WAV cache...[/dim]", end=" ")
         _cached_wav_count = sum(1 for _ in cache.rglob("*.wav"))
-    except Exception:
-        _cached_wav_count = -1  # -1 = not configured
-    _wav_count_ready.set()
-
-
-def _start_wav_scan() -> None:
-    """Kick off the background scan (idempotent)."""
-    if not _wav_count_ready.is_set() and _cached_wav_count is None:
-        threading.Thread(target=_scan_wav_cache_background, daemon=True).start()
+        elapsed = time.monotonic() - t0
+        console.print(f"[dim]{_cached_wav_count} files found ({elapsed:.1f}s).[/dim]")
+    except Exception as exc:
+        elapsed = time.monotonic() - t0
+        console.print(f"[dim]failed ({elapsed:.1f}s): {exc}[/dim]")
+        _cached_wav_count = -1
 
 
 def _cache_status_line() -> str:
-    """Quick status line — returns immediately, uses cached count if available."""
+    """Quick status line."""
     if _cached_wav_count is None:
-        return "scanning..."
+        return "not scanned yet"
     if _cached_wav_count < 0:
         return "✗ not configured"
     return f"✓ {_cached_wav_count} WAVs cached"
@@ -176,19 +175,18 @@ def _interactive_menu_loop(config: CliConfig, verbose: bool) -> None:
             _dispatch(action, config, verbose)
         except KeyboardInterrupt:
             console.print("\n[dim]Interrupted — returning to menu.[/dim]")
-        except SystemExit:
-            pass  # typer.Exit() from subcommands
+        except SystemExit as e:
+            if e.code and e.code != 0:
+                console.print(f"[red]Command exited with code {e.code}[/red]")
+        except Exception:
+            console.print_exception(show_locals=False)
 
     console.print("[dim]Goodbye.[/dim]")
 
 
 def _tools_menu_loop(config: CliConfig, verbose: bool) -> None:
     """Show the tools submenu until the user goes back."""
-    # Wait for background WAV scan if still running (first visit only).
-    if not _wav_count_ready.is_set():
-        console.print("[dim]Scanning WAV cache (first time only)...[/dim]", end="")
-        _wav_count_ready.wait()
-        console.print("[dim] done.[/dim]")
+    _ensure_wav_count()  # scan once on first visit, cached after
 
     while True:
         try:
@@ -203,8 +201,11 @@ def _tools_menu_loop(config: CliConfig, verbose: bool) -> None:
             _dispatch(action, config, verbose)
         except KeyboardInterrupt:
             console.print("\n[dim]Interrupted — returning to tools menu.[/dim]")
-        except SystemExit:
-            pass
+        except SystemExit as e:
+            if e.code and e.code != 0:
+                console.print(f"[red]Command exited with code {e.code}[/red]")
+        except Exception:
+            console.print_exception(show_locals=False)
 
 
 def _dispatch(action: str, config: CliConfig, verbose: bool) -> None:
@@ -242,43 +243,18 @@ def _do_profile(config: CliConfig, verbose: bool) -> None:
 
 
 def _do_extract(config: CliConfig, verbose: bool) -> None:
-    """Extract LFE cache — delegates to extract_lfe."""
-    from InquirerPy import inquirer
-    from spike._auto_beq_helpers import audio_cache_dir
+    """Extract LFE cache — delegates to extract_lfe.
 
+    Always runs verbose so the user sees what's happening.
+    Passes beq-dir from shared config. Media roots come from the
+    extract script's own saved config (.extract_config.json).
+    """
+    argv = ["-v"]  # always verbose — never run silently
     try:
-        default_cache = str(audio_cache_dir())
-    except RuntimeError:
-        default_cache = ""
-
-    media_roots = []
-    console.print("[bold]Add media library roots[/bold] (press Enter with empty path to finish):")
-    while True:
-        root = inquirer.filepath(message="Media root (empty to finish):", default="").execute()
-        if not root:
-            break
-        p = Path(root).resolve()
-        if p.is_dir():
-            media_roots.append(str(p))
-        else:
-            console.print(f"[red]Not a directory: {p}[/red]")
-
-    if not media_roots:
-        console.print("[yellow]No media roots provided.[/yellow]")
-        return
-
-    limit = inquirer.text(message="Max titles to extract (0 = unlimited):", default="0").execute()
-
-    argv = []
-    for r in media_roots:
-        argv.extend(["--media-root", r])
-    if default_cache:
-        argv.extend(["--beq-dir", default_cache])
-    if limit and limit != "0":
-        argv.extend(["--limit", limit])
-    if verbose:
-        argv.append("-v")
-
+        from spike._auto_beq_helpers import beq_dir
+        argv.extend(["--beq-dir", str(beq_dir())])
+    except Exception:
+        pass
     from cli.extract import main as extract_main
     extract_main(argv)
 
@@ -716,7 +692,6 @@ def main_callback(
     )
 
     cfg = load_config()
-    _start_wav_scan()  # background scan — menu shows "scanning..." until ready
     log_file = setup_log_file(cfg.output_dir)
     plain_banner = show_banner("BEQ Designer CLI", cfg, log_file=log_file)
     logging.getLogger("beq_cli").info(plain_banner)

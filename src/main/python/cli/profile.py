@@ -576,14 +576,13 @@ def generate(
     Run with no arguments for interactive menus, or pass a media path directly.
     """
     # Swallow default log output — the ProgressHandler drives the UI.
-    # In verbose mode the handler also feeds a live log panel.
+    # Log file is set up by main_callback; if called standalone, set it up here.
     logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO, handlers=[logging.NullHandler()])
 
     config = load_config()
 
-    # Startup banner and log file.
-    _log_file = setup_log_file(output_dir or config.output_dir, log_name="beq_profile.log")
-    plain_banner = show_banner("BEQ Profile Generator", config, log_file=_log_file)
+    # Banner (log file already set up by main_callback if running via bin/beq-designer).
+    plain_banner = show_banner("BEQ Profile Generator", config)
     logging.getLogger("beq_profile_cli").info(plain_banner)
 
     # Warn if no production model — this will be slow and inaccurate.

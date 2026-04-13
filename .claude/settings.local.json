@@ -51,7 +51,8 @@
       "WebFetch(domain:inquirerpy.readthedocs.io)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:textual.textualize.io)",
-      "Bash(git:*)"
+      "Bash(git:*)",
+      "Bash(PYTHONPATH=src/main/python poetry run python -c \"import torch; print\\(torch.__version__\\)\")"
     ]
   }
 }

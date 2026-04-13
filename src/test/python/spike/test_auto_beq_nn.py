@@ -322,9 +322,11 @@ def test_get_advisor_trained_model(tmp_path, monkeypatch):
     assert advice.source == "trained_model"
 
 
-def test_get_advisor_trained_model_no_path(monkeypatch):
-    """get_advisor('trained_model') raises if AUTO_BEQ_MODEL_PATH not set."""
+def test_get_advisor_trained_model_no_path(monkeypatch, tmp_path):
+    """get_advisor('trained_model') raises if no model is discoverable."""
     monkeypatch.delenv("AUTO_BEQ_MODEL_PATH", raising=False)
+    # Point beq_dir at an empty tmp dir so auto-discovery finds nothing.
+    monkeypatch.setattr("spike._auto_beq_helpers.beq_dir", lambda: tmp_path)
     with pytest.raises(ValueError, match="AUTO_BEQ_MODEL_PATH"):
         get_advisor("trained_model")
 
