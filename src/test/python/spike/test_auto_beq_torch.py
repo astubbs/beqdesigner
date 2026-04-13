@@ -36,6 +36,9 @@ pytestmark = pytest.mark.skipif(
     not _torch_available(),
     reason="torch not installed — install via `poetry run pip install torch`",
 )
+# NOTE: These tests must run in a SEPARATE pytest invocation from Qt tests.
+# torch + PyQt6 segfault when loaded in the same process on macOS (MPS conflict).
+# bin/beq-designer dev test handles this automatically with two passes.
 
 
 # ---------------------------------------------------------------------------

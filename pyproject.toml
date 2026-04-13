@@ -57,6 +57,7 @@ scikit-learn = "^1.8.0"
 #   poetry run python3 -c "import whisper; whisper.load_model('tiny')"  # downloads weights
 #
 # CI does not install these. See docs/design/auto_beq_nn_paradigm_shifts.md.
+pytest-forked = "^1.6.0"
 
 [tool.poetry.scripts]
 ui-gen = "build.regen_ui:main"

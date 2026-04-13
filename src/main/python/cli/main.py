@@ -536,22 +536,42 @@ def dev_test(
     integration: bool = typer.Option(False, "--integration", help="Run integration tests only."),
     experiments: bool = typer.Option(False, "--experiments", help="Run experiment tests only."),
 ) -> None:
-    """Run spike tests (default: unit only, excludes integration + experiment)."""
+    """Run spike tests (default: unit only, excludes integration + experiment).
+
+    Torch tests run in a separate pytest invocation to avoid a segfault
+    caused by torch + PyQt6 in the same process on macOS (MPS conflict).
+    """
     test_selector = file or "src/test/python/spike/"
-    cmd = ["poetry", "run", "pytest", test_selector, "-v"]
-    if verbose:
-        cmd.append("-s")
-    # Marker filtering.
-    if markers:
-        cmd.extend(["-m", markers])
-    elif integration:
-        cmd.extend(["-m", "integration"])
-    elif experiments:
-        cmd.extend(["-m", "experiment"])
-    else:
-        cmd.extend(["-m", "not integration and not experiment"])
     env = {**os.environ, "AUTO_BEQ_ADVISOR": advisor}
-    subprocess.run(cmd, env=env, cwd=str(REPO_ROOT))
+    base_cmd = ["poetry", "run", "pytest", "-v"]
+    if verbose:
+        base_cmd.append("-s")
+
+    marker_args = []
+    if markers:
+        marker_args = ["-m", markers]
+    elif integration:
+        marker_args = ["-m", "integration"]
+    elif experiments:
+        marker_args = ["-m", "experiment"]
+    else:
+        marker_args = ["-m", "not integration and not experiment"]
+
+    # Pass 1: all tests except torch (avoids Qt + torch segfault).
+    console.print("[bold]Pass 1:[/bold] Running tests (excluding torch)...")
+    cmd1 = base_cmd + [test_selector, "--ignore=src/test/python/spike/test_auto_beq_torch.py"] + marker_args
+    r1 = subprocess.run(cmd1, env=env, cwd=str(REPO_ROOT))
+
+    # Pass 2: torch tests only (separate process, no Qt loaded).
+    torch_test = "src/test/python/spike/test_auto_beq_torch.py"
+    if not file or "torch" in (file or ""):
+        console.print("\n[bold]Pass 2:[/bold] Running torch tests (separate process)...")
+        cmd2 = base_cmd + [torch_test]
+        r2 = subprocess.run(cmd2, env=env, cwd=str(REPO_ROOT))
+        if r1.returncode != 0 or r2.returncode != 0:
+            raise SystemExit(1)
+    elif r1.returncode != 0:
+        raise SystemExit(1)
 
 
 @dev_app.command(name="sweep")
