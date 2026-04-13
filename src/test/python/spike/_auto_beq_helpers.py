@@ -832,15 +832,10 @@ def wav_cache_dir() -> Path:
 
     Single source of truth for where extracted LFE WAVs live.  Resolution
     order: ``BEQ_WAV_CACHE`` env var → ``wav_cache_dir`` in
-    ``~/.config/beqdesigner/settings.json`` → default
-    ``~/Downloads/beqdesigner/wav-cache``.
+    ``~/.config/beqdesigner/settings.json`` → ``audio_cache_dir``
+    (shared with profile generation) → error.
 
-    **Fail-fast semantics**: if an explicit path is configured (env var
-    or settings.json) and it does not exist, raise ``FileNotFoundError``
-    immediately rather than silently creating an empty directory.  This
-    prevents the common footgun of a stale mount or wrong path producing
-    a silent "0 WAVs" result that masquerades as an empty cache.  Only
-    the default fallback path is auto-created.
+    Raises RuntimeError if not configured.
     """
     explicit_source: str | None = None
     raw = os.environ.get("BEQ_WAV_CACHE")
@@ -855,10 +850,18 @@ def wav_cache_dir() -> Path:
                     raw = data.get("wav_cache_dir")
                     if raw:
                         explicit_source = f"wav_cache_dir in {cfg_path}"
+                    elif data.get("audio_cache_dir"):
+                        # Fall back to audio_cache_dir if wav_cache_dir not set.
+                        raw = data["audio_cache_dir"]
+                        explicit_source = f"audio_cache_dir in {cfg_path}"
                 except Exception:
                     pass
     if not raw:
-        raw = str(Path.home() / "Downloads" / "beqdesigner" / "wav-cache")
+        raise RuntimeError(
+            "WAV cache dir not configured. Set BEQ_WAV_CACHE env var "
+            "or add {\"wav_cache_dir\": \"/path/to/cache\"} "
+            "to ~/.config/beqdesigner/settings.json"
+        )
 
     path = Path(raw).expanduser()
 

@@ -184,11 +184,11 @@ def show_banner(title: str, config: CliConfig, log_file: Path | None = None) -> 
     Returns the banner text with Rich markup stripped (for log files).
     """
     from rich.panel import Panel
-    from spike._auto_beq_helpers import audio_cache_dir
+    from spike._auto_beq_helpers import wav_cache_dir
 
     version, branch, commit = get_version_info()
     try:
-        cache_dir = str(audio_cache_dir())
+        cache_dir = str(wav_cache_dir())
     except RuntimeError:
         cache_dir = "[red]NOT CONFIGURED[/red]"
 
