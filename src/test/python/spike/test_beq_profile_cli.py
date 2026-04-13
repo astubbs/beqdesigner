@@ -285,22 +285,29 @@ class TestFilterableSelect:
         assert len(selectable) <= 5, f"Main menu too cluttered: {selectable}"
         values = [val for _, val in _MAIN_MENU if val is not None]
         assert "profile" in values
-        assert "advanced" in values
+        assert "tools" in values
         assert "quit" in values
 
-    def test_advanced_menu_has_section_headers(self):
-        """Advanced submenu should group items under descriptive headers."""
-        from cli.main import _ADVANCED_MENU
-        headers = [label for label, val in _ADVANCED_MENU if val is None]
+    def test_tools_menu_has_section_headers(self):
+        """Tools submenu should group items under descriptive headers."""
+        from cli.main import _TOOLS_MENU
+        headers = [label for label, val in _TOOLS_MENU if val is None]
         assert len(headers) >= 2, f"Expected at least 2 section headers, got {headers}"
         header_text = " ".join(headers).upper()
         assert "ANALYSIS" in header_text
         assert "CACHE" in header_text
 
-    def test_advanced_menu_has_back_option(self):
-        """Advanced submenu must have a Back option to return to main menu."""
-        from cli.main import _ADVANCED_MENU
-        values = [val for _, val in _ADVANCED_MENU if val is not None]
+    def test_tools_menu_has_model_training(self):
+        """Tools menu must include model training options."""
+        from cli.main import _TOOLS_MENU
+        values = [val for _, val in _TOOLS_MENU if val is not None]
+        assert "dev-train" in values
+        assert "dev-train-torch" in values
+
+    def test_tools_menu_has_back_option(self):
+        """Tools submenu must have a Back option to return to main menu."""
+        from cli.main import _TOOLS_MENU
+        values = [val for _, val in _TOOLS_MENU if val is not None]
         assert "back" in values
 
 

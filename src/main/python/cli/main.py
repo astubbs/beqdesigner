@@ -53,14 +53,17 @@ app.add_typer(sweep_app, name="sweep")
 
 _MAIN_MENU = [
     ("Generate profile       Analyse a movie/episode and create BEQ correction filters", "profile"),
-    ("Advanced               Analysis, cache management, and developer tools", "advanced"),
+    ("Tools                  Model training, analysis, cache management", "tools"),
     ("Settings               Output directory, default paths", "config"),
     ("Quit", "quit"),
 ]
 
-_ADVANCED_MENU = [
-    ("ANALYSIS — these steps run automatically during profile generation;"
-     " use them here to investigate output or re-run individually", None),
+_TOOLS_MENU = [
+    ("MODEL — train or retrain the prediction model (required before first use)", None),
+    ("Train model            Train the production model from your WAV cache (E82, ~1 min)", "dev-train"),
+    ("Train torch model      Train the differentiable-DSP model (E85, slower)", "dev-train-torch"),
+
+    ("ANALYSIS — investigate model accuracy and experiment results", None),
     ("NN accuracy report     Compare the model's predicted filters vs hand-tuned BEQ entries", "nn-report"),
     ("Discover media         Scan media library folders and match against the BEQ catalogue", "sweep-discover"),
     ("Test predictions       Run the model against all discovered media and measure accuracy", "sweep-run"),
@@ -87,8 +90,8 @@ def _interactive_menu_loop(config: CliConfig, verbose: bool) -> None:
         if action is None or action == "quit":
             break
 
-        if action == "advanced":
-            _advanced_menu_loop(config, verbose)
+        if action == "tools":
+            _tools_menu_loop(config, verbose)
             continue
 
         try:
@@ -101,11 +104,11 @@ def _interactive_menu_loop(config: CliConfig, verbose: bool) -> None:
     console.print("[dim]Goodbye.[/dim]")
 
 
-def _advanced_menu_loop(config: CliConfig, verbose: bool) -> None:
-    """Show the advanced submenu until the user goes back."""
+def _tools_menu_loop(config: CliConfig, verbose: bool) -> None:
+    """Show the tools submenu until the user goes back."""
     while True:
         try:
-            action = menu_select("Advanced options:", _ADVANCED_MENU)
+            action = menu_select("Tools:", _TOOLS_MENU)
         except KeyboardInterrupt:
             break
 
@@ -115,7 +118,7 @@ def _advanced_menu_loop(config: CliConfig, verbose: bool) -> None:
         try:
             _dispatch(action, config, verbose)
         except KeyboardInterrupt:
-            console.print("\n[dim]Interrupted — returning to advanced menu.[/dim]")
+            console.print("\n[dim]Interrupted — returning to tools menu.[/dim]")
         except SystemExit:
             pass
 
@@ -132,6 +135,8 @@ def _dispatch(action: str, config: CliConfig, verbose: bool) -> None:
         "sweep-run": _do_sweep_run,
         "sweep-report": _do_sweep_report,
         "config": _do_config,
+        "dev-train": _do_train,
+        "dev-train-torch": _do_train_torch,
     }
     handler = handlers.get(action)
     if handler:
@@ -272,6 +277,18 @@ def _do_config(config: CliConfig, verbose: bool) -> None:
     """Configure preferences."""
     from cli.profile import _configure_preferences
     _configure_preferences(config)
+
+
+def _do_train(config: CliConfig, verbose: bool) -> None:
+    """Train the production XGBoost model."""
+    from cli.train_production_model import main as train_main
+    train_main()
+
+
+def _do_train_torch(config: CliConfig, verbose: bool) -> None:
+    """Train the differentiable-DSP model."""
+    from cli.train_torch_model import main as train_main
+    train_main()
 
 
 # ---------------------------------------------------------------------------
