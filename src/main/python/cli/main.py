@@ -417,12 +417,24 @@ def dev_test(
     file: Optional[str] = typer.Option(None, "--file", help="Specific test file or file::test_name."),  # noqa: UP007
     verbose: bool = typer.Option(False, "--verbose", help="Show test output (no capture)."),
     advisor: str = typer.Option("measurement", "--advisor", help="Advisor implementation to use."),
+    markers: Optional[str] = typer.Option(None, "--markers", help="Pytest marker filter expression."),  # noqa: UP007
+    integration: bool = typer.Option(False, "--integration", help="Run integration tests only."),
+    experiments: bool = typer.Option(False, "--experiments", help="Run experiment tests only."),
 ) -> None:
-    """Run spike tests (unit + integration)."""
+    """Run spike tests (default: unit only, excludes integration + experiment)."""
     test_selector = file or "src/test/python/spike/"
     cmd = ["poetry", "run", "pytest", test_selector, "-v"]
     if verbose:
         cmd.append("-s")
+    # Marker filtering.
+    if markers:
+        cmd.extend(["-m", markers])
+    elif integration:
+        cmd.extend(["-m", "integration"])
+    elif experiments:
+        cmd.extend(["-m", "experiment"])
+    else:
+        cmd.extend(["-m", "not integration and not experiment"])
     env = {**os.environ, "AUTO_BEQ_ADVISOR": advisor}
     subprocess.run(cmd, env=env, cwd=str(REPO_ROOT))
 
@@ -481,6 +493,71 @@ def dev_playground(
     if plot:
         argv.append("--plot")
     spike_main(argv)
+
+
+@dev_app.command(name="train")
+def dev_train() -> None:
+    """Train the production XGBoost model (E82 50:1 weighted hybrid)."""
+    from cli.train_production_model import main as train_main
+    train_main()
+
+
+@dev_app.command(name="train-torch")
+def dev_train_torch() -> None:
+    """Train the differentiable-DSP model (E85+)."""
+    from cli.train_torch_model import main as train_main
+    train_main()
+
+
+# ---------------------------------------------------------------------------
+# Report subcommands
+# ---------------------------------------------------------------------------
+
+report_app = typer.Typer(help="Analysis reports — cache bias, author patterns, acquisition recommendations.")
+app.add_typer(report_app, name="report")
+
+
+@report_app.command(name="cache-bias")
+def report_cache_bias(
+    output: Optional[Path] = typer.Option(None, "-o", "--output", help="Save report to file."),  # noqa: UP007
+) -> None:
+    """Compare WAV cache distribution to the full BEQ catalogue."""
+    argv = ["-o", str(output)] if output else []
+    from cli.nn_cache_bias_report import main as bias_main
+    bias_main(argv)
+
+
+@report_app.command(name="author-patterns")
+def report_author_patterns(
+    output: Optional[Path] = typer.Option(None, "-o", "--output", help="Save report to file."),  # noqa: UP007
+) -> None:
+    """Per-author distribution analysis from the BEQ catalogue."""
+    argv = ["-o", str(output)] if output else []
+    from cli.nn_author_pattern_report import main as author_main
+    author_main(argv)
+
+
+@report_app.command(name="acquisitions")
+def report_acquisitions(
+    count: int = typer.Option(50, "-n", "--count", help="Number of titles to recommend."),
+    output: Optional[Path] = typer.Option(None, "-o", "--output", help="Save report to file."),  # noqa: UP007
+) -> None:
+    """Recommend missing catalogue titles to acquire (greedy bias correction)."""
+    argv = ["-n", str(count)]
+    if output:
+        argv.extend(["-o", str(output)])
+    from cli.nn_acquisition_recommender import main as acq_main
+    acq_main(argv)
+
+
+@report_app.command(name="f-experiments")
+def report_f_experiments(
+    output: Optional[Path] = typer.Option(None, "-o", "--output", help="Save report to file."),  # noqa: UP007
+) -> None:
+    """Generate comparison report from F-experiment CSV results."""
+    argv = ["-o", str(output)] if output else []
+    from cli.nn_f_experiment_report import main as f_main
+    f_main(argv)
 
 
 # ---------------------------------------------------------------------------

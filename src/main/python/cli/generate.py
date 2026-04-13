@@ -44,6 +44,26 @@ from spike.sweep_discover import parse_media_filename
 
 log = logging.getLogger("generate_beq_profile")
 
+
+def _parse_ffprobe_streams(probe_json: str) -> dict:
+    """Extract the first audio stream dict from ffprobe JSON output.
+
+    Handles both top-level ``streams`` (standalone mkv/mp4) and nested
+    ``programs[0].streams`` (MPEG-TS containers).
+    Returns ``{}`` on missing data or malformed JSON.
+    """
+    import json as _json
+    try:
+        parsed = _json.loads(probe_json)
+    except (ValueError, TypeError):
+        return {}
+    streams = parsed.get("streams") or []
+    if not streams:
+        programs = parsed.get("programs") or []
+        if programs:
+            streams = programs[0].get("streams") or []
+    return streams[0] if streams else {}
+
 _SAMPLE_RATE = 1000  # coupled to analysis algorithm
 _MODEL_ALPHA = 0.3   # late-fusion regularization parameter
 

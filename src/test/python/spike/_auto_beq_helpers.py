@@ -301,15 +301,21 @@ def load_and_smooth(
     fs: int,
     freqs: np.ndarray,
     expected_runtime_min: float = 0,
-) -> np.ndarray:
+    return_absolute: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Load a WAV file, compute avg spectrum, interp to grid, smooth to 1/6-octave.
 
     Pipeline: validate WAV integrity → WAV → Welch avg spectrum → interp
     to log grid → normalise to 80 Hz anchor → 1/6-octave smooth → re-anchor.
 
+    When *return_absolute* is True (F3/E42), also returns absolute dBFS
+    levels at the 9 Option A frequency bins **before** 80 Hz normalisation.
+    This captures mastering-level information that normalisation strips out.
+
     Raises RuntimeError if the WAV fails integrity checks.
     """
     from model.auto_beq import smooth_fractional_octave
+    from model.auto_beq_nn import OPTION_A_BINS_HZ
     from model.signal import Signal, read_wav_data
     from model.wav_integrity import validate_wav
 
@@ -322,20 +328,161 @@ def load_and_smooth(
     assert read_fs == fs, f"expected fs={fs}, got {read_fs}"
     mono = samples[:, 0] if samples.ndim > 1 else samples
     duration_s = len(mono) / fs
-    log.info("loaded %d samples (%.1f s = %.1f min)", len(mono), duration_s, duration_s / 60)
+    log.debug("loaded %d samples (%.1f s = %.1f min)", len(mono), duration_s, duration_s / 60)
     sig = Signal(wav_path.stem, mono, fs=fs)
 
-    log.info("computing average spectrum (Welch)")
+    log.debug("computing average spectrum (Welch)")
     measured_freqs, measured_db = sig.avg_spectrum()
-    log.info("raw spectrum: %d bins from %.1f to %.1f Hz",
-             len(measured_freqs), measured_freqs[0], measured_freqs[-1])
+    log.debug("raw spectrum: %d bins from %.1f to %.1f Hz",
+              len(measured_freqs), measured_freqs[0], measured_freqs[-1])
 
     measured_on_grid = np.interp(freqs, measured_freqs, measured_db)
+
+    # F3/E42: capture absolute dBFS at Option A bins BEFORE normalisation.
+    absolute_at_bins: np.ndarray | None = None
+    if return_absolute:
+        absolute_at_bins = np.interp(OPTION_A_BINS_HZ, freqs, measured_on_grid)
+
     anchor_idx = int(np.argmin(np.abs(freqs - 80.0)))
     measured_on_grid -= measured_on_grid[anchor_idx]
     measured_on_grid = smooth_fractional_octave(measured_on_grid, freqs, octaves=1.0 / 6.0)
     measured_on_grid -= measured_on_grid[anchor_idx]
+
+    if return_absolute:
+        return measured_on_grid, absolute_at_bins
     return measured_on_grid
+
+
+def detect_music_chunks(
+    mono: np.ndarray,
+    fs: int,
+    chunk_s: float = 60.0,
+    periodicity_threshold: float = 0.4,
+) -> np.ndarray:
+    """Detect music-dominated chunks via onset regularity (F4/E44).
+
+    Musical content has periodic onset patterns at typical tempos
+    (60-200 BPM = 0.3-1.0 s lag).  Impact/effects audio is aperiodic.
+    By computing the autocorrelation of the spectral-flux onset envelope
+    per chunk and checking for strong peaks in the musical tempo range,
+    we can flag chunks where score/soundtrack dominates.
+
+    Excluding or down-weighting these chunks improves rolloff detection
+    because music bass is intentionally mixed and doesn't reflect the
+    rolloff ceiling the same way effects do.
+
+    Returns boolean array of shape ``(n_chunks,)`` where True = music detected.
+    """
+    import scipy.signal as ss
+
+    chunk_samples = int(chunk_s * fs)
+    min_chunk = chunk_samples // 2
+    chunks = [
+        mono[i : i + chunk_samples]
+        for i in range(0, len(mono), chunk_samples)
+        if len(mono[i : i + chunk_samples]) >= min_chunk
+    ]
+    is_music = np.zeros(len(chunks), dtype=bool)
+
+    # Tempo range: 60-200 BPM → period 0.3-1.0 s → lag in samples.
+    min_lag = int(0.3 * fs)
+    max_lag = min(int(1.0 * fs), chunk_samples // 2)
+    if max_lag <= min_lag:
+        return is_music  # chunk too short for tempo detection
+
+    for i, chunk in enumerate(chunks):
+        # Spectral flux as onset strength proxy.
+        nperseg = min(256, len(chunk))
+        _, _, Zxx = ss.stft(chunk, fs=fs, nperseg=nperseg, noverlap=nperseg // 2)
+        mag = np.abs(Zxx)
+        # Half-wave rectified difference between successive frames.
+        flux = np.maximum(0, np.diff(mag, axis=1)).sum(axis=0)
+        if len(flux) < max_lag + 1:
+            continue
+
+        # Normalised autocorrelation in the tempo lag range.
+        flux_centered = flux - flux.mean()
+        norm = np.dot(flux_centered, flux_centered)
+        if norm < 1e-12:
+            continue
+        acorr = np.correlate(flux_centered, flux_centered, mode="full")
+        acorr = acorr[len(flux_centered) - 1 :]  # positive lags only
+        acorr /= norm
+
+        tempo_region = acorr[min_lag : max_lag + 1]
+        if len(tempo_region) > 0 and tempo_region.max() > periodicity_threshold:
+            is_music[i] = True
+
+    n_flagged = int(is_music.sum())
+    if n_flagged > 0:
+        log.info("music detection: %d/%d chunks flagged as music", n_flagged, len(chunks))
+    return is_music
+
+
+def _weighted_percentile(
+    matrix: np.ndarray,
+    weights: np.ndarray,
+    percentile: float,
+) -> np.ndarray:
+    """Weighted percentile across axis 0 of a 2-D matrix.
+
+    Rows with weight 0 are excluded.  Falls back to ``np.percentile``
+    when all weights are equal.
+    """
+    mask = weights > 0
+    if mask.all() and np.allclose(weights, weights[0]):
+        return np.percentile(matrix, percentile, axis=0)
+    if not mask.any():
+        return np.percentile(matrix, percentile, axis=0)
+
+    m = matrix[mask]
+    w = weights[mask]
+    result = np.empty(m.shape[1], dtype=np.float64)
+    for col in range(m.shape[1]):
+        sorted_idx = np.argsort(m[:, col])
+        sorted_vals = m[sorted_idx, col]
+        sorted_w = w[sorted_idx]
+        cumw = np.cumsum(sorted_w)
+        cutoff = percentile / 100.0 * cumw[-1]
+        idx = int(np.searchsorted(cumw, cutoff))
+        idx = min(idx, len(sorted_vals) - 1)
+        result[col] = sorted_vals[idx]
+    return result
+
+
+def extract_chunk_stats(
+    chunk_matrix: np.ndarray,
+    freqs: np.ndarray,
+    bins_hz: list[float],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute per-bin chunk statistics (F2/E43 — Option B features).
+
+    From the ``[n_chunks x n_freq_bins]`` dB matrix, compute at each of
+    the target frequency bins:
+
+    1. **Standard deviation** across chunks — captures content variability.
+       High stddev = variable bass (showcase scenes inflate the average);
+       low stddev = consistent rolloff (high confidence in the ceiling).
+    2. **Ceiling fraction** — proportion of chunks within 3 dB of the 90th
+       percentile.  High fraction = most chunks agree on the rolloff level.
+
+    These 18 values (9 stddev + 9 ceiling_frac) supplement the 9 Option A
+    percentile values, forming the 27-dim Option B feature vector.
+
+    Returns ``(stddev_9, ceiling_frac_9)`` each of shape ``(len(bins_hz),)``.
+    """
+    n_bins = len(bins_hz)
+    stddev = np.empty(n_bins, dtype=np.float32)
+    ceiling_frac = np.empty(n_bins, dtype=np.float32)
+
+    for i, target_hz in enumerate(bins_hz):
+        col_idx = int(np.argmin(np.abs(freqs - target_hz)))
+        column = chunk_matrix[:, col_idx]
+        stddev[i] = float(np.std(column))
+        p90 = float(np.percentile(column, 90))
+        ceiling_frac[i] = float(np.mean(column >= p90 - 3.0))
+
+    return stddev, ceiling_frac
 
 
 def load_and_smooth_chunked(
@@ -345,7 +492,10 @@ def load_and_smooth_chunked(
     chunk_s: float = 60.0,
     percentile: float = 90.0,
     expected_runtime_min: float = 0,
-) -> np.ndarray:
+    return_absolute: bool = False,
+    return_chunk_stats: bool = False,
+    chunk_weights: np.ndarray | None = None,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray] | dict:
     """Chunked-percentile spectrum: chunks → STFT peak per chunk → Nth-percentile.
 
     Pipeline: validate WAV integrity → WAV → split into fixed-length chunks → STFT peak curve
@@ -357,6 +507,9 @@ def load_and_smooth_chunked(
     estimate than a whole-film Welch average, especially for short
     content where a single outlier scene can dominate the whole-film
     statistic (see E15c: EoT showcase scenes inflate 10 Hz by 16-19 dB).
+
+    When *return_absolute* is True (F3/E42), also returns absolute dBFS
+    levels at the 9 Option A bins before normalisation.
 
     Parameters
     ----------
@@ -374,6 +527,7 @@ def load_and_smooth_chunked(
     import scipy.signal as ss
 
     from model.auto_beq import smooth_fractional_octave
+    from model.auto_beq_nn import OPTION_A_BINS_HZ
     from model.signal import read_wav_data
     from model.wav_integrity import validate_wav
 
@@ -386,7 +540,7 @@ def load_and_smooth_chunked(
     assert read_fs == fs, f"expected fs={fs}, got {read_fs}"
     mono = samples[:, 0] if samples.ndim > 1 else samples
     duration_s = len(mono) / fs
-    log.info(
+    log.debug(
         "loaded %d samples (%.1f s = %.1f min) for chunked analysis",
         len(mono), duration_s, duration_s / 60,
     )
@@ -398,7 +552,7 @@ def load_and_smooth_chunked(
         for i in range(0, len(mono), chunk_samples)
         if len(mono[i : i + chunk_samples]) >= min_chunk_samples
     ]
-    log.info(
+    log.debug(
         "chunked into %d chunks of %.0f s (fs=%d, percentile=%.0f)",
         len(chunks), chunk_s, fs, percentile,
     )
@@ -429,20 +583,50 @@ def load_and_smooth_chunked(
 
     # [n_chunks × n_freq_bins] → percentile across chunks at each freq bin.
     matrix = np.stack(chunk_peaks, axis=0)
-    aggregated = np.percentile(matrix, percentile, axis=0)
+    if chunk_weights is not None:
+        aggregated = _weighted_percentile(matrix, chunk_weights, percentile)
+    else:
+        aggregated = np.percentile(matrix, percentile, axis=0)
+
+    # F2/E43 (Option B): per-bin chunk statistics for the 9 Option A bins.
+    # stddev captures content variability; ceiling_frac captures how many
+    # chunks are near the rolloff ceiling (high = confident estimate).
+    chunk_stddev: np.ndarray | None = None
+    chunk_ceiling_frac: np.ndarray | None = None
+    if return_chunk_stats:
+        chunk_stddev, chunk_ceiling_frac = extract_chunk_stats(
+            matrix, freqs, OPTION_A_BINS_HZ,
+        )
+
+    # F3/E42: capture absolute dBFS at Option A bins BEFORE normalisation.
+    absolute_at_bins: np.ndarray | None = None
+    if return_absolute:
+        absolute_at_bins = np.interp(OPTION_A_BINS_HZ, freqs, aggregated)
 
     # Same normalisation pipeline as load_and_smooth().
     anchor_idx = int(np.argmin(np.abs(freqs - 80.0)))
     aggregated -= aggregated[anchor_idx]
     aggregated = smooth_fractional_octave(aggregated, freqs, octaves=1.0 / 6.0)
     aggregated -= aggregated[anchor_idx]
-    log.info(
+    log.debug(
         "chunked-percentile curve: 10Hz=%.1f 20Hz=%.1f 80Hz=%.1f dB",
         aggregated[0],
         aggregated[int(np.argmin(np.abs(freqs - 20.0)))],
         aggregated[anchor_idx],
     )
-    return aggregated
+    result: dict = {"curve": aggregated}
+    if return_absolute:
+        result["absolute"] = absolute_at_bins
+    if return_chunk_stats:
+        result["chunk_stddev"] = chunk_stddev
+        result["chunk_ceiling_frac"] = chunk_ceiling_frac
+
+    # Backward-compatible return: if no extras requested, return just the curve.
+    if not return_absolute and not return_chunk_stats:
+        return aggregated
+    if return_absolute and not return_chunk_stats:
+        return aggregated, absolute_at_bins
+    return result
 
 
 def load_and_smooth_blended(
@@ -452,7 +636,8 @@ def load_and_smooth_blended(
     chunk_s: float = 60.0,
     percentile: float = 90.0,
     alpha: float = 0.5,
-) -> np.ndarray:
+    return_absolute: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Blend Welch average and chunked-percentile curves.
 
     ``alpha`` controls the blend: 0.0 = pure chunked, 1.0 = pure Welch.
@@ -460,18 +645,29 @@ def load_and_smooth_blended(
 
     Both curves are computed independently (each normalised to 80 Hz
     anchor and 1/6-oct smoothed), then blended in dB domain.
+
+    When *return_absolute* is True (F3/E42), returns absolute dBFS from
+    the Welch extraction (the more stable of the two).
     """
-    welch = load_and_smooth(wav_path, fs, freqs)
+    if return_absolute:
+        welch, absolute_at_bins = load_and_smooth(
+            wav_path, fs, freqs, return_absolute=True,
+        )
+    else:
+        welch = load_and_smooth(wav_path, fs, freqs)
+        absolute_at_bins = None
     chunked = load_and_smooth_chunked(
         wav_path, fs, freqs, chunk_s=chunk_s, percentile=percentile,
     )
     blended = alpha * welch + (1.0 - alpha) * chunked
-    log.info(
+    log.debug(
         "blended curve (alpha=%.2f): 10Hz=%.1f 20Hz=%.1f 80Hz=%.1f dB",
         alpha, blended[0],
         blended[int(np.argmin(np.abs(freqs - 20.0)))],
         blended[int(np.argmin(np.abs(freqs - 80.0)))],
     )
+    if return_absolute:
+        return blended, absolute_at_bins
     return blended
 
 
@@ -480,23 +676,28 @@ def load_measured(
     fs: int,
     freqs: np.ndarray,
     strategy: ExtractionStrategy | None = None,
-) -> np.ndarray:
+    return_absolute: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Dispatch to the appropriate extraction function based on strategy.
 
     If *strategy* is None, uses ``_strategy_from_env()`` (which defaults
     to ``DEFAULT_STRATEGY`` = blend-a0.7-P90).
+
+    When *return_absolute* is True (F3/E42), also returns absolute dBFS
+    levels at the 9 Option A bins before normalisation.
     """
     if strategy is None:
         strategy = _strategy_from_env()
-    log.info("extraction strategy: %s", strategy.label)
+    log.debug("extraction strategy: %s", strategy.label)
 
     if strategy.method == ExtractionMethod.WELCH:
-        return load_and_smooth(wav_path, fs, freqs)
+        return load_and_smooth(wav_path, fs, freqs, return_absolute=return_absolute)
     if strategy.method == ExtractionMethod.CHUNKED:
         return load_and_smooth_chunked(
             wav_path, fs, freqs,
             chunk_s=strategy.chunk_s,
             percentile=strategy.percentile,
+            return_absolute=return_absolute,
         )
     if strategy.method == ExtractionMethod.BLENDED:
         return load_and_smooth_blended(
@@ -504,6 +705,7 @@ def load_measured(
             chunk_s=strategy.chunk_s,
             percentile=strategy.percentile,
             alpha=strategy.alpha,
+            return_absolute=return_absolute,
         )
     raise ValueError(f"unknown extraction method: {strategy.method}")
 
@@ -516,28 +718,500 @@ def load_measured(
 _ID_RE = __import__("re").compile(r"\[(tmdb|tvdb|imdb)-([^\]]+)\]")
 
 
+def _latest_wav_mtime(cache_root: Path) -> float:
+    """Return the max mtime across all WAV files in the cache, or 0.0."""
+    latest = 0.0
+    for p in cache_root.rglob("*.lfe-1000hz.wav"):
+        try:
+            m = p.stat().st_mtime
+            if m > latest:
+                latest = m
+        except OSError:
+            pass
+    return latest
+
+
+def ensure_analysis_reports_current(
+    repo_root: Path | None = None,
+    force: bool = False,
+) -> list[str]:
+    """Regenerate analysis reports when they're stale vs the WAV cache.
+
+    Checks ``docs/wav_cache_bias.md``, ``docs/acquisition_recommendations.md``
+    and ``docs/author_patterns.md`` against the max mtime of any WAV in
+    the cache.  Regenerates (via subprocess) any report whose mtime is
+    older than the newest WAV.
+
+    Called at the start of experiment harness runs so downstream analysis
+    docs always reflect the current training set without a manual step.
+
+    Returns the list of reports that were (re)generated — useful for
+    logging and tests.
+    """
+    import subprocess
+
+    if repo_root is None:
+        repo_root = Path(__file__).resolve().parents[4]
+
+    cache_root = wav_cache_dir()
+    cache_mtime = _latest_wav_mtime(cache_root)
+    if cache_mtime == 0.0:
+        log.info("WAV cache is empty; skipping analysis report refresh")
+        return []
+
+    reports = [
+        (
+            repo_root / "docs" / "wav_cache_bias.md",
+            repo_root / "scripts" / "nn_cache_bias_report.py",
+            ["-o"],
+        ),
+        (
+            repo_root / "docs" / "author_patterns.md",
+            repo_root / "scripts" / "nn_author_pattern_report.py",
+            ["-o"],
+        ),
+        (
+            repo_root / "docs" / "acquisition_recommendations.md",
+            repo_root / "scripts" / "nn_acquisition_recommender.py",
+            ["-n", "50", "-o"],
+        ),
+    ]
+
+    regenerated: list[str] = []
+    for report_path, script_path, extra_args in reports:
+        stale = (
+            force
+            or not report_path.exists()
+            or report_path.stat().st_mtime < cache_mtime
+        )
+        if not stale:
+            log.debug("report up to date: %s", report_path.name)
+            continue
+
+        log.info("regenerating stale report: %s", report_path.name)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            "python3", str(script_path),
+            *extra_args, str(report_path),
+        ]
+        env = {**os.environ}
+        env.setdefault(
+            "PYTHONPATH",
+            f"{repo_root / 'src/main/python'}:{repo_root / 'src/test/python'}",
+        )
+        env.setdefault("QT_QPA_PLATFORM", "offscreen")
+        try:
+            subprocess.run(
+                cmd, check=True, env=env, cwd=str(repo_root),
+                capture_output=True, text=True, timeout=120,
+            )
+            regenerated.append(report_path.name)
+        except subprocess.CalledProcessError as e:
+            log.warning(
+                "failed to regenerate %s: %s\nstderr:\n%s",
+                report_path.name, e, e.stderr[-500:] if e.stderr else "",
+            )
+        except subprocess.TimeoutExpired:
+            log.warning("timeout regenerating %s", report_path.name)
+
+    return regenerated
+
+
+def beq_dir() -> Path:
+    """Return the BEQ working directory — parent of the WAV cache.
+
+    Holds the wav-cache, beq_catalogue.json, media_inventory.json, and
+    production_model.joblib.  Derived from ``wav_cache_dir().parent`` so
+    it honours all the same env var / settings.json resolution rules.
+    """
+    return wav_cache_dir().parent
+
+
 def wav_cache_dir() -> Path:
     """Return the portable WAV cache directory.
 
-    Single source of truth for where extracted LFE WAVs live. Reads from
-    ``wav_cache_dir`` in settings.json, falls back to
+    Single source of truth for where extracted LFE WAVs live.  Resolution
+    order: ``BEQ_WAV_CACHE`` env var → ``wav_cache_dir`` in
+    ``~/.config/beqdesigner/settings.json`` → default
     ``~/Downloads/beqdesigner/wav-cache``.
+
+    **Fail-fast semantics**: if an explicit path is configured (env var
+    or settings.json) and it does not exist, raise ``FileNotFoundError``
+    immediately rather than silently creating an empty directory.  This
+    prevents the common footgun of a stale mount or wrong path producing
+    a silent "0 WAVs" result that masquerades as an empty cache.  Only
+    the default fallback path is auto-created.
     """
+    explicit_source: str | None = None
     raw = os.environ.get("BEQ_WAV_CACHE")
-    if not raw:
+    if raw:
+        explicit_source = "BEQ_WAV_CACHE env var"
+    else:
         cfg_path = Path.home() / ".config" / "beqdesigner" / "settings.json"
         if cfg_path.exists():
             with cfg_path.open() as _f:
                 try:
                     data = __import__("json").load(_f)
                     raw = data.get("wav_cache_dir")
+                    if raw:
+                        explicit_source = f"wav_cache_dir in {cfg_path}"
                 except Exception:
                     pass
     if not raw:
         raw = str(Path.home() / "Downloads" / "beqdesigner" / "wav-cache")
+
     path = Path(raw).expanduser()
-    path.mkdir(parents=True, exist_ok=True)
+
+    if explicit_source is not None:
+        # User explicitly configured this path — fail fast if it doesn't
+        # exist (e.g. network mount dropped, typo in the path).
+        if not path.exists():
+            raise FileNotFoundError(
+                f"configured WAV cache does not exist: {path} "
+                f"(from {explicit_source}). "
+                f"Check that the path is correct and, if on a network "
+                f"mount, that the mount is active.",
+            )
+        if not path.is_dir():
+            raise NotADirectoryError(
+                f"configured WAV cache path is not a directory: {path} "
+                f"(from {explicit_source}).",
+            )
+    else:
+        # Default fallback path — auto-create for first-time users.
+        path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+# ---------------------------------------------------------------------------
+# Disk-backed caches for expensive NAS / feature-extraction work
+# ---------------------------------------------------------------------------
+#
+# Two small pickle caches to keep iteration fast when re-running experiments
+# against the same WAV cache + catalogue:
+#
+#   1. curve-features cache: one pickle per WAV, keyed on
+#      (stem, size, mtime, strategy.label). Skips ~2-3 min of Welch +
+#      chunked-percentile work per experiment re-run.
+#   2. discovery cache: single pickle holding the `discover_wav_catalogue_pairs`
+#      output, keyed on (wav_cache_root_mtime, catalogue_cache_mtime) so any
+#      fresh extract_lfe.py run or catalogue refresh invalidates it.
+#
+# Both caches are override-able via env var for safety.
+
+
+_CURVE_FEATURES_CACHE_ENABLED_ENV = "AUTO_BEQ_FEATURE_CACHE"
+_DISCOVERY_CACHE_ENABLED_ENV = "AUTO_BEQ_DISCOVERY_CACHE"
+_DISCOVERY_CACHE_FILENAME = "discovered_pairs.pkl"
+_CATALOGUE_CACHE_FILENAME = "beq_catalogue.json"
+
+
+def _cache_enabled(env_var: str) -> bool:
+    """Cache helpers honour env var opt-out. Default: enabled."""
+    return os.environ.get(env_var, "1") != "0"
+
+
+def _curve_features_cache_dir(strategy_label: str) -> Path:
+    """Per-strategy directory under ``{beq-dir}/curve-features/``."""
+    return beq_dir() / "curve-features" / strategy_label
+
+
+def _curve_features_cache_key(wav_path: Path) -> str | None:
+    """File-identity cache key — ``{stem}-{size}-{mtime_int}``.
+
+    Returns None if the WAV can't be stat'd (missing file). File-identity
+    keys auto-invalidate when extract_lfe.py re-extracts a WAV.
+    """
+    try:
+        st = wav_path.stat()
+    except FileNotFoundError:
+        return None
+    return f"{wav_path.stem}-{st.st_size}-{int(st.st_mtime)}"
+
+
+def cached_extract_features_with_strategy(
+    wav_path: Path,
+    freqs_hz: np.ndarray,
+    fs: int,
+    strategy: "ExtractionStrategy",
+):
+    """Disk-cached wrapper around ``extract_features_with_strategy``.
+
+    Cache hit path: one ``pickle.load`` from
+    ``{beq-dir}/curve-features/<strategy.label>/<key>.pkl`` — no WAV read,
+    no Welch, no chunked percentile, ~1 ms per call.
+
+    Cache miss path: runs the uncached extractor and atomically writes the
+    result to the cache. Subsequent callers see the hit.
+
+    Opt-out via ``AUTO_BEQ_FEATURE_CACHE=0``.
+    """
+    if not _cache_enabled(_CURVE_FEATURES_CACHE_ENABLED_ENV):
+        return extract_features_with_strategy(wav_path, freqs_hz, fs, strategy=strategy)
+
+    import pickle as _pickle
+    key = _curve_features_cache_key(wav_path)
+    if key is None:
+        return extract_features_with_strategy(wav_path, freqs_hz, fs, strategy=strategy)
+
+    try:
+        cache_dir = _curve_features_cache_dir(strategy.label)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        log.warning("curve-features cache dir unavailable: %s", exc)
+        return extract_features_with_strategy(wav_path, freqs_hz, fs, strategy=strategy)
+
+    cache_file = cache_dir / f"{key}.pkl"
+    if cache_file.exists():
+        try:
+            with cache_file.open("rb") as f:
+                return _pickle.load(f)
+        except Exception as exc:
+            log.warning("corrupt curve-features cache %s: %s — recomputing", cache_file, exc)
+
+    features = extract_features_with_strategy(wav_path, freqs_hz, fs, strategy=strategy)
+
+    # Atomic write: temp file + rename so concurrent workers never see half-written pickles.
+    tmp_file = cache_file.with_suffix(".pkl.tmp")
+    try:
+        with tmp_file.open("wb") as f:
+            _pickle.dump(features, f, protocol=_pickle.HIGHEST_PROTOCOL)
+        tmp_file.replace(cache_file)
+    except Exception as exc:
+        log.warning("failed to write curve-features cache %s: %s", cache_file, exc)
+        try:
+            tmp_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+    return features
+
+
+def _discovery_cache_signature() -> dict | None:
+    """Lightweight signature: two stat calls, no directory walk.
+
+    Invalidation sources:
+      * wav cache root mtime — bumped when extract_lfe.py writes
+        ``.status_last.json``, or when new top-level subdirs are added.
+      * catalogue cache file mtime — bumped when the BEQ catalogue is refetched.
+
+    Returns None if stats fail (cache miss forced).
+    """
+    try:
+        wav_root = wav_cache_dir()
+        if not wav_root.exists():
+            return None
+        root_mtime = wav_root.stat().st_mtime
+    except Exception:
+        return None
+
+    catalogue_mtime = 0.0
+    catalogue_cache = beq_dir() / _CATALOGUE_CACHE_FILENAME
+    if catalogue_cache.exists():
+        try:
+            catalogue_mtime = catalogue_cache.stat().st_mtime
+        except Exception:
+            catalogue_mtime = 0.0
+
+    return {
+        "wav_root_mtime": float(root_mtime),
+        "catalogue_mtime": float(catalogue_mtime),
+    }
+
+
+def discover_wav_catalogue_pairs_cached() -> list[dict]:
+    """Cached wrapper around ``discover_wav_catalogue_pairs``.
+
+    On a warm cache, returns the previous result after two stat calls
+    (no directory walk over the WAV cache root). On a cold cache or
+    mismatched signature, walks the cache and writes a fresh pickle.
+
+    Opt-out via ``AUTO_BEQ_DISCOVERY_CACHE=0``.
+
+    Signature captures the WAV cache root mtime and the catalogue cache
+    file mtime. Adding a new WAV inside an existing subdirectory does
+    NOT invalidate (root mtime unchanged), so if the user manually drops
+    a WAV deep in the tree they need to either re-run extract_lfe.py
+    (which refreshes ``.status_last.json`` in the root) or set
+    ``AUTO_BEQ_DISCOVERY_CACHE=0`` once.
+    """
+    if not _cache_enabled(_DISCOVERY_CACHE_ENABLED_ENV):
+        log.info("discovery cache disabled via %s=0", _DISCOVERY_CACHE_ENABLED_ENV)
+        return discover_wav_catalogue_pairs()
+
+    import pickle as _pickle
+    try:
+        cache_file = beq_dir() / _DISCOVERY_CACHE_FILENAME
+    except Exception as exc:
+        log.warning("beq_dir unavailable for discovery cache: %s", exc)
+        return discover_wav_catalogue_pairs()
+
+    signature = _discovery_cache_signature()
+    if signature is not None and cache_file.exists():
+        try:
+            with cache_file.open("rb") as f:
+                blob = _pickle.load(f)
+            if isinstance(blob, dict) and blob.get("signature") == signature:
+                pairs = blob.get("pairs", [])
+                log.info(
+                    "discover_wav_catalogue_pairs: cache hit — %d pairs "
+                    "(wav_root_mtime=%.0f, catalogue_mtime=%.0f)",
+                    len(pairs), signature["wav_root_mtime"], signature["catalogue_mtime"],
+                )
+                return pairs
+            log.info("discover_wav_catalogue_pairs: cache signature mismatch, re-walking")
+        except Exception as exc:
+            log.warning("corrupt discovery cache %s: %s — re-walking", cache_file, exc)
+
+    pairs = discover_wav_catalogue_pairs()
+
+    if signature is not None:
+        tmp_file = cache_file.with_suffix(".pkl.tmp")
+        try:
+            with tmp_file.open("wb") as f:
+                _pickle.dump(
+                    {"signature": signature, "pairs": pairs},
+                    f,
+                    protocol=_pickle.HIGHEST_PROTOCOL,
+                )
+            tmp_file.replace(cache_file)
+            log.info("discover_wav_catalogue_pairs: wrote cache (%d pairs)", len(pairs))
+        except Exception as exc:
+            log.warning("failed to write discovery cache %s: %s", cache_file, exc)
+            try:
+                tmp_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    return pairs
+
+
+def discover_unmatched_wavs() -> list[Path]:
+    """Find all cached LFE WAVs that have NO matching BEQ catalogue entry.
+
+    Inverse of ``discover_wav_catalogue_pairs``: walks the same cache
+    and returns the WAVs that fall through without a catalogue match.
+    These are titles we have audio for but no ground-truth filter
+    chain — usable as unlabelled data for E84 self-training
+    (``pseudo_label_unmatched`` in ``auto_beq_nn``).
+
+    Returns sorted list of WAV paths (no wrapping dict — these rows
+    have no catalogue entry by definition).
+    """
+    cache_root = wav_cache_dir()
+    if not cache_root.exists():
+        log.warning("WAV cache does not exist: %s", cache_root)
+        return []
+
+    from model.auto_beq_catalogue import _fetch_or_cache
+    catalogue = _fetch_or_cache()
+
+    by_tmdb: dict[str, list[dict]] = {}
+    by_title_year: dict[tuple[str, str], list[dict]] = {}
+    for e in catalogue:
+        tid = str(e.get("theMovieDB", "")).strip()
+        if tid:
+            by_tmdb.setdefault(tid, []).append(e)
+        key = (e.get("title", "").lower().strip(), str(e.get("year", "")))
+        by_title_year.setdefault(key, []).append(e)
+
+    _title_year_re = __import__("re").compile(r"^(.+?)\s*\((\d{4})\)")
+
+    wav_files = sorted(cache_root.rglob("*.lfe-1000hz.wav"))
+    unmatched: list[Path] = []
+
+    for wav in wav_files:
+        m = _ID_RE.search(str(wav))
+        if not m:
+            # No ID tag at all — not a training candidate either way.
+            continue
+        id_type, id_value = m.group(1), m.group(2)
+
+        # Replicate the lookup logic from discover_wav_catalogue_pairs.
+        entry = None
+        if id_type == "tmdb":
+            entries = by_tmdb.get(id_value)
+            if entries:
+                entry = entries[0]
+        if entry is None:
+            for dirname in (wav.parent.name, wav.parent.parent.name, wav.parent.parent.parent.name):
+                m2 = _title_year_re.match(dirname)
+                if m2:
+                    key = (m2.group(1).strip().lower(), m2.group(2))
+                    entries = by_title_year.get(key)
+                    if entries:
+                        entry = entries[0]
+                        break
+
+        if entry is None:
+            unmatched.append(wav)
+
+    log.info(
+        "discovered %d unmatched WAVs (no catalogue entry) from %d WAVs in %s",
+        len(unmatched), len(wav_files), cache_root,
+    )
+    return unmatched
+
+
+_UNMATCHED_CACHE_FILENAME = "unmatched_wavs.pkl"
+
+
+def discover_unmatched_wavs_cached() -> list[Path]:
+    """Cached wrapper around ``discover_unmatched_wavs``.
+
+    Uses the same lightweight signature (wav-cache root mtime +
+    catalogue cache mtime) as ``discover_wav_catalogue_pairs_cached``.
+    Both caches are independent but share invalidation triggers, so
+    they refresh in lockstep after a fresh extract_lfe.py run or a
+    catalogue refetch.
+    """
+    if not _cache_enabled(_DISCOVERY_CACHE_ENABLED_ENV):
+        log.info("discovery cache disabled via %s=0", _DISCOVERY_CACHE_ENABLED_ENV)
+        return discover_unmatched_wavs()
+
+    import pickle as _pickle
+    try:
+        cache_file = beq_dir() / _UNMATCHED_CACHE_FILENAME
+    except Exception as exc:
+        log.warning("beq_dir unavailable for unmatched cache: %s", exc)
+        return discover_unmatched_wavs()
+
+    signature = _discovery_cache_signature()
+    if signature is not None and cache_file.exists():
+        try:
+            with cache_file.open("rb") as f:
+                blob = _pickle.load(f)
+            if isinstance(blob, dict) and blob.get("signature") == signature:
+                wavs = blob.get("wavs", [])
+                log.info(
+                    "discover_unmatched_wavs: cache hit — %d unmatched WAVs",
+                    len(wavs),
+                )
+                return wavs
+            log.info("discover_unmatched_wavs: cache signature mismatch, re-walking")
+        except Exception as exc:
+            log.warning("corrupt unmatched cache %s: %s — re-walking", cache_file, exc)
+
+    wavs = discover_unmatched_wavs()
+
+    if signature is not None:
+        tmp_file = cache_file.with_suffix(".pkl.tmp")
+        try:
+            with tmp_file.open("wb") as f:
+                _pickle.dump(
+                    {"signature": signature, "wavs": wavs},
+                    f,
+                    protocol=_pickle.HIGHEST_PROTOCOL,
+                )
+            tmp_file.replace(cache_file)
+            log.info("discover_unmatched_wavs: wrote cache (%d WAVs)", len(wavs))
+        except Exception as exc:
+            log.warning("failed to write unmatched cache %s: %s", cache_file, exc)
+            try:
+                tmp_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    return wavs
 
 
 def discover_wav_catalogue_pairs() -> list[dict]:

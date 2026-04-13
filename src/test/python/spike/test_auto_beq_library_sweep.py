@@ -49,6 +49,11 @@ from spike.sweep_discover import bucket_rating, load_catalogue_by_digest, load_c
 
 log = logging.getLogger("auto_beq_sweep")
 
+# This whole file runs the auto-BEQ pipeline on real media files from the
+# user's library (discovered via `spike.sweep_discover`) — it must NEVER
+# run by default. Opt-in via `scripts/run-spike-integration.sh`.
+pytestmark = pytest.mark.integration
+
 _DEFAULT_TEST_LIMIT = 10
 _STALE_CONFIG_DAYS = 30
 _SWEEP_REPORT_PATH = Path(os.environ.get(

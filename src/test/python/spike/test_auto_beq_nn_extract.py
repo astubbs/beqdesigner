@@ -39,6 +39,10 @@ log = logging.getLogger("auto_beq_nn_extract")
 _DEFAULT_FS = 1000
 _MAX_TITLES = 50
 
+# E31 LFE extraction + NN validation — runs ffmpeg on real media and trains
+# models. Opt-in via `scripts/run-spike-experiments.sh`.
+pytestmark = pytest.mark.experiment
+
 
 def _load_settings() -> dict:
     cfg = Path.home() / ".config" / "beqdesigner" / "settings.json"

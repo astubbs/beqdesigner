@@ -65,16 +65,71 @@ than writing a parallel implementation.
 
 ### Documentation
 
-**README and design docs must be updated alongside code changes.**
+**User-facing docs must be updated alongside code changes.** Updating
+AGENTS.md is not enough — humans don't read it.
 
-- `README.md` quickstart section must reflect current scripts and
-  workflow. If you add/rename/remove a script, update the README.
+End-user docs live in three places, in priority order:
+
+1. **`readme.md`** — developer quickstart (Quick start sections for
+   Docker and local Python). The first thing anyone reads.
+2. **`docs/lfe_extractor.md`** + other `docs/*.md` pages — the
+   readthedocs site (`mkdocs.yml` controls the nav).
+3. **`docs/design/*.md`** — internal design + experiment logs. Less
+   visible to end users, but the source of truth for "why is the
+   model the way it is".
+
+Rules:
+
+- If you add/rename/remove a script, update the **scripts tables in
+  both `readme.md` and `AGENTS.md`**.
+- If you change the Docker workflow (build steps, compose service
+  names, output files, deploy steps), update **`readme.md` Quick
+  start AND `docs/lfe_extractor.md`** together. AGENTS.md should not
+  duplicate this — it should just reference the canonical doc.
+- If you add a new user-facing CLI script or workflow, add a section
+  to `readme.md` and consider whether it deserves its own
+  `docs/*.md` page (and entry in `mkdocs.yml`).
 - `docs/design/auto_beq.md` must reflect current architecture.
 - `AGENTS.md` must reflect current scripts table and env vars.
 - `branch-plans/plan-*.md` must reflect current branch state.
 
 Do NOT commit code changes without checking whether the docs need
 updating. Stale docs are worse than no docs.
+
+### Accessible writing rule
+
+**All documentation must be accessible to developers who have NO
+background in machine learning or audio engineering.** This is a hard
+project rule, not a guideline.
+
+Why: "vibe coding" risk — AI-assisted development can produce
+systems whose internals nobody understands when returning cold. If
+the docs use jargon without explanation, future readers (including
+the original authors) can't reason about the system.
+
+Mandatory practices:
+
+- **Define every abbreviation on first use.** MSE → "Mean Squared
+  Error (MSE) — the average of (prediction minus target) squared".
+  XGBoost → "XGBoost (eXtreme Gradient Boosting) — a machine
+  learning algorithm that builds ensembles of decision trees".
+- **Link to external explanations** for non-trivial concepts: the
+  Audio EQ Cookbook for biquad maths, PyTorch docs for tensors,
+  3Blue1Brown for neural network intuition, Wikipedia for DSP terms.
+- **Teach concepts progressively**: start with "why does this matter
+  for our project" before "how does the maths work". Use analogies
+  and concrete examples over abstract definitions.
+- **Target reader**: a competent Python developer who has never
+  touched machine learning, digital signal processing, or audio
+  engineering. They should be able to read
+  `docs/design/auto_beq_how_it_works.md` and understand the full
+  system.
+- **When in doubt, over-explain.** A developer who already knows can
+  skim; a developer who doesn't know can't guess.
+
+The canonical "plain language" overview lives at
+`docs/design/auto_beq_how_it_works.md`. Any new technique added to
+the system must be explained there in the same accessible style.
 
 ## Branch plans
 
@@ -89,8 +144,8 @@ plan/intent to `branch-plans/plan-<branch-name>.md` (project root).
 Also keep experiment logs and living design docs updated and committed
 alongside code — these are gold for resuming work across sessions.
 
-Current branch plan: [`branch-plans/plan-audio-chunks-strat.md`](branch-plans/plan-audio-chunks-strat.md)
-Parent branch plan: [`branch-plans/plan-sharp-goldberg.md`](branch-plans/plan-sharp-goldberg.md)
+Current branch plan: [`branch-plans/plan-neural-net-strat.md`](branch-plans/plan-neural-net-strat.md)
+Parent branch plans: [`branch-plans/plan-audio-chunks-strat.md`](branch-plans/plan-audio-chunks-strat.md), [`branch-plans/plan-sharp-goldberg.md`](branch-plans/plan-sharp-goldberg.md)
 
 ## Ollama model usage
 
@@ -135,6 +190,12 @@ bin/beq-designer --help                 # list all subcommands
 | `cli/nn_report.py` | NN vs catalogue comparison report |
 | `cli/sweep_report.py` | Experiment sweep comparison report |
 | `cli/spike_playground.py` | Dev: single-title filter proposal test |
+| `cli/train_production_model.py` | Train E82 production XGBoost model |
+| `cli/train_torch_model.py` | Train E85 differentiable-DSP model |
+| `cli/nn_acquisition_recommender.py` | Acquisition recommendation report |
+| `cli/nn_author_pattern_report.py` | Per-author distribution report |
+| `cli/nn_cache_bias_report.py` | Cache vs catalogue bias report |
+| `cli/nn_f_experiment_report.py` | F-experiment comparison report |
 
 ### Other files
 
@@ -144,17 +205,26 @@ bin/beq-designer --help                 # list all subcommands
 | `build/regen_ui.py` | Build tool: regenerate Python from Qt `.ui` files |
 | `docker/Dockerfile` | Docker image for NAS deployment |
 | `docker/docker-compose.example.yml` | Example compose config |
+| `experiments/*.py` | One-off experiment runners (E85-E87, tier1 comparison) |
 
 ## Docker (NAS LFE extraction)
 
-The extraction pipeline runs in Docker for NAS deployment — no code
-duplication, no scp of scripts, no version drift.
+**Canonical docs**: end-user instructions live in
+[`docs/lfe_extractor.md`](docs/lfe_extractor.md) (published on
+readthedocs) and the **Quick start (Docker)** section of `readme.md`.
+Both cover the build → deploy → run loop, the volume mount layout,
+the output files, and how to pull results back to the dev machine.
 
-**Setup (one-time):**
+When making changes that affect end users (new compose service, new
+output file, new flag, new deploy step), **update both `readme.md`
+and `docs/lfe_extractor.md` together** — AGENTS.md should not
+duplicate the workflow.
+
+Service names in `docker-compose.example.yml` are deliberately
+prefixed with `beq-` (`beq-lfe-extract`, `beq-wav-verify`) so they
+don't collide with other compose stacks on the same host.
+
 ```bash
-# Build image
-docker build -f docker/Dockerfile -t beq-extract .
-
 # Deploy to NAS
 docker save beq-extract | ssh nas docker load
 
@@ -187,6 +257,35 @@ docker save beq-extract | ssh nas docker load
 
 **Use `bin/beq-designer dev test` to run spike tests.**
 
+### Three test groups (pytest markers)
+
+The spike suite is segregated by pytest markers. **CI runs only the
+default group**; the other two are opt-in.
+
+| Command | Marker filter | Runtime | When to use |
+|---|---|---|---|
+| `bin/beq-designer dev test` | `not integration and not experiment` (default) | ~1 min | Every iteration, CI, pre-commit. Hermetic — no media scans, no network, no model retraining. |
+| `bin/beq-designer dev test --integration` | `integration` | minutes | Verifying code that touches real external resources (media files, TMDb API, Ollama hosts, library sweep config). Tests skip if their resources aren't configured locally. |
+| `bin/beq-designer dev test --experiments` | `experiment` | **minutes to hours** | Reproducing or iterating on F/G/H/I experiment batches, real-audio training (E77/E82), chunked-strategy comparison. Not for CI. |
+
+### Marker rules
+
+- **Default** (no marker): unit tests. Must be hermetic, no filesystem/network/model-training side effects. The 500 MB media-size filter in `inventory_root` is automatically bypassed for tests via the `_allow_zero_byte_fixtures` autouse fixture in `test_sweep_discover.py`.
+- **`@pytest.mark.integration`**: needs real media files, TMDb, Ollama, or a populated `~/.config/beqdesigner/auto_beq_sweep.json`. Apply via file-level `pytestmark = pytest.mark.integration` when every test in the file needs external resources, or decorate individual tests when the file is mixed (e.g. `test_auto_beq.py::test_real_media_roundtrip`).
+- **`@pytest.mark.experiment`**: retrains one or more models from scratch. F/G/H/I/real/chunked/extract test files all carry `pytestmark = pytest.mark.experiment` at the top.
+
+Markers are registered in `pyproject.toml` under `[tool.pytest.ini_options]`. Adding a new marker needs both a `pytestmark = ...` in the test file and a registration entry in `pyproject.toml`.
+
+### Env vars
+
+| Var / CLI flag | Purpose | Default |
+|---|---|---|
+| `--file` | pytest selector (file path or nodeid) | `src/test/python/spike/` (all) |
+| `--advisor` / `AUTO_BEQ_ADVISOR` | advisor impl: heuristic / mock / ollama / measurement | `measurement` |
+| `--verbose` / `SPIKE_VERBOSE=1` | enables `-s` (no capture) | off |
+| `AUTO_BEQ_MODEL_PATH` | path to production model file | auto-detected |
+| `SPIKE_MARKERS` | override marker filter (advanced) | `not integration and not experiment` |
+
 ```bash
 # All spike tests
 bin/beq-designer dev test
@@ -203,6 +302,19 @@ bin/beq-designer dev test --advisor measurement --verbose
 # Run sweep pipeline
 bin/beq-designer dev sweep --limit 3 --advisor measurement
 ```
+
+Run integration tests (opt-in, needs real media/TMDb/Ollama):
+
+```bash
+bin/beq-designer dev test --integration
+```
+
+Run experiment tests (opt-in, minutes to hours):
+
+```bash
+bin/beq-designer dev test --experiments --file src/test/python/spike/test_auto_beq_nn_experiments.py
+```
+
 
 ## Verifying behaviour
 

@@ -46,8 +46,8 @@ from model.auto_beq_nn import (
 )
 from spike._auto_beq_helpers import (
     STRATEGY_WELCH,
-    discover_wav_catalogue_pairs,
-    extract_features_with_strategy,
+    cached_extract_features_with_strategy,
+    discover_wav_catalogue_pairs_cached,
 )
 
 log = logging.getLogger("nn_comparison_report")
@@ -79,7 +79,7 @@ def generate_report(output=None):
     t0 = time.time()
 
     # Discover WAVs.
-    pairs = discover_wav_catalogue_pairs()
+    pairs = discover_wav_catalogue_pairs_cached()
     if not pairs:
         pr("No WAV files found in cache. Run extract_lfe.py first.")
         return
@@ -118,7 +118,7 @@ def generate_report(output=None):
             continue
         seen.add(title)
         try:
-            features = extract_features_with_strategy(
+            features = cached_extract_features_with_strategy(
                 p["wav_path"], DEFAULT_GRID, 1000, strategy=STRATEGY_WELCH,
             )
         except Exception:

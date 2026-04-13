@@ -3,24 +3,29 @@
 # Copy this file to docker-compose.yml and edit the volume paths to match
 # your NAS/server layout. Then run:
 #
-#   docker compose run extract        # Extract LFE WAVs (resumes from cache)
-#   docker compose run verify         # Check WAV cache integrity
-#   docker compose run status         # Summarise training set
+#   docker compose run beq-lfe-extract   # Extract LFE WAVs (resumes from cache)
+#   docker compose run beq-wav-verify    # Check WAV cache integrity
 #
-# The extract service runs breadth-first: alternates movies and TV, one
-# episode per show per round. Already-extracted titles are skipped instantly.
-# Safe to interrupt and re-run — atomic writes prevent corrupt WAVs.
+# The extractor runs breadth-first: alternates movies and TV, one episode
+# per show per round. Already-extracted titles are skipped instantly. Safe
+# to interrupt and re-run — atomic writes prevent corrupt WAVs.
+#
+# Service names are deliberately prefixed with `beq-` so they don't collide
+# with other compose projects on the same host (e.g. another `extract`
+# service from a different stack).
 
 services:
 
-  # ── Main extraction ─────────────────────────────────────────────────
-  extract:
+  # ── Main extraction: scan media library + extract LFE WAVs ──────────
+  beq-lfe-extract:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    image: beq-extract:latest
+    container_name: beq-lfe-extract
     volumes:
-      # BEQ working directory — stores config, catalogue cache, and WAV output.
-      # WAVs go in {beq-dir}/wav-cache/ automatically.
+      # BEQ working directory — stores config, catalogue cache, WAV output,
+      # and media_inventory.json. WAVs go in {beq-dir}/wav-cache/ automatically.
       - /volume3/jetspeed/beqdesigner:/beq
 
       # Media libraries (read-only). Add or remove as needed.
@@ -36,11 +41,13 @@ services:
       --media-root /media/Anime_Movies
       --media-root /media/Anime_TV
 
-  # ── Verify WAV cache integrity ──────────────────────────────────────
-  verify:
+  # ── Verify WAV cache integrity (header check + duration vs catalogue) ──
+  beq-wav-verify:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    image: beq-extract:latest
+    container_name: beq-wav-verify
     volumes:
       - /volume3/jetspeed/beqdesigner:/beq
     command: --beq-dir /beq --verify

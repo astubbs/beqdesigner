@@ -35,6 +35,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 _CATALOGUE_SNAPSHOT = _REPO_ROOT / "src" / "test" / "resources" / "auto_beq" / "database.json"
 _DEFAULT_FS = 1000
 
+# Hits the real TMDb API — opt-in via `scripts/run-spike-integration.sh`.
+pytestmark = pytest.mark.integration
+
 
 def _load_snapshot() -> list[dict]:
     with _CATALOGUE_SNAPSHOT.open() as f:

@@ -101,7 +101,11 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          PYTHONPATH=./src/main/python poetry run pytest --cov=./src/main/python
+          # Exclude spike tests marked `integration` (need real media / TMDb /
+          # Ollama) and `experiment` (retrain models, minutes-to-hours each).
+          # Both groups are opt-in via scripts/run-spike-{integration,experiments}.sh.
+          PYTHONPATH=./src/main/python poetry run pytest --cov=./src/main/python \
+            -m "not integration and not experiment"
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:

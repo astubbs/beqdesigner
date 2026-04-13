@@ -37,7 +37,21 @@
       "Bash(PYTHONPATH=\"./src/main/python:./src/test/python\" QT_QPA_PLATFORM=offscreen poetry run pytest src/test/python/spike/test_wav_integrity.py -v -s 2>&1)",
       "Bash(PYTHONPATH=\"./src/main/python\" poetry run python3 -c \"\nfrom pathlib import Path\nfrom model.wav_integrity import verify_cache\nvalid, corrupt = verify_cache\\(Path.home\\(\\) / 'Downloads/beqdesigner/audio-cache'\\)\nprint\\(f'\\\\nExisting cache: {len\\(valid\\)} valid, {len\\(corrupt\\)} corrupt'\\)\nif corrupt:\n    for p in corrupt:\n        print\\(f'  CORRUPT: {p.name}'\\)\n\")",
       "Bash(PYTHONPATH=\"./src/main/python\" poetry run python3 -c \"\nfrom pathlib import Path\nfrom model.wav_integrity import verify_cache\nvalid, corrupt = verify_cache\\(Path.home\\(\\) / 'Downloads/beqdesigner/audio-cache'\\)\nfor p in corrupt:\n    print\\(f'Deleting: {p.name}'\\)\n    p.unlink\\(\\)\nprint\\(f'\\\\nDeleted {len\\(corrupt\\)} corrupt WAVs. {len\\(valid\\)} valid remain.'\\)\n\")",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(poetry show:*)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(poetry install:*)",
+      "Bash(poetry lock:*)",
+      "Bash(bash:*)",
+      "Bash(./scripts/beq_profile_cli.py:*)",
+      "Bash(ls:*)",
+      "Bash(PYTHONPATH=src/main/python:src/test/python poetry run:*)",
+      "Bash(./bin/beq-designer:*)",
+      "WebSearch",
+      "WebFetch(domain:inquirerpy.readthedocs.io)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:textual.textualize.io)",
+      "Bash(git:*)"
     ]
   }
 }

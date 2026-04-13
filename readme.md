@@ -136,7 +136,7 @@ To regenerate every form at once:
 ```sh
 poetry run ui-gen
 # or, equivalently:
-poetry run python scripts/regen_ui.py
+poetry run python build/regen_ui.py
 ```
 
 (`src/main/python/ui/convert.sh` and `convert.bat` are kept for reference but
@@ -175,7 +175,68 @@ their `.ui` sources.
 Research spike exploring automated BEQ filter generation from measured
 LFE audio — "take the human out of BEQ-making".
 
-### Quick start: generate profiles for your media
+### Quick start (Docker, recommended for NAS / servers)
+
+The LFE extractor — the slow, library-scanning step — ships as a small
+Docker image (Python 3.13 slim + ffmpeg + a handful of stdlib-only
+modules). Use this on your NAS to extract WAVs without installing
+Python or scipy/PyQt deps.
+
+```sh
+# 1. Build the image locally (from repo root)
+docker build -f docker/Dockerfile -t beq-extract .
+
+# 2. Push it to your NAS over SSH
+docker save beq-extract | ssh nas docker load
+
+# 3. Copy the example compose config and edit volume paths to match
+#    your NAS layout (media roots, beq working directory).
+scp docker/docker-compose.example.yml nas:/path/to/beqdesigner/docker-compose.yml
+ssh nas
+nano /path/to/beqdesigner/docker-compose.yml  # edit volume mounts
+
+# 4. Run extraction (resumes from cache, breadth-first ordering)
+ssh nas
+cd /path/to/beqdesigner
+docker compose run beq-lfe-extract
+
+# 5. Verify cache integrity later
+docker compose run beq-wav-verify
+```
+
+Service names are prefixed with `beq-` so they don't collide with any
+other Docker services on the same host.
+
+After code changes, rebuild and redeploy:
+```sh
+docker build -f docker/Dockerfile -t beq-extract .
+docker save beq-extract | ssh nas docker load
+# No need to re-copy the compose config — the image change is enough.
+```
+
+**Outputs (written to `{beq-dir}/` on the NAS):**
+
+| File | Purpose |
+|---|---|
+| `wav-cache/...` | Extracted LFE WAVs (the training set) |
+| `beq_catalogue.json` | Local cache of the BEQ GitHub catalogue |
+| `media_inventory.json` | Every media file with a `[tmdb-NNN]`/`[tvdb-NNN]` tag (matched + unmatched). Used to dedupe acquisition recommendations. |
+| `missing_ids.txt` | Plain-text list of media files **without** DB ID tags. Renaming them to add the correct tag would let the model learn from them. |
+
+**Pull results back to dev machine** for analysis:
+```sh
+scp nas:/path/to/beqdesigner/{media_inventory.json,beq_catalogue.json} \
+    ~/Downloads/beqdesigner/
+
+# Then locally generate bias and acquisition reports:
+bin/beq-designer report cache-bias -o docs/wav_cache_bias.md
+bin/beq-designer report acquisitions -n 50 \
+    -o docs/acquisition_recommendations.md
+```
+
+### Quick start (local Python, for dev / single machine)
+
+If you don't have a NAS or want to run everything on one machine:
 
 **Prerequisites:** Python 3.13, Poetry, ffmpeg + ffprobe on PATH.
 
@@ -191,11 +252,11 @@ poetry install
 #    }
 
 # 3. Discover your media and match against the BEQ catalogue
-bash scripts/run-sweep-discover.sh
+bin/beq-designer sweep discover
 
 # 4. Run the auto-BEQ pipeline across discovered media
 #    (extracts LFE audio, proposes filters, grades against catalogue)
-bash scripts/run-sweep-tests.sh
+bin/beq-designer sweep run
 ```
 
 Step 3 walks your library roots, finds media files, matches titles
@@ -203,14 +264,24 @@ against the BEQ catalogue (~14,700 entries), and saves the results.
 Step 4 runs the auto-generation algorithm on each matched file and
 compares the output to the catalogue's expert-authored filters.
 
-### Scripts
+### CLI commands
 
-| Script | Purpose |
+| Command | Purpose |
 |---|---|
-| `scripts/run-sweep-discover.sh` | Discover media in your library, match against BEQ catalogue. Interactive: prompts for library paths on first run, remembers them after. |
-| `scripts/run-sweep-tests.sh` | Run the auto-BEQ pipeline on discovered media. Wraps pytest with correct env. Supports `AUTO_BEQ_SWEEP_LIMIT=N` to cap how many files to process. |
-| `scripts/run-spike-tests.sh` | Run the full spike test suite (unit + integration + sweep). Use `SPIKE_TEST=...` to select specific tests, `SPIKE_VERBOSE=1` for full output. |
-| `scripts/spike_auto_beq.py` | Interactive CLI playground for testing auto-BEQ on a single title. |
+| `bin/beq-designer` | Interactive menu (no args) |
+| `bin/beq-designer profile` | Generate BEQ profiles |
+| `bin/beq-designer extract` | Extract LFE WAVs to cache |
+| `bin/beq-designer cache-status` | Cache summary |
+| `bin/beq-designer verify` | Cache integrity check |
+| `bin/beq-designer nn-report` | NN vs catalogue comparison |
+| `bin/beq-designer report cache-bias` | Cache vs catalogue bias |
+| `bin/beq-designer report acquisitions` | Title acquisition recommendations |
+| `bin/beq-designer dev train` | Train production model |
+| `bin/beq-designer dev test` | Run spike tests |
+| `bin/beq-designer sweep discover` | Discover media in library |
+| `bin/beq-designer sweep run` | Run sweep pipeline |
+| `bin/beq-designer --help` | Full subcommand list |
+
 
 ### Environment variables
 
@@ -219,13 +290,15 @@ compares the output to the catalogue's expert-authored filters.
 | `AUTO_BEQ_ADVISOR` | Which advisor: `measurement` (signal-only), `ollama` (LLM), `mock`, `heuristic` | `measurement` |
 | `AUTO_BEQ_SWEEP_LIMIT` | Max media files to process in sweep | `10` |
 | `OLLAMA_MODEL` | Ollama model name | `qwen:14b` |
-| `SPIKE_TEST` | Pytest selector for run-spike-tests.sh | all spike tests |
+| `SPIKE_TEST` | Pytest selector for run-spike-*.sh wrappers | all spike tests |
+| `SPIKE_MARKERS` | Override default marker filter in `run-spike-tests.sh` | `not integration and not experiment` |
 | `SPIKE_VERBOSE` | `1` to show stdout from tests | `0` |
+| `AUTO_BEQ_MODEL_PATH` | Override path for the trained XGBoost model loaded by `AUTO_BEQ_ADVISOR=trained_model`. Falls back to `{beq-dir}/production_model.joblib`. | (auto-discover) |
 
 ### Design docs
 
 - [`docs/design/auto_beq.md`](docs/design/auto_beq.md) — vision + architecture
-- [`docs/design/auto_beq_experiments.md`](docs/design/auto_beq_experiments.md) — experiment log (E1–E17)
+- [`docs/design/auto_beq_experiments.md`](docs/design/auto_beq_experiments.md) — experiment log (ongoing, current champion: E82 50:1 weighted hybrid)
 - [`docs/design/auto_beq_library_sweep_plan.md`](docs/design/auto_beq_library_sweep_plan.md) — sweep quick-start
 - [`branch-plans/plan-sharp-goldberg.md`](branch-plans/plan-sharp-goldberg.md) — current branch plan
 

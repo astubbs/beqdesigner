@@ -16,7 +16,10 @@ Directory structure (managed by the script):
     beq-dir/
       .extract_config.json          # saved media roots (auto-created on first run)
       beq_catalogue.json            # BEQ catalogue (auto-fetched from GitHub, freshness-checked)
-      missing_ids.txt               # media files without DB ID tags
+      missing_ids.txt               # media files without DB ID tags (can't identify)
+      media_inventory.json          # every media file with a DB ID, whether
+                                    # catalogue-matched or not (used by the
+                                    # acquisition recommender to dedupe)
       wav-cache/
         Movies/A/Alien (1979) [tmdb-348]/Alien (1979) [tmdb-348].lfe-1000hz.wav
         TV/E/86 - Eighty Six (2021) [tvdb-378609]/Season 01/86 - Eighty Six S01E02 [tvdb-378609].lfe-1000hz.wav
@@ -157,17 +160,32 @@ def build_catalogue_index(catalogue: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def discover_media(roots: list[Path], catalogue_index: dict) -> tuple[list[dict], list[str]]:
+def discover_media(
+    roots: list[Path], catalogue_index: dict,
+) -> tuple[list[dict], list[str], list[dict], list[dict]]:
     """Find .mkv files that have a DB ID tag AND a BEQ catalogue match.
 
-    Returns (results, missing_ids). Results sorted breadth-first.
+    Returns (results, missing_ids, all_media_with_ids, no_catalogue_media).
+    - results: only catalogue-matched media (extractable immediately)
+    - missing_ids: media files without any DB ID tag (unusable)
+    - all_media_with_ids: every media file that had a DB ID, whether
+      catalogue-matched or not (used by acquisition recommender to know
+      what's already in the library)
+    - no_catalogue_media: media dicts (same shape as ``results``) for files
+      that have a DB ID but no BEQ catalogue entry. These are candidates
+      for the E84 self-training unlabelled pool; the user can opt into
+      extracting a bias-corrected subset of them.
+
+    Results sorted breadth-first.
     """
     by_tmdb = catalogue_index["by_tmdb"]
     by_title_year = catalogue_index["by_title_year"]
 
     results = []
     missing_ids = []
-    no_catalogue = []
+    no_catalogue_desc = []  # for log messages only
+    no_catalogue_media: list[dict] = []  # full dicts for re-use
+    all_with_ids: list[dict] = []
     seen_keys = set()
 
     for root in roots:
@@ -217,11 +235,23 @@ def discover_media(roots: list[Path], catalogue_index: dict) -> tuple[list[dict]
             elif title and year:
                 if (title.lower().strip(), year) in by_title_year:
                     has_catalogue = True
-            if not has_catalogue:
-                no_catalogue.append(f"{media_id} {title} ({year}) — {f.name}")
-                continue
 
-            # Detect TV episodes.
+            # Record every media file with a DB ID, whether catalogue-matched
+            # or not.  Used by the acquisition recommender to know what's
+            # already in the library.
+            all_with_ids.append({
+                "path": str(f),
+                "media_id": media_id,
+                "id_type": id_type,
+                "id_value": id_value,
+                "title": title,
+                "year": year,
+                "has_catalogue": has_catalogue,
+            })
+
+            # Detect TV episodes (done BEFORE the catalogue gate so
+            # both the matched and no_catalogue buckets get populated
+            # with the same shape).
             ep_match = EPISODE_RE.search(f.stem)
             season = int(ep_match.group(1)) if ep_match else None
             episode = int(ep_match.group(2)) if ep_match else None
@@ -236,7 +266,7 @@ def discover_media(roots: list[Path], catalogue_index: dict) -> tuple[list[dict]
                 continue
             seen_keys.add(dedup_key)
 
-            results.append({
+            media_entry = {
                 "path": f,
                 "media_id": media_id,
                 "id_type": id_type,
@@ -247,7 +277,16 @@ def discover_media(roots: list[Path], catalogue_index: dict) -> tuple[list[dict]
                 "content_type": content_type,
                 "season": season,
                 "episode": episode,
-            })
+            }
+
+            if not has_catalogue:
+                no_catalogue_desc.append(
+                    f"{media_id} {title} ({year}) — {f.name}",
+                )
+                no_catalogue_media.append(media_entry)
+                continue
+
+            results.append(media_entry)
 
     if missing_ids:
         log.warning("%d media files missing DB ID tag — skipped", len(missing_ids))
@@ -256,15 +295,19 @@ def discover_media(roots: list[Path], catalogue_index: dict) -> tuple[list[dict]
         if len(missing_ids) > 10:
             log.warning("  ... and %d more", len(missing_ids) - 10)
 
-    if no_catalogue:
-        log.info("%d media files have DB ID but no BEQ catalogue entry — skipped", len(no_catalogue))
-        for desc in no_catalogue[:10]:
+    if no_catalogue_desc:
+        log.info(
+            "%d media files have DB ID but no BEQ catalogue entry "
+            "(candidates for E84 self-training unlabelled pool)",
+            len(no_catalogue_desc),
+        )
+        for desc in no_catalogue_desc[:10]:
             log.info("  no catalogue: %s", desc)
-        if len(no_catalogue) > 10:
-            log.info("  ... and %d more", len(no_catalogue) - 10)
+        if len(no_catalogue_desc) > 10:
+            log.info("  ... and %d more", len(no_catalogue_desc) - 10)
 
     results = _breadth_first_sort(results)
-    return results, missing_ids
+    return results, missing_ids, all_with_ids, no_catalogue_media
 
 
 def _breadth_first_sort(media: list[dict]) -> list[dict]:
@@ -510,6 +553,281 @@ def _load_or_prompt_config(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Unmatched media selection (E84 unlabelled-pool growth)
+# ---------------------------------------------------------------------------
+#
+# Inverse of scripts/nn_acquisition_recommender.py: that tool picks catalogue
+# titles we DON'T have media for, to guide shopping. This picks media files
+# we HAVE but the catalogue doesn't — to grow the E84 self-training
+# unlabelled pool. Both use greedy bias-correction scoring against the
+# BEQ catalogue distribution, but the dimensions differ because unmatched
+# media has no catalogue entry (so no author/source/audioTypes fields
+# directly — we classify from filename tags instead).
+
+
+# Release-tag regexes for classifying format from filename. Matches
+# common scene / Moozzi2 / Sonarr naming conventions.
+_FORMAT_RE_ATMOS = re.compile(r"\b(?:atmos|truehd\s*atmos)\b", re.IGNORECASE)
+_FORMAT_RE_TRUEHD = re.compile(r"\btruehd\b", re.IGNORECASE)
+_FORMAT_RE_DTSHD = re.compile(r"\bdts[\s._-]*hd\b", re.IGNORECASE)
+_FORMAT_RE_DDPLUS = re.compile(r"(?:\bddp|\beac3\b|\bdd\+|\bddplus\b)", re.IGNORECASE)
+_FORMAT_RE_DTS = re.compile(r"\bdts\b", re.IGNORECASE)
+_FORMAT_RE_FLAC = re.compile(r"\bflac\b", re.IGNORECASE)
+
+
+def _classify_unmatched_format(path_str: str) -> str:
+    """Classify a media file's audio format from filename tags.
+
+    Mirrors the buckets used by ``nn_acquisition_recommender``'s
+    ``_classify_format`` so the scoring is apples-to-apples. Checks in
+    priority order (best format first). Returns "other" when no tag
+    matches — still a usable bucket for scoring.
+    """
+    if _FORMAT_RE_ATMOS.search(path_str):
+        return "atmos"
+    if _FORMAT_RE_TRUEHD.search(path_str):
+        return "truehd"
+    if _FORMAT_RE_DTSHD.search(path_str):
+        return "dts-hd"
+    if _FORMAT_RE_DDPLUS.search(path_str):
+        return "dd+"
+    return "other"
+
+
+def _classify_era(year) -> str:
+    """Same buckets as nn_acquisition_recommender._classify_era."""
+    try:
+        y = int(year)
+    except (ValueError, TypeError):
+        return "unknown"
+    if y < 1990:
+        return "pre1990"
+    if y < 2010:
+        return "1990s-2000s"
+    if y < 2020:
+        return "2010s"
+    return "2020s"
+
+
+def _score_unmatched_candidate(
+    candidate: dict,
+    have_format: dict,
+    have_era: dict,
+    have_ct: dict,
+    target_format: dict,
+    target_era: dict,
+    target_ct: dict,
+    have_total: int,
+    target_total: int,
+) -> float:
+    """Greedy bias-correction score for an unmatched media candidate.
+
+    Mirrors ``nn_acquisition_recommender._score_candidate`` but drops
+    the ``author`` and ``source`` dimensions (not derivable for
+    unmatched media from filename alone). For each of (format, era,
+    content_type) compute ``deficit = target_pct - current_pct``;
+    squared, sum across dims. Positive deficits (we're underrepresented
+    in that bucket) contribute to the score.
+    """
+    fmt = _classify_unmatched_format(str(candidate.get("path", "")))
+    era = _classify_era(candidate.get("year"))
+    ct = candidate.get("content_type", "film")
+
+    score = 0.0
+    for bucket, current, target in (
+        (fmt, have_format, target_format),
+        (era, have_era, target_era),
+        (ct, have_ct, target_ct),
+    ):
+        target_pct = (
+            100 * target.get(bucket, 0) / target_total if target_total > 0 else 0
+        )
+        current_pct = (
+            100 * current.get(bucket, 0) / have_total if have_total > 0 else 0
+        )
+        deficit = target_pct - current_pct
+        if deficit > 0:
+            score += deficit ** 2
+    return score
+
+
+def select_unmatched_to_extract(
+    no_catalogue_media: list[dict],
+    have_entries: list[dict],
+    catalogue: list[dict],
+    n: int,
+) -> list[dict]:
+    """Pick N unmatched media to extract, greedily filling catalogue gaps.
+
+    Uses the same bias-correction approach as
+    ``nn_acquisition_recommender`` but with the unmatched media pool as
+    candidates. At each step, re-scores the remaining candidates against
+    the CURRENT (have + already-picked) distribution so each pick is
+    evaluated relative to the most recently updated state.
+
+    Parameters
+    ----------
+    no_catalogue_media
+        Media dicts from ``discover_media``'s fourth return value. Each
+        has ``path``, ``title``, ``year``, ``content_type``, ``size_bytes``.
+    have_entries
+        Catalogue entries for which we already have real WAVs. These
+        set the starting "have" distribution we're trying to diversify.
+    catalogue
+        The full BEQ catalogue — provides the target distribution.
+    n
+        Number of candidates to return.
+
+    Returns
+    -------
+    Top-N media dicts in pick order. Use with the same ``extract_one``
+    path as the matched-media extraction.
+    """
+    if not no_catalogue_media or n <= 0:
+        return []
+
+    # Target distribution: the BEQ catalogue broken down by format / era /
+    # content_type. Same derivation as nn_acquisition_recommender.
+    target_format: dict[str, int] = defaultdict(int)
+    target_era: dict[str, int] = defaultdict(int)
+    target_ct: dict[str, int] = defaultdict(int)
+    for e in catalogue:
+        if not e.get("filters"):
+            continue  # only count trainable entries
+        # Format — use catalogue's audioTypes list.
+        fmt = "other"
+        j = " ".join(e.get("audioTypes", []) or []).lower()
+        if "atmos" in j:
+            fmt = "atmos"
+        elif "truehd" in j:
+            fmt = "truehd"
+        elif "dts-hd" in j:
+            fmt = "dts-hd"
+        elif "dd+" in j or "eac3" in j:
+            fmt = "dd+"
+        target_format[fmt] += 1
+        target_era[_classify_era(e.get("year"))] += 1
+        target_ct[e.get("content_type", "film")] += 1
+    target_total = sum(target_format.values())
+
+    # Starting have distribution: current catalogue-matched WAVs.
+    have_format: dict[str, int] = defaultdict(int)
+    have_era: dict[str, int] = defaultdict(int)
+    have_ct: dict[str, int] = defaultdict(int)
+    for e in have_entries:
+        # have_entries are catalogue entries (we matched WAV → catalogue),
+        # so reuse the same classification as target.
+        fmt = "other"
+        j = " ".join(e.get("audioTypes", []) or []).lower()
+        if "atmos" in j:
+            fmt = "atmos"
+        elif "truehd" in j:
+            fmt = "truehd"
+        elif "dts-hd" in j:
+            fmt = "dts-hd"
+        elif "dd+" in j or "eac3" in j:
+            fmt = "dd+"
+        have_format[fmt] += 1
+        have_era[_classify_era(e.get("year"))] += 1
+        have_ct[e.get("content_type", "film")] += 1
+    have_total = sum(have_format.values())
+
+    log.info(
+        "unmatched selection: %d candidates, %d in have-distribution, "
+        "%d in catalogue target",
+        len(no_catalogue_media), have_total, target_total,
+    )
+
+    # Greedy loop: score, pick best, update have distribution, repeat.
+    selected: list[dict] = []
+    remaining = list(no_catalogue_media)
+
+    for pick in range(n):
+        if not remaining:
+            break
+        scored: list[tuple[float, int, dict]] = []
+        for idx, cand in enumerate(remaining):
+            s = _score_unmatched_candidate(
+                cand,
+                have_format, have_era, have_ct,
+                target_format, target_era, target_ct,
+                have_total, target_total,
+            )
+            scored.append((s, idx, cand))
+        scored.sort(key=lambda x: -x[0])
+        best_score, best_idx, best_cand = scored[0]
+        if best_score <= 0:
+            # No positive deficits left — distribution is already over-
+            # represented in every bucket. Fall back to "most diverse so
+            # far by content_type" (smallest have_ct wins).
+            best_cand = min(
+                remaining,
+                key=lambda c: have_ct.get(c.get("content_type", "film"), 0),
+            )
+            best_idx = remaining.index(best_cand)
+
+        # Commit the pick: update have-side distribution so the next
+        # iteration sees it.
+        fmt = _classify_unmatched_format(str(best_cand.get("path", "")))
+        era = _classify_era(best_cand.get("year"))
+        ct = best_cand.get("content_type", "film")
+        have_format[fmt] += 1
+        have_era[era] += 1
+        have_ct[ct] += 1
+        have_total += 1
+
+        selected.append(best_cand)
+        remaining.pop(best_idx)
+
+    return selected
+
+
+def _prompt_unmatched_extraction(
+    no_catalogue_count: int, default_n: int = 50,
+) -> int:
+    """Interactive prompt: extract N unmatched media? Returns 0 if no.
+
+    Only prompts when stdin is a TTY (script invocation from a terminal).
+    Returns 0 for non-TTY or "n"; otherwise returns the user's chosen N,
+    clamped to ``[0, no_catalogue_count]``.
+    """
+    if not sys.stdin.isatty():
+        return 0
+    try:
+        print()
+        print(
+            f"Found {no_catalogue_count} media files with DB IDs but no "
+            f"BEQ catalogue entry.",
+            flush=True,
+        )
+        print(
+            "These can grow the E84 self-training unlabelled pool. "
+            "Selection uses bias-corrected diversity scoring against the "
+            "catalogue distribution.",
+            flush=True,
+        )
+        resp = input(
+            f"Extract WAVs for some of them? [y/N] ",
+        ).strip().lower()
+        if resp not in ("y", "yes"):
+            return 0
+        raw = input(
+            f"How many? (default {default_n}, max {no_catalogue_count}): ",
+        ).strip()
+        if not raw:
+            return min(default_n, no_catalogue_count)
+        try:
+            n = int(raw)
+        except ValueError:
+            print(f"not a number ({raw!r}) — skipping unmatched extraction")
+            return 0
+        return max(0, min(n, no_catalogue_count))
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return 0
+
+
 def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(
         description="Extract LFE audio from media files into a portable WAV cache.",
@@ -531,6 +849,14 @@ def main(argv: list[str] | None = None):
     parser.add_argument(
         "--verify", action="store_true",
         help="Verify existing cache integrity. Deletes corrupt WAVs.",
+    )
+    parser.add_argument(
+        "--extract-unmatched", type=int, default=None,
+        help="Also extract WAVs for N media files that have DB IDs but "
+             "no BEQ catalogue entry, selected by bias-corrected diversity "
+             "scoring. These grow the E84 self-training unlabelled pool. "
+             "If omitted and run interactively, the script prompts. Pass "
+             "0 to force-skip the prompt in scripted runs.",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",
@@ -578,26 +904,160 @@ def main(argv: list[str] | None = None):
     cat_index = build_catalogue_index(catalogue)
 
     # Discover media.
-    media, missing_ids = discover_media(media_roots, cat_index)
+    media, missing_ids, all_with_ids, no_catalogue_media = discover_media(
+        media_roots, cat_index,
+    )
     log.info("found %d extractable titles (sorted by size, smallest first)", len(media))
+    if no_catalogue_media:
+        log.info(
+            "found %d candidate uncatalogued titles (for E84 unlabelled pool)",
+            len(no_catalogue_media),
+        )
 
     if missing_ids:
         missing_file = beq_dir / "missing_ids.txt"
         missing_file.write_text("\n".join(sorted(set(missing_ids))) + "\n")
         log.info("missing TMDb IDs written to %s", missing_file)
 
+    # Persist the full media inventory (every file with a DB ID, whether
+    # catalogue-matched or not, plus the missing-ID files).  Used by
+    # scripts/nn_acquisition_recommender.py to filter out titles already
+    # in the library, and by scripts/nn_cache_bias_report.py to surface
+    # files that need their tmdb tags fixed.
+    inventory_file = beq_dir / "media_inventory.json"
+    inventory_file.write_text(json.dumps({
+        "scanned_at": int(time.time()),
+        "media_roots": [str(r) for r in media_roots],
+        "n_total_with_ids": len(all_with_ids),
+        "n_catalogue_matched": sum(1 for m in all_with_ids if m["has_catalogue"]),
+        "n_missing_ids": len(missing_ids),
+        "media": all_with_ids,
+        "missing_ids": sorted(set(missing_ids)),
+    }, indent=2) + "\n")
+    log.info(
+        "media inventory written to %s (%d files, %d catalogue-matched, "
+        "%d missing IDs)",
+        inventory_file, len(all_with_ids),
+        sum(1 for m in all_with_ids if m["has_catalogue"]),
+        len(missing_ids),
+    )
+
     if args.limit > 0:
         media = media[:args.limit]
         log.info("limited to %d titles", len(media))
 
-    # Extract with ETA tracking.
+    # --- Phase 1: catalogue-matched extraction ---
+    matched_stats = _run_extraction_phase(
+        media=media,
+        wav_root=wav_root,
+        phase_label="catalogue-matched",
+    )
+
+    # --- Phase 2: uncatalogued extraction (E84 unlabelled pool) ---
+    unmatched_stats = {"total": 0, "extracted": 0, "skipped": 0, "errors": 0, "elapsed": 0.0}
+    n_unmatched_picked = 0
+    if no_catalogue_media:
+        n_to_extract = args.extract_unmatched
+        if n_to_extract is None:
+            n_to_extract = _prompt_unmatched_extraction(len(no_catalogue_media))
+        if n_to_extract > 0:
+            log.info("")
+            log.info("=" * 60)
+            log.info(
+                "  PHASE 2: selecting %d uncatalogued titles for E84 unlabelled pool",
+                n_to_extract,
+            )
+            log.info("=" * 60)
+            have_entries = [e for e in catalogue if e.get("filters") and (
+                any(
+                    m["has_catalogue"] and m.get("id_type") == "tmdb"
+                    and m.get("id_value") == str(e.get("theMovieDB", "")).strip()
+                    for m in all_with_ids
+                )
+            )]
+            # Fallback if the above is empty (e.g. id_type mismatch): use
+            # all trainable catalogue entries so target stats are non-zero.
+            if not have_entries:
+                have_entries = [e for e in catalogue if e.get("filters")]
+            selected = select_unmatched_to_extract(
+                no_catalogue_media=no_catalogue_media,
+                have_entries=have_entries,
+                catalogue=catalogue,
+                n=n_to_extract,
+            )
+            n_unmatched_picked = len(selected)
+            log.info(
+                "unmatched selection picked %d titles (bias-corrected):",
+                n_unmatched_picked,
+            )
+            for idx, m in enumerate(selected[:20]):
+                log.info(
+                    "  %2d. %s (%s) [%s] — format=%s era=%s %s",
+                    idx + 1, m["title"], m["year"], m["media_id"],
+                    _classify_unmatched_format(str(m["path"])),
+                    _classify_era(m["year"]),
+                    m["content_type"],
+                )
+            if n_unmatched_picked > 20:
+                log.info("  ... and %d more", n_unmatched_picked - 20)
+            unmatched_stats = _run_extraction_phase(
+                media=selected,
+                wav_root=wav_root,
+                phase_label="uncatalogued",
+            )
+
+    # --- Summary ---
+    total_extracted = matched_stats["extracted"] + unmatched_stats["extracted"]
+    total_skipped = matched_stats["skipped"] + unmatched_stats["skipped"]
+    total_errors = matched_stats["errors"] + unmatched_stats["errors"]
+    total_time = matched_stats["elapsed"] + unmatched_stats["elapsed"]
+    log.info("")
+    log.info("=" * 60)
+    log.info("  EXTRACTION COMPLETE")
+    log.info("  Catalogue-matched: %d extracted, %d cached, %d errors",
+             matched_stats["extracted"], matched_stats["skipped"], matched_stats["errors"])
+    if n_unmatched_picked:
+        log.info(
+            "  Uncatalogued:      %d extracted, %d cached, %d errors",
+            unmatched_stats["extracted"], unmatched_stats["skipped"], unmatched_stats["errors"],
+        )
+    log.info("  Total extracted:   %d", total_extracted)
+    log.info("  Total cached:      %d", total_skipped)
+    log.info("  Total errors:      %d", total_errors)
+    log.info("  Missing IDs:       %d", len(missing_ids))
+    log.info("  Time:              %.0fs (%.1f min)", total_time, total_time / 60)
+    log.info("  WAV cache:         %s", wav_root)
+    log.info("=" * 60)
+
+
+def _run_extraction_phase(
+    media: list[dict],
+    wav_root: Path,
+    phase_label: str,
+) -> dict:
+    """Run the shared extraction loop for a list of media dicts.
+
+    Returns a stats dict with keys: ``total``, ``extracted``, ``skipped``,
+    ``errors``, ``elapsed``. ETA tracking is independent per phase.
+    Used by both the catalogue-matched main phase and the optional E84
+    uncatalogued extraction phase so the actual ffmpeg path stays in
+    one place.
+    """
     total = len(media)
+    if total == 0:
+        return {"total": 0, "extracted": 0, "skipped": 0, "errors": 0, "elapsed": 0.0}
+
+    log.info("")
+    log.info("=" * 60)
+    log.info("  %s extraction: %d titles", phase_label, total)
+    log.info("=" * 60)
+
     extracted = 0
     skipped = 0
     errors = 0
     start_time = time.time()
-    extract_times: list[float] = []  # seconds per extraction (for ETA)
-    extract_rates: list[float] = []  # MB/s per extraction (for per-file estimates)
+    extract_times: list[float] = []
+    extract_rates: list[float] = []
 
     for i, m in enumerate(media):
         title = m["title"]
@@ -614,9 +1074,8 @@ def main(argv: list[str] | None = None):
 
         pct = (i + 1) * 100 // total
 
-        # ETA calculation.
         if extract_times:
-            avg_rate = sum(extract_rates) / len(extract_rates)  # MB/s
+            avg_rate = sum(extract_rates) / len(extract_rates)
             remaining = sum(mm["size_bytes"] / 1e6 for mm in media[i:] if not cache_path(
                 wav_root, mm["title"], mm["year"], mm["media_id"],
                 content_type=mm.get("content_type", "film"),
@@ -627,14 +1086,13 @@ def main(argv: list[str] | None = None):
         else:
             eta_str = ""
 
-        prefix = f"[{i + 1}/{total} {pct}%{eta_str}]"
+        prefix = f"[{phase_label} {i + 1}/{total} {pct}%{eta_str}]"
 
         if wav.exists():
             log.info("%s CACHED: %s (%s)%s [%s]", prefix, title, year, ep_label, media_id)
             skipped += 1
             continue
 
-        # Estimate extraction time for this file based on average MB/s rate.
         if extract_rates:
             avg_rate = sum(extract_rates) / len(extract_rates)
             est_s = size_mb / avg_rate if avg_rate > 0 else 0
@@ -662,19 +1120,13 @@ def main(argv: list[str] | None = None):
         else:
             errors += 1
 
-    # Summary.
-    total_time = time.time() - start_time
-    log.info("")
-    log.info("=" * 60)
-    log.info("  EXTRACTION COMPLETE")
-    log.info("  Total titles:   %d", total)
-    log.info("  Extracted:      %d", extracted)
-    log.info("  Already cached: %d", skipped)
-    log.info("  Errors:         %d", errors)
-    log.info("  Missing IDs:    %d", len(missing_ids))
-    log.info("  Time:           %.0fs (%.1f min)", total_time, total_time / 60)
-    log.info("  WAV cache:      %s", wav_root)
-    log.info("=" * 60)
+    return {
+        "total": total,
+        "extracted": extracted,
+        "skipped": skipped,
+        "errors": errors,
+        "elapsed": time.time() - start_time,
+    }
 
 
 if __name__ == "__main__":

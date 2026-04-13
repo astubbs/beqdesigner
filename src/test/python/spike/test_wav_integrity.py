@@ -211,13 +211,11 @@ def test_garbage_file_detected(tmp_path):
 
 
 class TestMediaIdExtraction:
-    """Test extract_media_id() from scripts/extract_lfe.py."""
+    """Test extract_media_id() from cli/extract.py."""
 
     def _extract(self, path_str: str) -> tuple[str, str] | None:
         """Import and call extract_media_id with a synthetic Path."""
-        import sys
-        sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "scripts"))
-        from extract_lfe import extract_media_id
+        from cli.extract import extract_media_id
         return extract_media_id(Path(path_str))
 
     def test_tmdb_in_filename(self):
