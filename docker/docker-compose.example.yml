@@ -3,10 +3,9 @@
 # Copy this file to docker-compose.yml and edit the volume paths to match
 # your NAS/server layout. Then run:
 #
-#   docker compose run beq extract        # Extract LFE WAVs (resumes from cache)
-#   docker compose run beq verify         # Check WAV cache integrity
-#   docker compose run beq cache-status   # Show cache summary
-#   docker compose run beq --help         # List all subcommands
+#   docker compose run beq-designer                 # Interactive menu
+#   docker compose run beq-designer extract        # Extract LFE WAVs
+#   docker compose run beq-designer --help         # List all subcommands
 #
 # The extractor runs breadth-first: alternates movies and TV, one episode
 # per show per round. Already-extracted titles are skipped instantly. Safe
@@ -14,12 +13,14 @@
 
 services:
 
-  beq:
+  beq-designer:
     build:
       context: ..
       dockerfile: docker/Dockerfile
     image: beq-designer:latest
     container_name: beq-designer
+    stdin_open: true
+    tty: true
     volumes:
       # BEQ working directory — stores config, catalogue cache, WAV output,
       # and media_inventory.json. WAVs go in {beq-dir}/wav-cache/ automatically.
@@ -32,12 +33,5 @@ services:
       - /volume2/media/Anime Movies:/media/Anime_Movies:ro
       - /volume2/media/Anime TV:/media/Anime_TV:ro
 
-    # Default command: extract LFE from all media roots.
-    # Override with: docker compose run beq <subcommand>
-    command: >
-      extract
-      --beq-dir /beq
-      --media-root /media/Movies
-      --media-root /media/TV
-      --media-root /media/Anime_Movies
-      --media-root /media/Anime_TV
+    # No default command — launches the interactive menu.
+    # Pass subcommands directly: docker compose run beq-designer extract ...
