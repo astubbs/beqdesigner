@@ -82,6 +82,8 @@ def menu_select(
         choices=iq_choices,
         default=default,
         mandatory=False,
+        keybindings={"skip": [{"key": "escape"}, {"key": "left"}]},
+        long_instruction="(Esc or ← to go back)",
     ).execute()
 
 
@@ -108,6 +110,8 @@ def fuzzy_select(
         choices=iq_choices,
         default=default,
         mandatory=False,
+        keybindings={"skip": [{"key": "escape"}]},
+        long_instruction="(Esc to go back)",
     ).execute()
 
 
@@ -118,8 +122,8 @@ def fuzzy_select(
 
 @dataclass
 class CliConfig:
-    author: str = "auto"
     output_dir: str = "profiles"
+    verbose: bool = False
     last_media_dir: str = ""
     last_media_file: str = ""
 
@@ -130,8 +134,8 @@ def load_config() -> CliConfig:
     from spike._auto_beq_helpers import load_settings
     settings = load_settings()
     return CliConfig(
-        author=settings.get("cli_author", "auto"),
         output_dir=settings.get("cli_output_dir", "profiles"),
+        verbose=settings.get("cli_verbose", False),
         last_media_dir=settings.get("cli_last_media_dir", ""),
         last_media_file=settings.get("cli_last_media_file", ""),
     )
@@ -141,8 +145,8 @@ def save_config(config: CliConfig) -> None:
     """Persist CLI preferences to shared settings.json."""
     from spike._auto_beq_helpers import save_settings
     save_settings({
-        "cli_author": config.author,
         "cli_output_dir": config.output_dir,
+        "cli_verbose": config.verbose,
         "cli_last_media_dir": config.last_media_dir,
         "cli_last_media_file": config.last_media_file,
     })

@@ -295,12 +295,15 @@ def _prompt_output_dir(config: CliConfig) -> str:
 def _configure_preferences(config: CliConfig) -> CliConfig:
     """Interactive preferences editor."""
     console.print("\n[bold]Current preferences:[/bold]")
-    console.print(f"  Author:     {config.author}")
-    console.print(f"  Output dir: {config.output_dir}")
+    console.print(f"  Output dir:    {config.output_dir}")
+    console.print(f"  Verbose logs:  {'on' if config.verbose else 'off'}")
     console.print()
 
-    config.author = _prompt_author(config)
     config.output_dir = _prompt_output_dir(config)
+    config.verbose = inquirer.confirm(
+        message="Show verbose logs during profile generation?",
+        default=config.verbose,
+    ).execute()
     save_config(config)
     console.print("[green]Preferences saved.[/green]\n")
     return config
@@ -571,6 +574,10 @@ def generate(
             border_style="yellow",
         ))
 
+    # Verbose: CLI flag -v OR saved preference.
+    effective_verbose = verbose or config.verbose
+    effective_author = author or "auto"
+
     # --- Interactive mode (no positional arg) ---
     if media is None:
         mode = _prompt_mode()
@@ -581,9 +588,6 @@ def generate(
             _configure_preferences(config)
             raise typer.Exit()
 
-        # Resolve author (prompt if first time).
-        effective_author = author or config.author
-
         if mode == "single":
             media = _prompt_media_file(config)
             if media is None:
@@ -593,7 +597,7 @@ def generate(
             effective_output = output or (effective_output_dir / f"{media.stem}_beq.json")
             config.last_media_file = str(media)
             save_config(config)
-            _run_single(media, effective_author, effective_output, effective_output_dir, verbose=verbose)
+            _run_single(media, effective_author, effective_output, effective_output_dir, verbose=effective_verbose)
 
         elif mode == "batch":
             media_dir = _prompt_directory("Media directory:", config)
@@ -606,13 +610,11 @@ def generate(
                 raise typer.Exit()
             config.last_media_dir = str(media_dir)
             save_config(config)
-            _run_batch(files, effective_author, effective_output_dir, verbose=verbose)
+            _run_batch(files, effective_author, effective_output_dir, verbose=effective_verbose)
 
         raise typer.Exit()
 
     # --- Shortcut mode (positional arg provided) ---
-    effective_author = author or config.author
-
     if media.is_dir():
         # Directory supplied — pre-fill directory prompt, then file selection.
         config.last_media_dir = str(media)
@@ -625,7 +627,7 @@ def generate(
         effective_output = output or (effective_output_dir / f"{selected.stem}_beq.json")
         config.last_media_file = str(selected)
         save_config(config)
-        _run_single(selected, effective_author, effective_output, effective_output_dir, verbose=verbose)
+        _run_single(selected, effective_author, effective_output, effective_output_dir, verbose=effective_verbose)
 
     elif media.is_file():
         # Single file mode.
@@ -635,7 +637,7 @@ def generate(
         config.last_media_dir = str(media.parent)
         config.last_media_file = str(media)
         save_config(config)
-        _run_single(media, effective_author, effective_output, effective_output_dir, verbose=verbose)
+        _run_single(media, effective_author, effective_output, effective_output_dir, verbose=effective_verbose)
 
     else:
         console.print(f"[red]Path does not exist:[/red] {media}")

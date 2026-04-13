@@ -43,8 +43,8 @@ from cli.profile import (
 class TestCliConfig:
     def test_defaults(self):
         config = CliConfig()
-        assert config.author == "auto"
         assert config.output_dir == "profiles"
+        assert config.verbose is False
         assert config.last_media_dir == ""
 
     def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
@@ -53,33 +53,33 @@ class TestCliConfig:
         # Ensure beq_config_dir() points at tmp_path too.
         monkeypatch.setattr("spike._auto_beq_helpers.beq_config_dir", lambda: tmp_path)
 
-        config = CliConfig(author="testauthor", output_dir="/tmp/out", last_media_dir="/media")
+        config = CliConfig(output_dir="/tmp/out", verbose=True, last_media_dir="/media")
         save_config(config)
 
         assert settings_file.exists()
         loaded = load_config()
-        assert loaded.author == "testauthor"
         assert loaded.output_dir == "/tmp/out"
+        assert loaded.verbose is True
         assert loaded.last_media_dir == "/media"
 
     def test_load_missing_file_returns_defaults(self, tmp_path, monkeypatch):
         monkeypatch.setattr("spike._auto_beq_helpers._SETTINGS_PATH", tmp_path / "nonexistent.json")
         config = load_config()
-        assert config.author == "auto"
+        assert config.verbose is False
 
     def test_load_corrupt_file_returns_defaults(self, tmp_path, monkeypatch):
         settings_file = tmp_path / "settings.json"
         settings_file.write_text("not json{{{")
         monkeypatch.setattr("spike._auto_beq_helpers._SETTINGS_PATH", settings_file)
         config = load_config()
-        assert config.author == "auto"
+        assert config.output_dir == "profiles"
 
     def test_load_ignores_unknown_fields(self, tmp_path, monkeypatch):
         settings_file = tmp_path / "settings.json"
-        settings_file.write_text(json.dumps({"cli_author": "bob", "unknown_field": 42}))
+        settings_file.write_text(json.dumps({"cli_verbose": True, "unknown_field": 42}))
         monkeypatch.setattr("spike._auto_beq_helpers._SETTINGS_PATH", settings_file)
         config = load_config()
-        assert config.author == "bob"
+        assert config.verbose is True
 
 
 # ---------------------------------------------------------------------------
