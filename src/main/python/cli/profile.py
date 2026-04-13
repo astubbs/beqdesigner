@@ -34,6 +34,29 @@ from cli.generate import generate_profile
 
 
 # ---------------------------------------------------------------------------
+# Model check
+# ---------------------------------------------------------------------------
+
+
+def _check_production_model() -> bool:
+    """Return True if a production model exists (fast — no loading)."""
+    import os as _os
+    if _os.environ.get("AUTO_BEQ_MODEL_PATH"):
+        return Path(_os.environ["AUTO_BEQ_MODEL_PATH"]).exists()
+    if _os.environ.get("AUTO_BEQ_ADVISOR", "").lower() == "torch_differentiable":
+        try:
+            from spike._auto_beq_helpers import beq_dir
+            return (beq_dir() / "e85_torch_filter.pt").exists()
+        except Exception:
+            return False
+    try:
+        from spike._auto_beq_helpers import beq_dir
+        return (beq_dir() / "production_model.joblib").exists()
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Interactive prompts
 # ---------------------------------------------------------------------------
 
@@ -531,6 +554,22 @@ def generate(
     _log_file = setup_log_file(output_dir or config.output_dir, log_name="beq_profile.log")
     plain_banner = show_banner("BEQ Profile Generator", config, log_file=_log_file)
     logging.getLogger("beq_profile_cli").info(plain_banner)
+
+    # Warn if no production model — this will be slow and inaccurate.
+    _has_model = _check_production_model()
+    if not _has_model:
+        from rich.panel import Panel
+        console.print(Panel(
+            "[yellow bold]No production model found.[/yellow bold]\n\n"
+            "Profile generation will fall back to inline training, which is\n"
+            "slower and less accurate than the production model.\n\n"
+            "[bold]To fix:[/bold] Go to [cyan]Tools > Train model[/cyan] from the main menu,\n"
+            "or run: [cyan]bin/beq-designer dev train[/cyan]\n\n"
+            "[dim]If you downloaded a release build, the model should have been\n"
+            "included. Check that your WAV cache is populated first.[/dim]",
+            title="Missing Model",
+            border_style="yellow",
+        ))
 
     # --- Interactive mode (no positional arg) ---
     if media is None:
