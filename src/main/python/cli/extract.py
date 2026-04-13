@@ -904,14 +904,12 @@ def main(argv: list[str] | None = None):
     # Validate media roots — any invalid root is a fatal config error.
     invalid_roots = [r for r in media_roots if not r.exists()]
     if invalid_roots:
-        for r in invalid_roots:
-            log.error("media root does not exist: %s", r)
-        log.error(
-            "Fix the invalid paths above, or run `bin/beq-designer extract` "
-            "to reconfigure. If these are NAS paths, make sure the drives "
-            "are mounted."
+        bad = "\n  ".join(str(r) for r in invalid_roots)
+        raise RuntimeError(
+            f"Invalid media roots:\n  {bad}\n\n"
+            "Fix the paths or run `bin/beq-designer extract` to reconfigure.\n"
+            "If these are NAS paths, make sure the drives are mounted."
         )
-        sys.exit(1)
 
     # Fetch BEQ catalogue.
     catalogue = fetch_catalogue(beq_dir)

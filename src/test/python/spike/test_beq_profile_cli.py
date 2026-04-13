@@ -353,27 +353,23 @@ class TestRenderFilters:
 class TestDispatch:
     def test_all_menu_items_have_handlers(self):
         """Every selectable item in the Tools menu must have a dispatch handler."""
-        from cli.main import _build_tools_menu, _dispatch, _do_profile
+        from cli.main import _build_tools_menu, _dispatch
 
         tools_menu = _build_tools_menu()
         selectable_values = [val for _, val in tools_menu if val is not None and val != "back"]
 
-        # Build the dispatch table (same as _dispatch does internally).
-        from cli.main import (
-            _do_extract, _do_cache_status, _do_verify, _do_nn_report,
-            _do_sweep_discover, _do_sweep_run, _do_sweep_report, _do_config,
-            _do_train, _do_train_torch, _do_report_acquisitions,
-            _do_report_cache_bias, _do_report_author_patterns,
-        )
-        # Just verify dispatch doesn't raise KeyError for any menu value.
-        handlers = {
+        # The dispatch table is built inside _dispatch — verify by checking
+        # that each menu value is a key in the handlers dict.
+        # We can't easily inspect the lambda dict, so just verify the
+        # known set matches.
+        expected = {
             "profile", "extract", "cache-status", "verify", "nn-report",
             "sweep-discover", "sweep-run", "sweep-report", "config",
             "dev-train", "dev-train-torch",
             "report-acquisitions", "report-cache-bias", "report-author-patterns",
         }
         for val in selectable_values:
-            assert val in handlers, f"Menu item '{val}' has no dispatch handler"
+            assert val in expected, f"Menu item '{val}' has no dispatch handler"
 
     def test_render_markdown_report_no_args(self):
         """Scripts with def main() (no args) should work via _render_markdown_report."""
@@ -398,54 +394,93 @@ class TestDispatch:
         _render_markdown_report(fake_report, argv=["--test"])
         assert received == [["--test"]]
 
-    def test_wav_count_cache_only_scans_once(self, tmp_path, capsys):
-        """WAV cache scan must only run once — subsequent calls use cached count."""
+    def test_wav_count_disk_cache(self, tmp_path, monkeypatch):
+        """WAV count is persisted to disk — second call reads from file, no rescan."""
         from unittest.mock import patch
         import cli.main as main_mod
 
-        # Reset the cache.
-        main_mod._cached_wav_count = None
+        cache_file = tmp_path / ".wav_count_cache"
+        monkeypatch.setattr("cli.main._WAV_COUNT_CACHE", cache_file)
 
         # Create some fake WAVs.
+        wav_dir = tmp_path / "wavs"
+        wav_dir.mkdir()
         for i in range(3):
-            (tmp_path / f"test_{i}.wav").touch()
+            (wav_dir / f"test_{i}.wav").touch()
 
-        with patch("spike._auto_beq_helpers.wav_cache_dir", return_value=tmp_path):
-            # First call: should scan and print message.
-            main_mod._ensure_wav_count()
-            assert main_mod._cached_wav_count == 3
+        with patch("spike._auto_beq_helpers.wav_cache_dir", return_value=wav_dir):
+            # First call: should scan and write disk cache.
+            count1 = main_mod._ensure_wav_count()
+            assert count1 == 3
+            assert cache_file.exists(), "Disk cache file should have been written"
 
-            # Second call: should return immediately without printing.
-            main_mod._ensure_wav_count()
-            # If it scanned twice, _cached_wav_count would still be 3
-            # but the key test is that the function returns immediately.
-            assert main_mod._cached_wav_count == 3
+        # Second call: should read from disk, NOT rescan.
+        # (wav_cache_dir not even patched — if it tried to scan, it would fail)
+        count2 = main_mod._ensure_wav_count()
+        assert count2 == 3, "Should have read from disk cache without rescanning"
 
-        # Verify the guard works: set to a value, call again — no change.
-        main_mod._cached_wav_count = 42
-        main_mod._ensure_wav_count()  # should not scan
-        assert main_mod._cached_wav_count == 42, "Cache was overwritten — guard broken"
-
-        # Clean up for other tests.
-        main_mod._cached_wav_count = None
-
-    def test_extract_handler_always_verbose(self):
-        """Extract handler must always pass -v so output is never silent."""
+    def test_extract_always_verbose_and_auto_beq_dir(self):
+        """Extract subcommand must always pass -v and auto-populate --beq-dir."""
         from unittest.mock import patch
-        from cli.common import CliConfig
 
-        config = CliConfig()
         captured_argv = []
 
         def fake_extract_main(argv):
             captured_argv.extend(argv)
 
         with patch("cli.extract.main", fake_extract_main):
-            with patch("spike._auto_beq_helpers.beq_dir", return_value=Path("/tmp/fake-beq")):
-                from cli.main import _do_extract
-                _do_extract(config, verbose=False)
+            with patch("cli.main._auto_beq_dir", return_value=Path("/tmp/fake-beq")):
+                from cli.main import extract
+                extract(media_root=None, beq_dir_opt=None, limit=0,
+                        verify_only=False, verbose=False)
 
         assert "-v" in captured_argv, f"Extract must always be verbose, got: {captured_argv}"
+        assert "--beq-dir" in captured_argv, f"Extract must auto-populate --beq-dir, got: {captured_argv}"
+        beq_idx = captured_argv.index("--beq-dir")
+        assert captured_argv[beq_idx + 1] == "/tmp/fake-beq"
+
+    def test_dispatch_calls_typer_functions_not_wrappers(self):
+        """Menu dispatch must call the typer command functions with correct defaults.
+
+        Regression: calling extract() without explicit args gave OptionInfo objects
+        instead of None, causing 'OptionInfo is not iterable' TypeError.
+        """
+        from unittest.mock import patch, MagicMock
+        from cli.main import _dispatch
+        from cli.common import CliConfig
+
+        config = CliConfig()
+
+        # Test each dispatch action that takes parameters — verify no TypeError.
+        actions_to_test = [
+            "extract", "cache-status", "verify", "nn-report",
+            "sweep-discover", "report-acquisitions", "report-cache-bias",
+            "report-author-patterns",
+        ]
+
+        for action in actions_to_test:
+            # Mock the underlying script main() so nothing actually runs.
+            patches = {
+                "extract": "cli.extract.main",
+                "cache-status": "cli.cache_status.main",
+                "verify": "cli.verify_cache.main",
+                "nn-report": "cli.nn_report.main",
+                "sweep-discover": "spike.sweep_discover.main",
+                "report-acquisitions": "cli.nn_acquisition_recommender.main",
+                "report-cache-bias": "cli.nn_cache_bias_report.main",
+                "report-author-patterns": "cli.nn_author_pattern_report.main",
+            }
+            target = patches[action]
+            with patch(target, MagicMock()):
+                with patch("cli.main._auto_beq_dir", return_value=None):
+                    with patch("cli.main._auto_wav_cache", return_value=None):
+                        try:
+                            _dispatch(action, config, verbose=False)
+                        except TypeError as e:
+                            pytest.fail(
+                                f"Dispatch '{action}' raised TypeError: {e}. "
+                                "Likely calling typer function without explicit defaults."
+                            )
 
 
 # ---------------------------------------------------------------------------
@@ -553,8 +588,8 @@ class TestUnifiedCLI:
 class TestExtractConfigValidation:
     """Config with non-existent media roots must fail, not silently succeed."""
 
-    def test_any_invalid_media_root_exits_nonzero(self, tmp_path):
-        """Any invalid media root is a fatal config error — must not silently continue."""
+    def test_any_invalid_media_root_raises_with_message(self, tmp_path):
+        """Any invalid media root is a fatal config error with descriptive message."""
         from cli.extract import main as extract_main
 
         valid_dir = tmp_path / "valid_media"
@@ -568,13 +603,8 @@ class TestExtractConfigValidation:
             ]
         }))
 
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(RuntimeError, match="Invalid media roots"):
             extract_main(["--beq-dir", str(tmp_path)])
-
-        assert exc_info.value.code != 0, (
-            "Extract should fail when ANY media root is invalid, "
-            "not silently skip it and produce 0 results"
-        )
 
 
 # ---------------------------------------------------------------------------

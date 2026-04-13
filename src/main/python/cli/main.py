@@ -58,36 +58,61 @@ _MAIN_MENU = [
     ("Quit", "quit"),
 ]
 
-_cached_wav_count: int | None = None
+import json as _json
+import time as _time
+
+_WAV_COUNT_CACHE = Path.home() / ".config" / "beqdesigner" / ".wav_count_cache"
+_WAV_COUNT_MAX_AGE = 3600  # 1 hour
 
 
-def _ensure_wav_count() -> None:
-    """Scan WAV cache once and cache the result. Shows message on first scan."""
-    global _cached_wav_count
-    if _cached_wav_count is not None:
-        return
-    import time
-    t0 = time.monotonic()
+def _ensure_wav_count() -> int:
+    """Get WAV count from disk cache or scan. Survives process restarts."""
+    # Check disk cache first.
+    if _WAV_COUNT_CACHE.exists():
+        try:
+            data = _json.loads(_WAV_COUNT_CACHE.read_text())
+            age = _time.time() - data.get("timestamp", 0)
+            if age < _WAV_COUNT_MAX_AGE:
+                return data["count"]
+        except Exception:
+            pass
+
+    # Scan and cache to disk.
+    t0 = _time.monotonic()
     try:
         from spike._auto_beq_helpers import wav_cache_dir
         cache = wav_cache_dir()
         console.print("[dim]Scanning WAV cache...[/dim]", end=" ")
-        _cached_wav_count = sum(1 for _ in cache.rglob("*.wav"))
-        elapsed = time.monotonic() - t0
-        console.print(f"[dim]{_cached_wav_count} files found ({elapsed:.1f}s).[/dim]")
+        count = sum(1 for _ in cache.rglob("*.wav"))
+        elapsed = _time.monotonic() - t0
+        console.print(f"[dim]{count} files found ({elapsed:.1f}s).[/dim]")
     except Exception as exc:
-        elapsed = time.monotonic() - t0
+        elapsed = _time.monotonic() - t0
         console.print(f"[dim]failed ({elapsed:.1f}s): {exc}[/dim]")
-        _cached_wav_count = -1
+        return -1
+
+    # Write to disk cache.
+    try:
+        _WAV_COUNT_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        _WAV_COUNT_CACHE.write_text(_json.dumps({
+            "count": count, "timestamp": _time.time(),
+        }))
+    except Exception:
+        pass
+    return count
 
 
 def _cache_status_line() -> str:
-    """Quick status line."""
-    if _cached_wav_count is None:
-        return "not scanned yet"
-    if _cached_wav_count < 0:
-        return "✗ not configured"
-    return f"✓ {_cached_wav_count} WAVs cached"
+    """Quick status line — reads from disk cache without scanning."""
+    if _WAV_COUNT_CACHE.exists():
+        try:
+            data = _json.loads(_WAV_COUNT_CACHE.read_text())
+            age = _time.time() - data.get("timestamp", 0)
+            if age < _WAV_COUNT_MAX_AGE:
+                return f"✓ {data['count']} WAVs cached"
+        except Exception:
+            pass
+    return "not scanned yet"
 
 
 def _model_status_line() -> str:
@@ -175,6 +200,8 @@ def _interactive_menu_loop(config: CliConfig, verbose: bool) -> None:
             _dispatch(action, config, verbose)
         except KeyboardInterrupt:
             console.print("\n[dim]Interrupted — returning to menu.[/dim]")
+        except RuntimeError as e:
+            console.print(f"\n[red]Error:[/red] {e}")
         except SystemExit as e:
             if e.code and e.code != 0:
                 console.print(f"[red]Command exited with code {e.code}[/red]")
@@ -186,7 +213,7 @@ def _interactive_menu_loop(config: CliConfig, verbose: bool) -> None:
 
 def _tools_menu_loop(config: CliConfig, verbose: bool) -> None:
     """Show the tools submenu until the user goes back."""
-    _ensure_wav_count()  # scan once on first visit, cached after
+    _ensure_wav_count()  # reads disk cache or scans (persists across restarts)
 
     while True:
         try:
@@ -201,6 +228,8 @@ def _tools_menu_loop(config: CliConfig, verbose: bool) -> None:
             _dispatch(action, config, verbose)
         except KeyboardInterrupt:
             console.print("\n[dim]Interrupted — returning to tools menu.[/dim]")
+        except RuntimeError as e:
+            console.print(f"\n[red]Error:[/red] {e}")
         except SystemExit as e:
             if e.code and e.code != 0:
                 console.print(f"[red]Command exited with code {e.code}[/red]")
@@ -209,87 +238,31 @@ def _tools_menu_loop(config: CliConfig, verbose: bool) -> None:
 
 
 def _dispatch(action: str, config: CliConfig, verbose: bool) -> None:
-    """Route a menu choice to the appropriate handler."""
+    """Route a menu choice to the same typer command function used by CLI."""
     handlers = {
-        "profile": _do_profile,
-        "extract": _do_extract,
-        "cache-status": _do_cache_status,
-        "verify": _do_verify,
-        "nn-report": _do_nn_report,
-        "sweep-discover": _do_sweep_discover,
-        "sweep-run": _do_sweep_run,
-        "sweep-report": _do_sweep_report,
-        "config": _do_config,
-        "dev-train": _do_train,
-        "dev-train-torch": _do_train_torch,
-        "report-acquisitions": _do_report_acquisitions,
-        "report-cache-bias": _do_report_cache_bias,
-        "report-author-patterns": _do_report_author_patterns,
+        "profile": lambda: profile(media=None, author=None, output=None, output_dir=None, verbose=verbose),
+        "extract": lambda: extract(media_root=None, beq_dir_opt=None, limit=0, verify_only=False, verbose=False),
+        "cache-status": lambda: cache_status(cache_dir=None),
+        "verify": lambda: verify(cache_root=None, delete=False, verbose=False),
+        "nn-report": lambda: nn_report(output=None),
+        "sweep-discover": lambda: sweep_discover(library=None),
+        "sweep-run": lambda: sweep_run(limit=10, parallel=False),
+        "sweep-report": lambda: sweep_report_cmd(),
+        "config": lambda: config_cmd(),
+        "dev-train": lambda: dev_train(),
+        "dev-train-torch": lambda: dev_train_torch(),
+        "report-acquisitions": lambda: report_acquisitions(count=50, output=None),
+        "report-cache-bias": lambda: report_cache_bias(output=None),
+        "report-author-patterns": lambda: report_author_patterns(output=None),
     }
     handler = handlers.get(action)
     if handler:
-        handler(config, verbose)
+        handler()
 
 
 # ---------------------------------------------------------------------------
-# Handlers — interactive prompts then delegate to existing scripts
+# Shared helper
 # ---------------------------------------------------------------------------
-
-
-def _do_profile(config: CliConfig, verbose: bool) -> None:
-    """Generate BEQ profile — delegates to beq_profile_cli."""
-    from cli.profile import generate
-    generate(media=None, author=None, output=None, output_dir=None, verbose=verbose)
-
-
-def _do_extract(config: CliConfig, verbose: bool) -> None:
-    """Extract LFE cache — delegates to extract_lfe.
-
-    Always runs verbose so the user sees what's happening.
-    Passes beq-dir from shared config. Media roots come from the
-    extract script's own saved config (.extract_config.json).
-    """
-    argv = ["-v"]  # always verbose — never run silently
-    try:
-        from spike._auto_beq_helpers import beq_dir
-        argv.extend(["--beq-dir", str(beq_dir())])
-    except RuntimeError as exc:
-        logging.getLogger("beq_cli").warning(
-            "beq_dir not configured — extract will use defaults: %s", exc
-        )
-    from cli.extract import main as extract_main
-    extract_main(argv)
-
-
-def _do_cache_status(config: CliConfig, verbose: bool) -> None:
-    """WAV cache status — delegates to wav_cache_status."""
-    from cli.cache_status import main as status_main
-    status_main()
-
-
-def _do_verify(config: CliConfig, verbose: bool) -> None:
-    """Verify cache integrity — delegates to verify_wav_cache."""
-    from InquirerPy import inquirer
-    from spike._auto_beq_helpers import wav_cache_dir
-
-    try:
-        default_cache = str(wav_cache_dir())
-    except Exception:
-        default_cache = ""
-
-    cache_root = inquirer.filepath(message="WAV cache root:", default=default_cache).execute()
-    if not cache_root:
-        return
-    delete = inquirer.confirm(message="Delete corrupt files?", default=False).execute()
-
-    argv = [cache_root]
-    if delete:
-        argv.append("--delete")
-    if verbose:
-        argv.append("-v")
-
-    from cli.verify_cache import main as verify_main
-    verify_main(argv)
 
 
 def _render_markdown_report(report_main_func, argv=None) -> None:
@@ -301,7 +274,6 @@ def _render_markdown_report(report_main_func, argv=None) -> None:
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        # Some scripts take argv, some take no args.
         sig = inspect.signature(report_main_func)
         if sig.parameters:
             report_main_func(argv)
@@ -316,83 +288,26 @@ def _render_markdown_report(report_main_func, argv=None) -> None:
         console.print("[dim]No output.[/dim]")
 
 
-def _do_nn_report(config: CliConfig, verbose: bool) -> None:
-    """NN comparison report — delegates to nn_comparison_report."""
-    from cli.nn_report import main as nn_main
-    _render_markdown_report(nn_main)
+def _auto_beq_dir() -> Path | None:
+    """Get beq_dir from shared config, or None if not configured."""
+    try:
+        from spike._auto_beq_helpers import beq_dir as _bd
+        return _bd()
+    except Exception:
+        return None
 
 
-def _do_sweep_discover(config: CliConfig, verbose: bool) -> None:
-    """Discover media — delegates to sweep_discover module."""
-    from spike.sweep_discover import main as discover_main
-    discover_main()
-
-
-def _do_sweep_run(config: CliConfig, verbose: bool) -> None:
-    """Run sweep pipeline — runs pytest in a subprocess."""
-    from InquirerPy import inquirer
-
-    limit = inquirer.text(message="Max files to process:", default="10").execute()
-    parallel = inquirer.confirm(message="Run in parallel?", default=False).execute()
-
-    test_module = "src/test/python/spike/test_auto_beq_library_sweep.py"
-    test_func = "test_library_sweep_parallel" if parallel else "test_library_sweep"
-
-    env = {
-        **os.environ,
-        "AUTO_BEQ_SWEEP_LIMIT": limit or "10",
-        "AUTO_BEQ_ADVISOR": "measurement",
-    }
-    subprocess.run(
-        ["poetry", "run", "pytest", f"{test_module}::{test_func}", "-v", "-s"],
-        env=env, cwd=str(REPO_ROOT),
-    )
-
-
-def _do_sweep_report(config: CliConfig, verbose: bool) -> None:
-    """Sweep report — delegates to sweep_report."""
-    from cli.sweep_report import main as report_main
-    _render_markdown_report(report_main)
-
-
-def _do_config(config: CliConfig, verbose: bool) -> None:
-    """Configure preferences."""
-    from cli.profile import _configure_preferences
-    _configure_preferences(config)
-
-
-def _do_train(config: CliConfig, verbose: bool) -> None:
-    """Train the production XGBoost model."""
-    from cli.train_production_model import main as train_main
-    train_main()
-
-
-def _do_train_torch(config: CliConfig, verbose: bool) -> None:
-    """Train the differentiable-DSP model."""
-    from cli.train_torch_model import main as train_main
-    train_main()
-
-
-def _do_report_acquisitions(config: CliConfig, verbose: bool) -> None:
-    """Acquisition recommendations."""
-    from cli.nn_acquisition_recommender import main as acq_main
-    _render_markdown_report(acq_main)
-
-
-def _do_report_cache_bias(config: CliConfig, verbose: bool) -> None:
-    """Cache bias report."""
-    from cli.nn_cache_bias_report import main as bias_main
-    _render_markdown_report(bias_main)
-
-
-def _do_report_author_patterns(config: CliConfig, verbose: bool) -> None:
-    """Author patterns report."""
-    from cli.nn_author_pattern_report import main as author_main
-    _render_markdown_report(author_main)
+def _auto_wav_cache() -> Path | None:
+    """Get wav_cache_dir from shared config, or None if not configured."""
+    try:
+        from spike._auto_beq_helpers import wav_cache_dir
+        return wav_cache_dir()
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
-# Typer subcommands — for CI / automation / scripting
+# Typer subcommands — THE single code path for both menu and CLI
 # ---------------------------------------------------------------------------
 
 
@@ -412,24 +327,24 @@ def profile(
 @app.command()
 def extract(
     media_root: Optional[list[Path]] = typer.Option(None, "--media-root", help="Media library root(s)."),  # noqa: UP007
-    beq_dir: Optional[Path] = typer.Option(None, "--beq-dir", help="BEQ working directory."),  # noqa: UP007
+    beq_dir_opt: Optional[Path] = typer.Option(None, "--beq-dir", help="BEQ working directory."),  # noqa: UP007
     limit: int = typer.Option(0, "--limit", help="Max titles (0 = unlimited)."),
     verify_only: bool = typer.Option(False, "--verify", help="Verify existing cache only."),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Extract LFE audio from media library to WAV cache."""
-    argv: list[str] = []
+    argv: list[str] = ["-v"]  # always verbose — CLI should never be silent
     if media_root:
         for r in media_root:
             argv.extend(["--media-root", str(r)])
-    if beq_dir:
-        argv.extend(["--beq-dir", str(beq_dir)])
+    # Auto-populate beq-dir from shared config if not explicitly provided.
+    effective_beq = beq_dir_opt or _auto_beq_dir()
+    if effective_beq:
+        argv.extend(["--beq-dir", str(effective_beq)])
     if limit:
         argv.extend(["--limit", str(limit)])
     if verify_only:
         argv.append("--verify")
-    if verbose:
-        argv.append("-v")
     from cli.extract import main as extract_main
     extract_main(argv)
 
@@ -439,9 +354,8 @@ def cache_status(
     cache_dir: Optional[Path] = typer.Argument(None, help="WAV cache directory."),  # noqa: UP007
 ) -> None:
     """Show WAV cache counts, titles, and author breakdown."""
-    argv = [str(cache_dir)] if cache_dir else []
     from cli.cache_status import main as status_main
-    status_main(argv)
+    status_main()
 
 
 @app.command()
@@ -451,9 +365,11 @@ def verify(
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Verify WAV cache integrity and optionally fix corrupt files."""
+    # Auto-populate cache root from shared config if not provided.
+    effective_root = cache_root or _auto_wav_cache()
     argv: list[str] = []
-    if cache_root:
-        argv.append(str(cache_root))
+    if effective_root:
+        argv.append(str(effective_root))
     if delete:
         argv.append("--delete")
     if verbose:
@@ -467,11 +383,11 @@ def nn_report(
     output: Optional[Path] = typer.Option(None, "-o", "--output", help="Save report to file."),  # noqa: UP007
 ) -> None:
     """Compare NN-predicted vs hand-coded BEQ filters."""
-    argv: list[str] = []
-    if output:
-        argv.extend(["--output", str(output)])
     from cli.nn_report import main as nn_main
-    nn_main(argv)
+    if output:
+        nn_main(["--output", str(output)])
+    else:
+        _render_markdown_report(nn_main)
 
 
 @sweep_app.command(name="discover")
@@ -510,11 +426,11 @@ def sweep_run(
 def sweep_report_cmd() -> None:
     """Generate experiment comparison report from sweep results."""
     from cli.sweep_report import main as report_main
-    report_main()
+    _render_markdown_report(report_main)
 
 
-@app.command()
-def config() -> None:
+@app.command(name="config")
+def config_cmd() -> None:
     """Edit CLI preferences (output directory, media paths)."""
     cfg = load_config()
     from cli.profile import _configure_preferences
@@ -659,9 +575,11 @@ def report_cache_bias(
     output: Optional[Path] = typer.Option(None, "-o", "--output", help="Save report to file."),  # noqa: UP007
 ) -> None:
     """Compare WAV cache distribution to the full BEQ catalogue."""
-    argv = ["-o", str(output)] if output else []
     from cli.nn_cache_bias_report import main as bias_main
-    bias_main(argv)
+    if output:
+        bias_main(["-o", str(output)])
+    else:
+        _render_markdown_report(bias_main)
 
 
 @report_app.command(name="author-patterns")
@@ -669,9 +587,11 @@ def report_author_patterns(
     output: Optional[Path] = typer.Option(None, "-o", "--output", help="Save report to file."),  # noqa: UP007
 ) -> None:
     """Per-author distribution analysis from the BEQ catalogue."""
-    argv = ["-o", str(output)] if output else []
     from cli.nn_author_pattern_report import main as author_main
-    author_main(argv)
+    if output:
+        author_main(["-o", str(output)])
+    else:
+        _render_markdown_report(author_main)
 
 
 @report_app.command(name="acquisitions")
@@ -680,11 +600,13 @@ def report_acquisitions(
     output: Optional[Path] = typer.Option(None, "-o", "--output", help="Save report to file."),  # noqa: UP007
 ) -> None:
     """Recommend missing catalogue titles to acquire (greedy bias correction)."""
+    from cli.nn_acquisition_recommender import main as acq_main
     argv = ["-n", str(count)]
     if output:
         argv.extend(["-o", str(output)])
-    from cli.nn_acquisition_recommender import main as acq_main
-    acq_main(argv)
+        acq_main(argv)
+    else:
+        _render_markdown_report(acq_main, argv)
 
 
 @report_app.command(name="f-experiments")
@@ -692,9 +614,11 @@ def report_f_experiments(
     output: Optional[Path] = typer.Option(None, "-o", "--output", help="Save report to file."),  # noqa: UP007
 ) -> None:
     """Generate comparison report from F-experiment CSV results."""
-    argv = ["-o", str(output)] if output else []
     from cli.nn_f_experiment_report import main as f_main
-    f_main(argv)
+    if output:
+        f_main(["-o", str(output)])
+    else:
+        _render_markdown_report(f_main)
 
 
 # ---------------------------------------------------------------------------
@@ -708,10 +632,16 @@ def main_callback(
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Debug logging."),
 ) -> None:
     """BEQ Designer — run with no subcommand for interactive menus."""
+    import sys as _sys
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         handlers=[logging.NullHandler()],
     )
+    # Warnings and errors always visible on the console — CLI principle.
+    _stderr = logging.StreamHandler(_sys.stderr)
+    _stderr.setLevel(logging.WARNING)
+    _stderr.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    logging.getLogger().addHandler(_stderr)
 
     cfg = load_config()
     log_file = setup_log_file(cfg.output_dir)
