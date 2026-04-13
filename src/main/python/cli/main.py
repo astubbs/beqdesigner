@@ -83,58 +83,53 @@ def _build_tools_menu() -> list[tuple[str, object]]:
     model_status = _model_status_line()
 
     return [
-        # --- Step 1: Cache ---
         (f"STEP 1: EXTRACT AUDIO ({cache_status})", None),
 
         ("Pre-extract audio\n"
-         "      Extract bass/LFE from media files ahead of time so profile\n"
-         "      generation is instant. Best run on the machine closest to\n"
-         "      your media drives (NAS, or via Docker).", "extract"),
+         "  Extract bass/LFE from media files ahead of time so profile\n"
+         "  generation is instant. Best run on the machine closest to\n"
+         "  your media drives (NAS, or via Docker).", "extract"),
         ("Check cache health\n"
-         "      How many files are cached, how many match the BEQ catalogue,\n"
-         "      and whether you have enough for training.", "cache-status"),
+         "  How many files are cached, how many match the BEQ catalogue,\n"
+         "  and whether you have enough for training.", "cache-status"),
         ("Repair cache\n"
-         "      Scan for corrupt audio files and optionally delete them\n"
-         "      so they get re-extracted on next use.", "verify"),
+         "  Scan for corrupt audio files and optionally delete them\n"
+         "  so they get re-extracted on next use.", "verify"),
 
-        # --- Step 2: Train ---
         (f"STEP 2: TRAIN MODEL ({model_status})", None),
 
         ("Train model (recommended)\n"
-         "      Builds the production XGBoost model (E82) from your WAV\n"
-         "      cache. Takes ~1 minute. Required once before generating\n"
-         "      profiles.", "dev-train"),
+         "  Builds the production XGBoost model (E82) from your WAV cache.\n"
+         "  Takes ~1 minute. Required once before generating profiles.", "dev-train"),
         ("Train torch model\n"
-         "      Builds the differentiable-DSP model (E85). More accurate\n"
-         "      but requires PyTorch and takes longer. Experimental.", "dev-train-torch"),
+         "  Builds the differentiable-DSP model (E85). More accurate but\n"
+         "  requires PyTorch and takes longer. Experimental.", "dev-train-torch"),
 
-        # --- Step 3: Analyse ---
         ("STEP 3: ANALYSE & TEST (requires trained model)", None),
 
         ("NN accuracy report\n"
-         "      Compare the model's predictions against hand-tuned BEQ\n"
-         "      catalogue entries across your WAV cache.", "nn-report"),
+         "  Compare the model's predictions against hand-tuned BEQ\n"
+         "  catalogue entries across your WAV cache.", "nn-report"),
         ("Discover media\n"
-         "      Scan media library folders and match titles against the\n"
-         "      BEQ catalogue for training and testing.", "sweep-discover"),
+         "  Scan media library folders and match titles against the\n"
+         "  BEQ catalogue for training and testing.", "sweep-discover"),
         ("Test predictions\n"
-         "      Run the model against all discovered media and measure\n"
-         "      prediction accuracy.", "sweep-run"),
+         "  Run the model against all discovered media and measure\n"
+         "  prediction accuracy.", "sweep-run"),
         ("Experiment results\n"
-         "      Compare results from different experiment runs.", "sweep-report"),
+         "  Compare results from different experiment runs.", "sweep-report"),
 
-        # --- Reports ---
         ("REPORTS — data about your cache and the BEQ catalogue", None),
 
         ("Acquisition recommendations\n"
-         "      Which BEQ catalogue titles are missing from your library?\n"
-         "      Suggests titles to improve training coverage.", "report-acquisitions"),
+         "  Which BEQ catalogue titles are missing from your library?\n"
+         "  Suggests titles to improve training coverage.", "report-acquisitions"),
         ("Cache bias report\n"
-         "      Compare your cache distribution to the full catalogue —\n"
-         "      find gaps in genre, era, or author coverage.", "report-cache-bias"),
+         "  Compare your cache distribution to the full catalogue —\n"
+         "  find gaps in genre, era, or author coverage.", "report-cache-bias"),
         ("Author patterns\n"
-         "      Per-author analysis of how different BEQ authors apply\n"
-         "      correction filters.", "report-author-patterns"),
+         "  Per-author analysis of how different BEQ authors apply\n"
+         "  correction filters.", "report-author-patterns"),
 
         ("Back", "back"),
     ]

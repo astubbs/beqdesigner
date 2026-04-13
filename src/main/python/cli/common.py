@@ -73,7 +73,11 @@ def menu_select(
     iq_choices = []
     for label, val in choices:
         if val is None:
-            iq_choices.append(Separator(f"── {label} ──"))
+            # Blank line before section header for visual spacing.
+            if iq_choices:
+                iq_choices.append(Separator(""))
+            iq_choices.append(Separator(f"  {label}"))
+            iq_choices.append(Separator(""))
         else:
             iq_choices.append({"name": label, "value": val})
 
