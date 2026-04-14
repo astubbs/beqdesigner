@@ -606,6 +606,27 @@ class TestExtractConfigValidation:
         with pytest.raises(RuntimeError, match="Invalid media roots"):
             extract_main(["--beq-dir", str(tmp_path)])
 
+    def test_extract_inventory_age_message(self, tmp_path):
+        """Extract must not crash when media_inventory.json exists (NameError regression)."""
+        from cli.extract import main as extract_main
+
+        valid_dir = tmp_path / "media"
+        valid_dir.mkdir()
+        config_file = tmp_path / ".extract_config.json"
+        config_file.write_text(json.dumps({"media_roots": [str(valid_dir)]}))
+
+        # Create a fake inventory so the age-check code path runs.
+        inventory = tmp_path / "media_inventory.json"
+        inventory.write_text(json.dumps({"media": []}))
+
+        # Should not crash with NameError: _time.
+        # Will fail on catalogue fetch (no network in test) — that's fine.
+        try:
+            extract_main(["--beq-dir", str(tmp_path)])
+        except Exception as e:
+            # Catalogue fetch failure is expected — but NameError is not.
+            assert "NameError" not in str(type(e).__name__), f"Unexpected NameError: {e}"
+
     def test_extract_validates_roots_before_catalogue_fetch(self, tmp_path):
         """Extract must fail on invalid roots BEFORE fetching the catalogue (no HTTP)."""
         from unittest.mock import patch
@@ -696,11 +717,16 @@ class TestStartupConfigValidation:
 class TestExtractLfeWav:
     """Verify extract_lfe_wav builds a valid ffmpeg command."""
 
-    def test_ffmpeg_command_includes_wav_format(self):
+    def test_ffmpeg_command_includes_wav_format(self, monkeypatch):
         """The .tmp output file requires explicit -f wav (caught exit 234 bug)."""
         import shutil
         if not shutil.which("ffmpeg"):
             pytest.skip("ffmpeg not installed")
+
+        # Mock audio_cache_dir to a local temp dir (avoids NAS dependency).
+        import tempfile as _tf
+        _cache_tmp = Path(_tf.mkdtemp(prefix="beq_cache_"))
+        monkeypatch.setattr("spike._auto_beq_helpers.audio_cache_dir", lambda: _cache_tmp)
 
         from spike._auto_beq_helpers import extract_lfe_wav
 
@@ -708,8 +734,7 @@ class TestExtractLfeWav:
         import struct
         wav = tmp = None
         try:
-            import tempfile
-            tmp = Path(tempfile.mkdtemp(prefix="beq_test_"))
+            tmp = Path(_tf.mkdtemp(prefix="beq_test_"))
             wav = tmp / "test.wav"
             # Write a minimal 1-second mono WAV at 1000 Hz.
             sr, duration, bits = 1000, 1, 16

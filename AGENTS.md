@@ -63,6 +63,13 @@ Use the single shared implementations in `spike/_auto_beq_helpers.py`:
 If a shared function is missing a feature you need, extend it rather
 than writing a parallel implementation.
 
+### Log before I/O
+
+**Any I/O operation that could pause must be logged before it starts.**
+This includes filesystem scans (`rglob`, `exists()` on network paths),
+HTTP requests, and database queries. The user must always have an
+explanation for any delay — a CLI that pauses silently is broken.
+
 ### Documentation
 
 **User-facing docs must be updated alongside code changes.** Updating

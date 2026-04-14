@@ -139,6 +139,7 @@ def menu_select(
         layout=Layout(HSplit([Window(control)])),
         key_bindings=kb,
         full_screen=False,
+        erase_when_done=True,
     )
     app.run()
     return result[0]

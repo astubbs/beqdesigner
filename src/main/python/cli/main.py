@@ -116,12 +116,20 @@ def _cache_status_line() -> str:
     return "not scanned yet"
 
 
+_cached_model_status: str | None = None
+
+
 def _model_status_line() -> str:
-    """Quick status: is production model present."""
+    """Quick status: is production model present. Cached after first check."""
+    global _cached_model_status
+    if _cached_model_status is not None:
+        return _cached_model_status
     from cli.profile import _check_production_model
     if _check_production_model():
-        return "✓ production model found"
-    return "✗ no model — train one first"
+        _cached_model_status = "✓ production model found"
+    else:
+        _cached_model_status = "✗ no model — train one first"
+    return _cached_model_status
 
 
 def _build_tools_menu() -> list[tuple[str, object]]:
@@ -214,7 +222,7 @@ def _interactive_menu_loop(config: CliConfig, verbose: bool) -> None:
 
 def _tools_menu_loop(config: CliConfig, verbose: bool) -> None:
     """Show the tools submenu until the user goes back."""
-    _ensure_wav_count()  # reads disk cache or scans (persists across restarts)
+    # WAV count and model status already cached by _validate_config_paths().
 
     while True:
         try:
@@ -289,22 +297,36 @@ def _render_markdown_report(report_main_func, argv=None) -> None:
         console.print("[dim]No output.[/dim]")
 
 
+_cached_beq_dir: Path | None | bool = False  # False = not yet checked
+
+
 def _auto_beq_dir() -> Path | None:
-    """Get beq_dir from shared config, or None if not configured."""
+    """Get beq_dir from shared config, or None if not configured. Cached."""
+    global _cached_beq_dir
+    if _cached_beq_dir is not False:
+        return _cached_beq_dir
     try:
         from spike._auto_beq_helpers import beq_dir as _bd
-        return _bd()
+        _cached_beq_dir = _bd()
     except Exception:
-        return None
+        _cached_beq_dir = None
+    return _cached_beq_dir
+
+
+_cached_wav_cache: Path | None | bool = False
 
 
 def _auto_wav_cache() -> Path | None:
-    """Get wav_cache_dir from shared config, or None if not configured."""
+    """Get wav_cache_dir from shared config, or None if not configured. Cached."""
+    global _cached_wav_cache
+    if _cached_wav_cache is not False:
+        return _cached_wav_cache
     try:
         from spike._auto_beq_helpers import wav_cache_dir
-        return wav_cache_dir()
+        _cached_wav_cache = wav_cache_dir()
     except Exception:
-        return None
+        _cached_wav_cache = None
+    return _cached_wav_cache
 
 
 # ---------------------------------------------------------------------------
@@ -630,30 +652,42 @@ def report_f_experiments(
 @app.callback(invoke_without_command=True)
 def main_callback(
     ctx: typer.Context,
-    verbose: bool = typer.Option(False, "-v", "--verbose", help="Debug logging."),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Show DEBUG messages."),
+    quiet: bool = typer.Option(False, "-q", "--quiet", help="Only show warnings and errors."),
 ) -> None:
     """BEQ Designer — run with no subcommand for interactive menus."""
     import sys as _sys
-    logging.basicConfig(
-        level=logging.DEBUG if verbose else logging.INFO,
-        handlers=[logging.NullHandler()],
-    )
-    # Warnings and errors always visible on the console — CLI principle.
+
+    # Log level: default INFO, -v for DEBUG, -q for WARNING only.
+    if quiet:
+        log_level = logging.WARNING
+    elif verbose:
+        log_level = logging.DEBUG
+    else:
+        log_level = logging.INFO
+
+    logging.basicConfig(level=log_level, handlers=[logging.NullHandler()])
+
+    # All log output goes to stderr — standard CLI behaviour.
     _stderr = logging.StreamHandler(_sys.stderr)
-    _stderr.setLevel(logging.WARNING)
-    _stderr.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    _stderr.setLevel(log_level)
+    _stderr.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
     logging.getLogger().addHandler(_stderr)
 
     cfg = load_config()
 
-    # Validate all configured paths before anything else.
-    _validate_config_paths()
-
-    log_file = setup_log_file(cfg.output_dir)
-    plain_banner = show_banner("BEQ Designer CLI", cfg, log_file=log_file)
-    logging.getLogger("beq_cli").info(plain_banner)
-
     if ctx.invoked_subcommand is None:
+        # Only show banner and validate for interactive mode.
+        log_file = setup_log_file(cfg.output_dir)
+        plain_banner = show_banner("BEQ Designer CLI", cfg, log_file=log_file)
+        _file_logger = logging.getLogger("beq_cli.banner")
+        _file_logger.propagate = False
+        for h in logging.getLogger().handlers:
+            if isinstance(h, logging.FileHandler):
+                _file_logger.addHandler(h)
+        _file_logger.info(plain_banner)
+
+        _validate_config_paths()
         _interactive_menu_loop(cfg, verbose)
 
 
@@ -665,6 +699,7 @@ def main_callback(
 def _validate_config_paths() -> None:
     """Check all configured paths at startup. Warn and offer to fix if invalid."""
     import json as _json
+    log = logging.getLogger("beq_cli")
 
     problems: list[str] = []
     _beq = None
@@ -672,6 +707,7 @@ def _validate_config_paths() -> None:
     # WAV cache.
     try:
         from spike._auto_beq_helpers import wav_cache_dir
+        log.info("checking WAV cache configuration...")
         cache = wav_cache_dir()
         if not cache.exists():
             problems.append(f"WAV cache does not exist: {cache}")
@@ -685,11 +721,20 @@ def _validate_config_paths() -> None:
         extract_config = _beq / ".extract_config.json"
         if extract_config.exists():
             roots = _json.loads(extract_config.read_text()).get("media_roots", [])
-            for r in roots:
-                if not Path(r).exists():
-                    problems.append(f"Media root does not exist: {r}")
+            if roots:
+                log.info("validating %d configured media root(s)...", len(roots))
+                for r in roots:
+                    if not Path(r).exists():
+                        problems.append(f"Media root does not exist: {r}")
     except Exception:
         pass
+
+    # Pre-cache model status so Tools menu doesn't have to stat the NAS.
+    log.info("checking for production model...")
+    _model_status_line()  # populates _cached_model_status
+
+    # Pre-cache WAV count from disk (or scan if expired).
+    _ensure_wav_count()
 
     if not problems:
         return

@@ -193,7 +193,7 @@ def discover_media(
             log.warning("media root does not exist: %s", root)
             continue
 
-        log.info("scanning %s ...", root)
+        log.info("scanning for media files in %s ...", root)
         media_files = []
         for ext in MEDIA_EXTENSIONS:
             media_files.extend(root.rglob(f"*{ext}"))
@@ -884,11 +884,6 @@ def main(argv: list[str] | None = None):
     wav_root = config["wav_root"]
     media_roots = config["media_roots"]
 
-    # Clean up interrupted extractions.
-    cleaned = cleanup_tmp(wav_root)
-    if cleaned:
-        log.info("cleaned up %d interrupted extraction(s)", cleaned)
-
     # Verify mode.
     if args.verify:
         log.info("verifying cache at %s ...", wav_root)
@@ -902,6 +897,7 @@ def main(argv: list[str] | None = None):
         parser.error("no media roots configured — use --media-root or run interactively")
 
     # Validate media roots — any invalid root is a fatal config error.
+    log.info("validating %d media root(s)...", len(media_roots))
     invalid_roots = [r for r in media_roots if not r.exists()]
     if invalid_roots:
         bad = "\n  ".join(str(r) for r in invalid_roots)
@@ -911,11 +907,23 @@ def main(argv: list[str] | None = None):
             "If these are NAS paths, make sure the drives are mounted."
         )
 
-    # Fetch BEQ catalogue.
+    # Fetch BEQ catalogue (may take a few seconds — HTTP check).
+    log.info("fetching BEQ catalogue...")
     catalogue = fetch_catalogue(beq_dir)
     cat_index = build_catalogue_index(catalogue)
 
-    # Discover media.
+    # Discover media (full filesystem scan — media_inventory.json is
+    # write-only, not used as a cache yet).
+    inventory_path = beq_dir / "media_inventory.json"
+    if inventory_path.exists():
+        import datetime
+        age = time.time() - inventory_path.stat().st_mtime
+        age_str = str(datetime.timedelta(seconds=int(age)))
+        log.info(
+            "media_inventory.json exists (age: %s) but is not used as cache — "
+            "rescanning filesystem. TODO: use inventory as cache.",
+            age_str,
+        )
     media, missing_ids, all_with_ids, no_catalogue_media = discover_media(
         media_roots, cat_index,
     )
