@@ -1102,7 +1102,9 @@ def _run_extraction_phase(
                 season=mm.get("season"), episode=mm.get("episode"),
             ).exists())
             eta_s = remaining / avg_rate if avg_rate > 0 else 0
-            eta_str = f" ETA {eta_s / 60:.0f}m" if eta_s > 60 else f" ETA {eta_s:.0f}s"
+            import datetime as _dt
+            eta_time = _dt.datetime.now() + _dt.timedelta(seconds=eta_s)
+            eta_str = f" ETA {eta_time.strftime('%H:%M')}"
         else:
             eta_str = ""
 
