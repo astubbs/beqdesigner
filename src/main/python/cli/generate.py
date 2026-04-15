@@ -32,12 +32,14 @@ from model.auto_beq_nn import (
     train_late_fusion,
 )
 from model.iir import HighShelf, LowShelf, PeakingEQ
+from cli.extract import cache_path as build_cache_path, extract_media_id
 from spike._auto_beq_helpers import (
     beq_config_dir,
     extract_lfe_wav,
     extract_features_with_strategy,
     load_settings,
     probe_audio_stream,
+    wav_cache_dir,
     STRATEGY_WELCH,
 )
 from spike.sweep_discover import parse_media_filename
@@ -299,8 +301,25 @@ def generate_profile(
              f"{episode:02d}" if episode else "?")
 
     # Extract LFE via shared WAV cache (skips extraction if cached).
+    # Build unified cache path if media_id is available.
+    id_pair = extract_media_id(media_path)
+    if id_pair:
+        id_type, id_value = id_pair
+        media_id = f"{id_type}-{id_value}"
+        content_type = "TV" if season else "film"
+        try:
+            wav_root = wav_cache_dir()
+            target = build_cache_path(
+                wav_root, title, str(year), media_id,
+                content_type=content_type, season=season, episode=episode,
+            )
+        except RuntimeError:
+            target = None
+    else:
+        target = None
     log.info("  extracting LFE...")
-    wav_path = extract_lfe_wav(media_path, target_fs=_SAMPLE_RATE)
+    wav_path = extract_lfe_wav(media_path, target_fs=_SAMPLE_RATE,
+                               target_path=target)
     log.info("  WAV: %s (%d bytes)", wav_path.name, wav_path.stat().st_size)
 
     # Measure spectrum.

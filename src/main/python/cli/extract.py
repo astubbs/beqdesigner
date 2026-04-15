@@ -21,8 +21,8 @@ Directory structure (managed by the script):
                                     # catalogue-matched or not (used by the
                                     # acquisition recommender to dedupe)
       wav-cache/
-        Movies/A/Alien (1979) [tmdb-348]/Alien (1979) [tmdb-348].lfe-1000hz.wav
-        TV/E/86 - Eighty Six (2021) [tvdb-378609]/Season 01/86 - Eighty Six S01E02 [tvdb-378609].lfe-1000hz.wav
+        AL/Alien (1979) [tmdb-348].lfe-1000hz.wav
+        86/86 - Eighty Six [tvdb-378609]/Season 01/S01E02.lfe-1000hz.wav
 
 Only media with a matching BEQ catalogue entry is extracted. The catalogue
 is fetched from GitHub and cached locally — re-downloaded only when the
@@ -435,6 +435,132 @@ def _scan_single_directory(
 
 
 
+def _save_inventory(
+    inventory_path: Path,
+    directories: dict,
+    all_with_ids: list,
+    missing_ids: list,
+    roots: list[Path],
+) -> None:
+    """Write the media inventory to disk."""
+    inventory_data = {
+        "format_version": 2,
+        "scanned_at": int(time.time()),
+        "media_roots": [str(r) for r in roots],
+        "directories": directories,
+        "n_total_with_ids": len(all_with_ids),
+        "n_catalogue_matched": sum(1 for m in all_with_ids if m.get("has_catalogue")),
+        "n_missing_ids": len(missing_ids),
+        "media": all_with_ids,
+        "missing_ids": sorted(set(missing_ids)),
+    }
+    log.info("saving inventory (%d files, %d dirs) to %s ...",
+             len(all_with_ids), len(directories), inventory_path)
+    inventory_path.write_text(json.dumps(inventory_data, indent=2) + "\n")
+
+
+def _process_cached_entry(
+    entry: dict,
+    by_tmdb: dict, by_title_year: dict,
+    all_with_ids: list, results: list,
+    no_catalogue_media: list, no_catalogue_desc: list,
+    seen_keys: set,
+) -> None:
+    """Re-match a cached entry against the current catalogue and add to output lists."""
+    id_type = entry.get("id_type")
+    id_value = entry.get("id_value")
+    title = entry.get("title")
+    year = entry.get("year")
+
+    has_catalogue = False
+    if id_type == "tmdb" and id_value in by_tmdb:
+        has_catalogue = True
+    elif title and year:
+        if (title.lower().strip(), year) in by_title_year:
+            has_catalogue = True
+    entry["has_catalogue"] = has_catalogue
+    all_with_ids.append(entry)
+
+    media_id = entry.get("media_id", f"{id_type}-{id_value}")
+    season = entry.get("season")
+    episode = entry.get("episode")
+    dedup_key = (media_id, season, episode)
+    if dedup_key in seen_keys:
+        return
+    seen_keys.add(dedup_key)
+
+    if has_catalogue:
+        results.append(entry)
+    else:
+        no_catalogue_desc.append(f"{media_id} {title} ({year})")
+        no_catalogue_media.append(entry)
+
+
+def _collect_cached_subtree(
+    parent_key: str,
+    cached_dirs: dict,
+    new_directories: dict,
+    *,
+    all_with_ids_out: list,
+    missing_ids_out: list,
+    results_out: list,
+    no_catalogue_media_out: list,
+    no_catalogue_desc_out: list,
+    seen_keys: set,
+    by_tmdb: dict,
+    by_title_year: dict,
+    n_cached_counter,
+) -> None:
+    """Collect all cached entries from a subtree without filesystem access.
+
+    Called when an entire directory subtree is unchanged (all mtimes match).
+    Populates the output lists from cached data and copies directory entries
+    into new_directories for the updated inventory.
+    """
+    prefix = parent_key + "/"
+    for dir_key, dir_data in cached_dirs.items():
+        if dir_key != parent_key and not dir_key.startswith(prefix):
+            continue
+        # Copy to new directories.
+        new_directories[dir_key] = dir_data
+
+        dir_entries = dir_data.get("entries", [])
+        dir_missing = dir_data.get("missing_ids", [])
+        missing_ids_out.extend(dir_missing)
+
+        for entry in dir_entries:
+            id_type = entry.get("id_type")
+            id_value = entry.get("id_value")
+            title = entry.get("title")
+            year = entry.get("year")
+
+            has_catalogue = False
+            if id_type == "tmdb" and id_value in by_tmdb:
+                has_catalogue = True
+            elif title and year:
+                if (title.lower().strip(), year) in by_title_year:
+                    has_catalogue = True
+            entry["has_catalogue"] = has_catalogue
+
+            all_with_ids_out.append(entry)
+
+            media_id = entry.get("media_id", f"{id_type}-{id_value}")
+            season = entry.get("season")
+            episode = entry.get("episode")
+            dedup_key = (media_id, season, episode)
+            if dedup_key in seen_keys:
+                continue
+            seen_keys.add(dedup_key)
+
+            if has_catalogue:
+                results_out.append(entry)
+            else:
+                no_catalogue_desc_out.append(
+                    f"{media_id} {title} ({year})"
+                )
+                no_catalogue_media_out.append(entry)
+
+
 def discover_media_incremental(
     roots: list[Path], catalogue_index: dict, inventory_path: Path,
 ) -> tuple[list[dict], list[str], list[dict], list[dict]]:
@@ -471,7 +597,7 @@ def discover_media_incremental(
     else:
         log.info("no cached inventory at %s — full scan", inventory_path)
 
-    # Step 3: Walk each root's directory tree.
+    # Step 3: Discover media — targeted stat or full walk.
     all_with_ids: list[dict] = []
     missing_ids: list[str] = []
     results: list[dict] = []
@@ -484,102 +610,225 @@ def discover_media_incremental(
     n_rescanned = 0
     n_new = 0
 
-    for root in roots:
-        if not root.exists():
-            log.warning("media root does not exist: %s", root)
-            continue
+    if cached_dirs:
+        # FAST PATH: cache exists. Stat only the parent directories of
+        # leaf dirs (dirs with media entries) to detect changes. This
+        # replaces os.walk with ~200 targeted os.scandir calls instead
+        # of 16000+ stat calls over NFS.
 
-        log.info("walking directory tree under %s ...", root)
-        for dirpath_str, dirnames, _filenames in os.walk(root):
-            dirpath = Path(dirpath_str)
+        # Check which roots have cached data. Roots with no cached dirs
+        # need a full walk (they were never scanned or Ctrl+C interrupted).
+        uncached_roots = []
+        cached_roots = []
+        for root in roots:
+            if not root.exists():
+                log.warning("media root does not exist: %s", root)
+                continue
+            root_str = str(root)
+            has_cached = any(k.startswith(root_str) for k in cached_dirs)
+            if has_cached:
+                cached_roots.append(root)
+            else:
+                uncached_roots.append(root)
+                log.info("root not in cache (needs full scan): %s", root)
 
-            # Skip junk subdirectories.
-            dirnames[:] = [
-                d for d in dirnames if d.lower() not in JUNK_SUBDIRS
-            ]
+        # Find ALL ancestor directories between roots and leaf dirs.
+        # This ensures new directories at ANY level are detected.
+        leaf_dirs = {k for k, v in cached_dirs.items() if v.get("entries")}
+        check_parents: set[str] = set()
+        root_strs = {str(r) for r in cached_roots}
+        for leaf in leaf_dirs:
+            p = Path(leaf).parent
+            while str(p) not in check_parents:
+                check_parents.add(str(p))
+                if str(p) in root_strs or p == p.parent:
+                    break
+                p = p.parent
+        # Include roots themselves.
+        check_parents |= root_strs
 
-            dir_key = str(dirpath)
+        log.info("checking %d parent directories for changes...", len(check_parents))
+
+        changed_dirs: set[str] = set()
+        for parent_key in sorted(check_parents):
+            parent_path = Path(parent_key)
+            if not parent_path.exists():
+                continue
             try:
-                current_mtime = dirpath.stat().st_mtime
+                # One readdir per parent — gets all children's stats.
+                with os.scandir(parent_path) as it:
+                    for entry in it:
+                        if not entry.is_dir():
+                            continue
+                        if entry.name.lower() in JUNK_SUBDIRS:
+                            continue
+                        child_key = entry.path
+                        child_cached = cached_dirs.get(child_key)
+                        try:
+                            child_mtime = entry.stat().st_mtime
+                        except OSError:
+                            continue
+                        if not child_cached:
+                            # New directory — needs scanning.
+                            changed_dirs.add(child_key)
+                        elif child_cached.get("mtime") != child_mtime:
+                            # Changed directory — needs rescanning.
+                            changed_dirs.add(child_key)
             except OSError:
                 continue
 
-            cached_entry = cached_dirs.get(dir_key)
-            if cached_entry and cached_entry.get("mtime") == current_mtime:
-                # Directory unchanged — use cached entries.
-                dir_entries = cached_entry.get("entries", [])
-                dir_missing = cached_entry.get("missing_ids", [])
+        if not changed_dirs:
+            # Nothing changed — load everything from cache.
+            log.info("all directories unchanged — loading from cache")
+            for dir_key, dir_data in cached_dirs.items():
+                new_directories[dir_key] = dir_data
+                for entry in dir_data.get("entries", []):
+                    _process_cached_entry(
+                        entry, by_tmdb, by_title_year,
+                        all_with_ids, results, no_catalogue_media,
+                        no_catalogue_desc, seen_keys,
+                    )
+                missing_ids.extend(dir_data.get("missing_ids", []))
                 n_cached += 1
-            else:
-                # Directory is new or changed — rescan.
-                if cached_entry:
-                    n_rescanned += 1
-                else:
-                    n_new += 1
+        else:
+            log.info("%d directories changed — rescanning those, caching rest",
+                     len(changed_dirs))
+            # Load unchanged dirs from cache.
+            for dir_key, dir_data in cached_dirs.items():
+                if dir_key in changed_dirs:
+                    continue
+                new_directories[dir_key] = dir_data
+                for entry in dir_data.get("entries", []):
+                    _process_cached_entry(
+                        entry, by_tmdb, by_title_year,
+                        all_with_ids, results, no_catalogue_media,
+                        no_catalogue_desc, seen_keys,
+                    )
+                missing_ids.extend(dir_data.get("missing_ids", []))
+                n_cached += 1
+
+            # Rescan only changed directories.
+            for dir_key in sorted(changed_dirs):
+                dirpath = Path(dir_key)
+                if not dirpath.exists():
+                    continue
+                log.info("  rescanning: %s", dirpath.name)
+                try:
+                    current_mtime = dirpath.stat().st_mtime
+                except OSError:
+                    continue
                 dir_results, dir_entries, dir_missing = _scan_single_directory(
                     dirpath, catalogue_index,
                 )
-
-            # Store in new directory map (whether cached or freshly scanned).
-            new_directories[dir_key] = {
-                "mtime": current_mtime,
-                "entries": dir_entries,
-                "missing_ids": dir_missing,
-            }
-
-            missing_ids.extend(dir_missing)
-
-            # Step 5: Re-match all entries against current catalogue
-            # (catalogue may have changed since last scan).
-            for entry in dir_entries:
-                id_type = entry.get("id_type")
-                id_value = entry.get("id_value")
-                title = entry.get("title")
-                year = entry.get("year")
-
-                # Re-check catalogue match with current catalogue.
-                has_catalogue = False
-                if id_type == "tmdb" and id_value in by_tmdb:
-                    has_catalogue = True
-                elif title and year:
-                    if (title.lower().strip(), year) in by_title_year:
-                        has_catalogue = True
-                entry["has_catalogue"] = has_catalogue
-
-                all_with_ids.append(entry)
-
-                # Dedup.
-                media_id = entry.get("media_id", f"{id_type}-{id_value}")
-                season = entry.get("season")
-                episode = entry.get("episode")
-                dedup_key = (media_id, season, episode)
-                if dedup_key in seen_keys:
-                    continue
-                seen_keys.add(dedup_key)
-
-                media_entry = {
-                    "path": Path(entry["path"]) if isinstance(entry["path"], str) else entry["path"],
-                    "media_id": media_id,
-                    "id_type": id_type,
-                    "id_value": id_value,
-                    "title": title,
-                    "year": year,
-                    "size_bytes": entry.get("size_bytes", 0),
-                    "content_type": entry.get("content_type", "film"),
-                    "season": season,
-                    "episode": episode,
+                n_rescanned += 1
+                new_directories[dir_key] = {
+                    "mtime": current_mtime,
+                    "entries": dir_entries,
+                    "missing_ids": dir_missing,
                 }
-
-                if has_catalogue:
-                    results.append(media_entry)
-                else:
-                    no_catalogue_desc.append(
-                        f"{media_id} {title} ({year}) — {Path(entry['path']).name}",
+                missing_ids.extend(dir_missing)
+                for entry in dir_entries:
+                    _process_cached_entry(
+                        entry, by_tmdb, by_title_year,
+                        all_with_ids, results, no_catalogue_media,
+                        no_catalogue_desc, seen_keys,
                     )
-                    no_catalogue_media.append(media_entry)
+
+        # Walk any uncached roots (never scanned or interrupted).
+        if uncached_roots:
+            log.info("walking %d uncached root(s)...", len(uncached_roots))
+            for root in uncached_roots:
+                log.info("walking directory tree under %s (not in cache)...", root)
+                n_walked = 0
+                for dirpath_str, dirnames, _filenames in os.walk(root):
+                    dirpath = Path(dirpath_str)
+                    n_walked += 1
+                    if n_walked % 500 == 0:
+                        log.info("  ... walked %d dirs so far", n_walked)
+                    dirnames[:] = [
+                        d for d in dirnames if d.lower() not in JUNK_SUBDIRS
+                    ]
+                    dir_key = str(dirpath)
+                    try:
+                        current_mtime = dirpath.stat().st_mtime
+                    except OSError:
+                        continue
+                    dir_results, dir_entries, dir_missing = _scan_single_directory(
+                        dirpath, catalogue_index,
+                    )
+                    n_new += 1
+                    new_directories[dir_key] = {
+                        "mtime": current_mtime,
+                        "entries": dir_entries,
+                        "missing_ids": dir_missing,
+                    }
+                    missing_ids.extend(dir_missing)
+                    for entry in dir_entries:
+                        _process_cached_entry(
+                            entry, by_tmdb, by_title_year,
+                            all_with_ids, results, no_catalogue_media,
+                            no_catalogue_desc, seen_keys,
+                        )
+                log.info("  done: walked %d dirs", n_walked)
+                # Save after each root.
+                _save_inventory(inventory_path, new_directories, all_with_ids,
+                                missing_ids, roots)
+
+        # Save after fast path + any uncached roots.
+        _save_inventory(inventory_path, new_directories, all_with_ids,
+                        missing_ids, roots)
+
+    else:
+        # SLOW PATH: no cache at all — full os.walk.
+        for root in roots:
+            if not root.exists():
+                log.warning("media root does not exist: %s", root)
+                continue
+
+            log.info("walking directory tree under %s (first run, no cache)...", root)
+            n_walked = 0
+            for dirpath_str, dirnames, _filenames in os.walk(root):
+                dirpath = Path(dirpath_str)
+                n_walked += 1
+                if n_walked % 500 == 0:
+                    log.info("  ... walked %d dirs so far", n_walked)
+
+                dirnames[:] = [
+                    d for d in dirnames if d.lower() not in JUNK_SUBDIRS
+                ]
+
+                dir_key = str(dirpath)
+                try:
+                    current_mtime = dirpath.stat().st_mtime
+                except OSError:
+                    continue
+
+                dir_results, dir_entries, dir_missing = _scan_single_directory(
+                    dirpath, catalogue_index,
+                )
+                n_new += 1
+
+                new_directories[dir_key] = {
+                    "mtime": current_mtime,
+                    "entries": dir_entries,
+                    "missing_ids": dir_missing,
+                }
+                missing_ids.extend(dir_missing)
+                for entry in dir_entries:
+                    _process_cached_entry(
+                        entry, by_tmdb, by_title_year,
+                        all_with_ids, results, no_catalogue_media,
+                        no_catalogue_desc, seen_keys,
+                    )
+
+            log.info("  done: walked %d dirs", n_walked)
+
+            # Save after each root so Ctrl+C doesn't lose everything.
+            _save_inventory(inventory_path, new_directories, all_with_ids,
+                            missing_ids, roots)
 
     log.info(
-        "directory scan: %d unchanged (cached), %d rescanned, %d new",
+        "directory scan complete: %d unchanged (cached), %d rescanned, %d new",
         n_cached, n_rescanned, n_new,
     )
 
@@ -601,34 +850,9 @@ def discover_media_incremental(
         if len(no_catalogue_desc) > 10:
             log.info("  ... and %d more", len(no_catalogue_desc) - 10)
 
-    # Step 6: Save updated inventory.
-    # Build backward-compatible top-level arrays for consumers.
-    flat_media = all_with_ids
-    flat_missing = sorted(set(missing_ids))
-
-    inventory_data = {
-        "format_version": 2,
-        "scanned_at": int(time.time()),
-        "media_roots": [str(r) for r in roots],
-        "directories": new_directories,
-        "n_total_with_ids": len(all_with_ids),
-        "n_catalogue_matched": sum(1 for m in all_with_ids if m.get("has_catalogue")),
-        "n_missing_ids": len(missing_ids),
-        # Backward-compatible top-level arrays for consumers
-        # (nn_acquisition_recommender, nn_cache_bias_report).
-        "media": flat_media,
-        "missing_ids": flat_missing,
-    }
-    log.info("writing updated inventory to %s ...", inventory_path)
-    inventory_path.write_text(json.dumps(inventory_data, indent=2) + "\n")
-    log.info(
-        "inventory written: %d files, %d catalogue-matched, %d missing IDs, "
-        "%d directories",
-        len(all_with_ids),
-        sum(1 for m in all_with_ids if m.get("has_catalogue")),
-        len(missing_ids),
-        len(new_directories),
-    )
+    # Final save.
+    _save_inventory(inventory_path, new_directories, all_with_ids,
+                    missing_ids, roots)
 
     results = _breadth_first_sort(results)
     return results, missing_ids, all_with_ids, no_catalogue_media
@@ -638,7 +862,7 @@ def _breadth_first_sort(media: list[dict]) -> list[dict]:
     """Sort media: movies by size, TV round-robin across shows, interleaved."""
     movies = sorted(
         [m for m in media if m.get("content_type") != "TV"],
-        key=lambda m: m["size_bytes"],
+        key=lambda m: m.get("size_bytes", 0),
     )
 
     tv_by_show: dict[str, list[dict]] = defaultdict(list)
@@ -686,18 +910,25 @@ def cache_path(
     season: int | None = None,
     episode: int | None = None,
 ) -> Path:
-    """Build the portable cache path for a title."""
-    content_dir = "TV" if content_type.upper() == "TV" else "Movies"
-    letter = title[0].upper() if title and title[0].isalpha() else "#"
-    title_dir = f"{title} ({year}) [{media_id}]"
+    """Build the portable cache path for a title.
+
+    Layout uses a two-letter bucket directory from the first two characters
+    of the title (uppercased, padded with ``_`` if shorter than 2 chars).
+
+    Films:  ``wav-cache/AV/Avatar (2009) [tmdb-19995].lfe-1000hz.wav``
+    TV:     ``wav-cache/JU/Jujutsu Kaisen [tvdb-377543]/Season 01/S01E01.lfe-1000hz.wav``
+    """
+    bucket = (title[:2] if len(title) >= 2 else title.ljust(2, "_")).upper()
 
     if content_type.upper() == "TV" and season is not None and episode is not None:
+        title_dir = f"{title} [{media_id}]"
         season_dir = f"Season {season:02d}"
-        wav_name = f"{title} S{season:02d}E{episode:02d} [{media_id}].lfe-1000hz.wav"
-        return wav_root / content_dir / letter / title_dir / season_dir / wav_name
+        wav_name = f"S{season:02d}E{episode:02d}.lfe-1000hz.wav"
+        return wav_root / bucket / title_dir / season_dir / wav_name
 
     wav_name = f"{title} ({year}) [{media_id}].lfe-1000hz.wav"
-    return wav_root / content_dir / letter / title_dir / wav_name
+    return wav_root / bucket / wav_name
+
 
 
 # ---------------------------------------------------------------------------
@@ -1208,6 +1439,8 @@ def main(argv: list[str] | None = None):
     wav_root = config["wav_root"]
     media_roots = config["media_roots"]
 
+
+
     # Verify mode.
     if args.verify:
         log.info("verifying cache at %s ...", wav_root)
@@ -1242,18 +1475,10 @@ def main(argv: list[str] | None = None):
     media, missing_ids, all_with_ids, no_catalogue_media = discover_media_incremental(
         media_roots, cat_index, inventory_path,
     )
-    log.info("found %d extractable titles (sorted by size, smallest first)", len(media))
-    if no_catalogue_media:
-        log.info(
-            "found %d candidate uncatalogued titles (for E84 unlabelled pool)",
-            len(no_catalogue_media),
-        )
-
     if missing_ids:
         missing_file = beq_dir / "missing_ids.txt"
-        log.info("writing missing IDs to %s ...", missing_file)
+        log.info("writing %d missing IDs to %s ...", len(missing_ids), missing_file)
         missing_file.write_text("\n".join(sorted(set(missing_ids))) + "\n")
-        log.info("missing TMDb IDs written to %s", missing_file)
 
     if args.limit > 0:
         media = media[:args.limit]
@@ -1376,7 +1601,7 @@ def _run_extraction_phase(
         title = m["title"]
         year = m["year"]
         media_id = m["media_id"]
-        size_mb = m["size_bytes"] / 1e6
+        size_mb = m.get("size_bytes", 0) / 1e6
         content_type = m.get("content_type", "film")
         season = m.get("season")
         episode = m.get("episode")
@@ -1389,7 +1614,7 @@ def _run_extraction_phase(
 
         if extract_times:
             avg_rate = sum(extract_rates) / len(extract_rates)
-            remaining = sum(mm["size_bytes"] / 1e6 for mm in media[i:] if not cache_path(
+            remaining = sum(mm.get("size_bytes", 0) / 1e6 for mm in media[i:] if not cache_path(
                 wav_root, mm["title"], mm["year"], mm["media_id"],
                 content_type=mm.get("content_type", "film"),
                 season=mm.get("season"), episode=mm.get("episode"),

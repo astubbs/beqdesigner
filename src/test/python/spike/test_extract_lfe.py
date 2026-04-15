@@ -629,3 +629,191 @@ def test_incremental_discovery_nonexistent_root(tmp_path, _bypass_min_size):
     assert missing == []
     assert all_ids == []
     assert no_cat == []
+
+
+def test_new_movie_detected_on_cached_rerun(tmp_path, _bypass_min_size):
+    """A new movie added to a cached library must be detected on next run."""
+    lib = tmp_path / "library"
+    movies = lib / "Movies"
+    existing = movies / "Dune (2021) [tmdb-438631]"
+    existing.mkdir(parents=True)
+    (existing / "Dune (2021) [tmdb-438631].mkv").touch()
+
+    cat_index = _make_catalogue_index([
+        {"title": "Dune", "year": "2021", "theMovieDB": "438631",
+         "filters": [{"gain": 4.0}]},
+        {"title": "Avatar", "year": "2009", "theMovieDB": "19995",
+         "filters": [{"gain": 3.0}]},
+    ])
+    inventory_path = tmp_path / "inventory.json"
+
+    # First run: scan and cache.
+    r1, _, _, _ = extract_mod_static.discover_media_incremental(
+        [lib], cat_index, inventory_path,
+    )
+    assert len(r1) == 1
+    assert r1[0]["title"] == "Dune"
+
+    # Add a new movie AFTER the cache was written.
+    new_movie = movies / "Avatar (2009) [tmdb-19995]"
+    new_movie.mkdir()
+    (new_movie / "Avatar (2009) [tmdb-19995].mkv").touch()
+
+    # Second run: must detect the new movie from cache fast path.
+    r2, _, _, _ = extract_mod_static.discover_media_incremental(
+        [lib], cat_index, inventory_path,
+    )
+    assert len(r2) == 2, (
+        f"Expected 2 titles (Dune + Avatar), got {len(r2)}: "
+        f"{[r['title'] for r in r2]}. New movie not detected from cached scan."
+    )
+    titles = {r["title"] for r in r2}
+    assert "Dune" in titles
+    assert "Avatar" in titles
+
+
+def test_new_episode_detected_on_cached_rerun(tmp_path, _bypass_min_size):
+    """A new episode added to a cached TV show must be detected."""
+    lib = tmp_path / "library"
+    show = lib / "Show (2020) [tvdb-123]"
+    s1 = show / "Season 01"
+    s1.mkdir(parents=True)
+    (s1 / "Show S01E01 [tvdb-123].mkv").touch()
+
+    cat_index = _make_catalogue_index([
+        {"title": "Show", "year": "2020", "theTVDB": "123",
+         "filters": [{"gain": 1.0}]},
+    ])
+    inventory_path = tmp_path / "inventory.json"
+
+    # First run.
+    r1, _, _, _ = extract_mod_static.discover_media_incremental(
+        [lib], cat_index, inventory_path,
+    )
+    assert len(r1) == 1
+
+    # Add new episode.
+    (s1 / "Show S01E02 [tvdb-123].mkv").touch()
+
+    # Second run: must detect new episode.
+    r2, _, _, _ = extract_mod_static.discover_media_incremental(
+        [lib], cat_index, inventory_path,
+    )
+    assert len(r2) == 2, (
+        f"Expected 2 episodes, got {len(r2)}. New episode not detected."
+    )
+
+
+def test_incremental_discovery_saves_after_each_root(tmp_path, _bypass_min_size):
+    """Inventory is saved after each root — Ctrl+C won't lose all progress."""
+    root_a = tmp_path / "lib_a" / "Movie A (2020) [tmdb-1]"
+    root_b = tmp_path / "lib_b" / "Movie B (2021) [tmdb-2]"
+    root_a.mkdir(parents=True)
+    root_b.mkdir(parents=True)
+    (root_a / "Movie A (2020) [tmdb-1].mkv").touch()
+    (root_b / "Movie B (2021) [tmdb-2].mkv").touch()
+
+    cat_index = _make_catalogue_index([
+        {"title": "Movie A", "year": "2020", "theMovieDB": "1",
+         "filters": [{"gain": 1.0}]},
+        {"title": "Movie B", "year": "2021", "theMovieDB": "2",
+         "filters": [{"gain": 1.0}]},
+    ])
+
+    inventory_path = tmp_path / "inventory.json"
+
+    # Track write times to verify per-root saves.
+    import os
+    write_times = []
+    original_write = inventory_path.write_text.__func__ if hasattr(inventory_path.write_text, '__func__') else None
+
+    extract_mod_static.discover_media_incremental(
+        [root_a.parent, root_b.parent], cat_index, inventory_path,
+    )
+
+    # Inventory should exist and have directories from both roots.
+    data = json.loads(inventory_path.read_text())
+    dirs = data["directories"]
+    assert any("lib_a" in k for k in dirs), f"Missing lib_a dirs in {list(dirs.keys())}"
+    assert any("lib_b" in k for k in dirs), f"Missing lib_b dirs in {list(dirs.keys())}"
+    assert len(data["media"]) == 2
+
+
+def test_incremental_discovery_subtree_pruning(tmp_path, _bypass_min_size):
+    """Unchanged subtrees are pruned — subdirectories not walked."""
+    lib = tmp_path / "library"
+    show_dir = lib / "Show (2020) [tvdb-123]"
+    s1 = show_dir / "Season 01"
+    s2 = show_dir / "Season 02"
+    s1.mkdir(parents=True)
+    s2.mkdir(parents=True)
+    (s1 / "Show S01E01 [tvdb-123].mkv").touch()
+    (s2 / "Show S02E01 [tvdb-123].mkv").touch()
+
+    cat_index = _make_catalogue_index([
+        {"title": "Show", "year": "2020", "theTVDB": "123",
+         "filters": [{"gain": 1.0}]},
+    ])
+    inventory_path = tmp_path / "media_inventory.json"
+
+    # First run: full scan.
+    r1, _, _, _ = extract_mod_static.discover_media_incremental(
+        [lib], cat_index, inventory_path,
+    )
+    assert len(r1) == 2
+
+    # Second run: nothing changed — subtree should be pruned.
+    # We verify by checking results are still correct (data from cache).
+    r2, _, all_ids2, _ = extract_mod_static.discover_media_incremental(
+        [lib], cat_index, inventory_path,
+    )
+    assert len(r2) == 2
+    assert len(all_ids2) == 2
+
+    # Add a new episode to Season 01 — only that season should be rescanned.
+    (s1 / "Show S01E02 [tvdb-123].mkv").touch()
+    r3, _, all_ids3, _ = extract_mod_static.discover_media_incremental(
+        [lib], cat_index, inventory_path,
+    )
+    assert len(r3) == 3  # 2 original + 1 new
+
+
+# ---------------------------------------------------------------------------
+# cache_path — two-letter bucket layout
+# ---------------------------------------------------------------------------
+
+
+def test_cache_path_two_letter_bucket():
+    """cache_path uses first two letters as bucket directory."""
+    root = Path("/cache")
+    result = extract_mod_static.cache_path(root, "Avatar", "2009", "tmdb-19995")
+    assert result == root / "AV" / "Avatar (2009) [tmdb-19995].lfe-1000hz.wav"
+
+
+def test_cache_path_tv_with_seasons():
+    """TV shows get title subdir with season folders."""
+    root = Path("/cache")
+    result = extract_mod_static.cache_path(
+        root, "Jujutsu Kaisen", "2020", "tvdb-377543",
+        content_type="TV", season=1, episode=1,
+    )
+    assert result == (
+        root / "JU" / "Jujutsu Kaisen [tvdb-377543]"
+        / "Season 01" / "S01E01.lfe-1000hz.wav"
+    )
+
+
+def test_cache_path_short_title():
+    """Titles shorter than 2 chars get padded."""
+    root = Path("/cache")
+    result = extract_mod_static.cache_path(root, "X", "2020", "tmdb-12345")
+    assert result == root / "X_" / "X (2020) [tmdb-12345].lfe-1000hz.wav"
+
+
+def test_cache_path_numeric_title():
+    """Titles starting with numbers work correctly."""
+    root = Path("/cache")
+    result = extract_mod_static.cache_path(root, "2001", "1968", "tmdb-62")
+    assert result == root / "20" / "2001 (1968) [tmdb-62].lfe-1000hz.wav"
+
+

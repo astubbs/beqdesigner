@@ -105,6 +105,12 @@ def _strategy_from_env() -> ExtractionStrategy:
 def audio_cache_dir() -> Path:
     """Return the audio cache directory, creating it if needed.
 
+    .. deprecated::
+        Use ``wav_cache_dir()`` and ``cli.extract.cache_path()`` instead.
+        This function builds a mirrored-path layout which is being replaced
+        by the two-letter bucket layout. Kept for backward compatibility
+        with callers that have not migrated yet.
+
     **Required config** — set ``AUTO_BEQ_AUDIO_CACHE`` env var or
     ``audio_cache_dir`` in ``~/.config/beqdesigner/settings.json``.
     We never write WAV files next to source media; all extractions go
@@ -195,30 +201,35 @@ def extract_lfe_wav(
     target_fs: int,
     trim_start_s: float | None = None,
     trim_end_s: float | None = None,
+    target_path: Path | None = None,
 ) -> Path:
     """Extract the LFE channel to a cached WAV in the audio cache dir.
 
-    Cache is stored under ``audio_cache_dir()`` with a mirrored path
-    structure so source media directories stay clean. Example:
-      source: /Volumes/NAS/Movies/Dune (2021)/Dune.mkv
-      cache:  ~/Downloads/beqdesigner/audio-cache/Volumes/NAS/Movies/Dune (2021)/Dune.lfe-1000hz.wav
+    If ``target_path`` is provided, the WAV is written there (unified
+    cache layout). Otherwise falls back to the legacy mirrored-path
+    layout under ``audio_cache_dir()``.
 
     ``trim_start_s`` / ``trim_end_s`` inject ``-ss`` / ``-to`` before
     ``-i`` (keyframe-accurate-fast seek). Either may be None.
     """
-    cache_root = audio_cache_dir()
-    # Mirror the source path under the cache root. Strip the leading /
-    # so it nests cleanly: /Volumes/X/Y.mkv -> cache_root/Volumes/X/Y
-    relative = Path(str(media_path.resolve()).lstrip("/"))
-    stem = relative.with_suffix("").name
-    trim_suffix = ""
-    if trim_start_s is not None or trim_end_s is not None:
-        start_tag = f"{trim_start_s:g}" if trim_start_s is not None else "0"
-        end_tag = f"{trim_end_s:g}" if trim_end_s is not None else "end"
-        trim_suffix = f"-t{start_tag}-{end_tag}"
-    cache_dir = cache_root / relative.parent
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / f"{stem}.lfe-{target_fs}hz{trim_suffix}.wav"
+    if target_path is not None:
+        cache_path = target_path
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        # Legacy fallback — mirrored path (deprecated, will be removed).
+        cache_root = audio_cache_dir()
+        # Mirror the source path under the cache root. Strip the leading /
+        # so it nests cleanly: /Volumes/X/Y.mkv -> cache_root/Volumes/X/Y
+        relative = Path(str(media_path.resolve()).lstrip("/"))
+        stem = relative.with_suffix("").name
+        trim_suffix = ""
+        if trim_start_s is not None or trim_end_s is not None:
+            start_tag = f"{trim_start_s:g}" if trim_start_s is not None else "0"
+            end_tag = f"{trim_end_s:g}" if trim_end_s is not None else "end"
+            trim_suffix = f"-t{start_tag}-{end_tag}"
+        cache_dir = cache_root / relative.parent
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / f"{stem}.lfe-{target_fs}hz{trim_suffix}.wav"
 
     # Clean up orphaned .tmp from interrupted previous extractions.
     tmp_orphan = cache_path.with_suffix(".tmp")
