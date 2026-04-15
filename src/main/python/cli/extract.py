@@ -43,6 +43,7 @@ import subprocess
 import sys
 import time
 from collections import defaultdict
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # Import from project modules — no duplication.
@@ -57,7 +58,7 @@ from model.media_constants import (
     MIN_FEATURE_SIZE_BYTES,
     TITLE_YEAR_RE,
 )
-from model.media_utils import ProgressLogger, find_media_dirs
+from model.media_utils import ProgressLogger, find_media_dirs, format_duration
 
 log = logging.getLogger("extract_lfe")
 
@@ -1800,7 +1801,7 @@ def main(argv: list[str] | None = None):
     log.info("  Total cached:      %d", total_skipped)
     log.info("  Total errors:      %d", total_errors)
     log.info("  Missing IDs:       %d", len(missing_ids))
-    log.info("  Time:              %.0fs (%.1f min)", total_time, total_time / 60)
+    log.info("  Time:              %s", format_duration(total_time))
     log.info("  WAV cache:         %s", wav_root)
     log.info("=" * 60)
 
@@ -1851,15 +1852,14 @@ def _run_extraction_phase(
 
         if extract_times:
             avg_rate = sum(extract_rates) / len(extract_rates)
-            remaining = sum(mm.get("size_bytes", 0) / 1e6 for mm in media[i:] if not cache_path(
+            remaining_mb = sum(mm.get("size_bytes", 0) / 1e6 for mm in media[i:] if not cache_path(
                 wav_root, mm["title"], mm["year"], mm["media_id"],
                 content_type=mm.get("content_type", "film"),
                 season=mm.get("season"), episode=mm.get("episode"),
             ).exists())
-            eta_s = remaining / avg_rate if avg_rate > 0 else 0
-            import datetime as _dt
-            eta_time = _dt.datetime.now() + _dt.timedelta(seconds=eta_s)
-            eta_str = f" ETA {eta_time.strftime('%H:%M')}"
+            eta_s = remaining_mb / avg_rate if avg_rate > 0 else 0
+            eta_time = datetime.now() + timedelta(seconds=eta_s)
+            eta_str = f" {format_duration(eta_s)} remaining, ETA {eta_time.strftime('%H:%M')}"
         else:
             eta_str = ""
 
@@ -1873,7 +1873,7 @@ def _run_extraction_phase(
         if extract_rates:
             avg_rate = sum(extract_rates) / len(extract_rates)
             est_s = size_mb / avg_rate if avg_rate > 0 else 0
-            est_str = f", est ~{est_s / 60:.1f}m" if est_s > 60 else f", est ~{est_s:.0f}s"
+            est_str = f", est ~{format_duration(est_s)}"
         else:
             est_str = ""
 
