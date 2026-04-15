@@ -310,6 +310,330 @@ def discover_media(
     return results, missing_ids, all_with_ids, no_catalogue_media
 
 
+# ---------------------------------------------------------------------------
+# Incremental media discovery (directory-mtime caching)
+# ---------------------------------------------------------------------------
+
+
+def _scan_single_directory(
+    dirpath: Path, catalogue_index: dict,
+) -> tuple[list[dict], list[dict], list[str]]:
+    """Scan one directory (non-recursively) for media files.
+
+    Returns (results, all_with_ids, missing_ids) for this single directory.
+    ``results`` are catalogue-matched media entries; ``all_with_ids`` is every
+    media file with a DB ID; ``missing_ids`` is paths to files without any
+    DB ID tag.
+
+    Uses ``os.scandir`` for speed (avoids stat() per entry on the directory
+    listing itself).
+    """
+    by_tmdb = catalogue_index["by_tmdb"]
+    by_title_year = catalogue_index["by_title_year"]
+
+    results: list[dict] = []
+    all_with_ids: list[dict] = []
+    missing_ids: list[str] = []
+
+    try:
+        entries = list(os.scandir(dirpath))
+    except (OSError, PermissionError) as exc:
+        log.debug("cannot scan directory %s: %s", dirpath, exc)
+        return results, all_with_ids, missing_ids
+
+    for entry in sorted(entries, key=lambda e: e.name):
+        if not entry.is_file(follow_symlinks=True):
+            continue
+        f = Path(entry.path)
+
+        # Extension filter.
+        if f.suffix.lower() not in MEDIA_EXTENSIONS:
+            continue
+
+        # Junk subdirectory filter (check all path parts).
+        if any(part.lower() in JUNK_SUBDIRS for part in f.parts):
+            continue
+
+        try:
+            size = entry.stat(follow_symlinks=True).st_size
+        except OSError:
+            continue
+        if size < MIN_FEATURE_SIZE_BYTES:
+            continue
+
+        id_result = extract_media_id(f)
+        if not id_result:
+            missing_ids.append(str(f))
+            continue
+
+        id_type, id_value = id_result
+        media_id = f"{id_type}-{id_value}"
+
+        # Extract title and year from directory name.
+        title, year = None, None
+        for dirname in (f.parent.name, f.parent.parent.name, f.parent.parent.parent.name):
+            m2 = TITLE_YEAR_RE.match(dirname)
+            if m2:
+                title = m2.group(1).strip()
+                year = m2.group(2)
+                break
+        if not title:
+            title = f"unknown-{media_id}"
+            year = "0000"
+
+        # Check BEQ catalogue.
+        has_catalogue = False
+        if id_type == "tmdb" and id_value in by_tmdb:
+            has_catalogue = True
+        elif title and year:
+            if (title.lower().strip(), year) in by_title_year:
+                has_catalogue = True
+
+        # Detect TV episodes.
+        ep_match = EPISODE_RE.search(f.stem)
+        season = int(ep_match.group(1)) if ep_match else None
+        episode = int(ep_match.group(2)) if ep_match else None
+
+        is_tv = ep_match is not None or any(
+            "season" in p.lower() for p in f.parts
+        )
+        content_type = "TV" if is_tv else "film"
+
+        all_with_ids.append({
+            "path": str(f),
+            "media_id": media_id,
+            "id_type": id_type,
+            "id_value": id_value,
+            "title": title,
+            "year": year,
+            "size_bytes": size,
+            "content_type": content_type,
+            "season": season,
+            "episode": episode,
+            "has_catalogue": has_catalogue,
+        })
+
+        media_entry = {
+            "path": f,
+            "media_id": media_id,
+            "id_type": id_type,
+            "id_value": id_value,
+            "title": title,
+            "year": year,
+            "size_bytes": size,
+            "content_type": content_type,
+            "season": season,
+            "episode": episode,
+        }
+
+        if has_catalogue:
+            results.append(media_entry)
+        # Note: no_catalogue filtering is handled by the caller based on
+        # has_catalogue in all_with_ids entries, not here.
+
+    return results, all_with_ids, missing_ids
+
+
+
+def discover_media_incremental(
+    roots: list[Path], catalogue_index: dict, inventory_path: Path,
+) -> tuple[list[dict], list[str], list[dict], list[dict]]:
+    """Incremental media discovery with directory-mtime caching.
+
+    Same return signature as ``discover_media()``:
+    (results, missing_ids, all_media_with_ids, no_catalogue_media).
+
+    Uses ``inventory_path`` as a cache keyed by directory mtime. Directories
+    whose mtime has not changed since the last scan reuse cached entries;
+    changed or new directories are rescanned. The catalogue is always
+    re-checked (it may have been updated independently).
+    """
+    by_tmdb = catalogue_index["by_tmdb"]
+    by_title_year = catalogue_index["by_title_year"]
+
+    # Step 1: Load existing inventory (if present).
+    cached_dirs: dict[str, dict] = {}
+    if inventory_path.exists():
+        log.info("loading cached inventory from %s ...", inventory_path)
+        try:
+            old_data = json.loads(inventory_path.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("failed to parse inventory %s: %s — rescanning all", inventory_path, exc)
+            old_data = {}
+
+        # Step 2: Check format — if old format, discard and rescan.
+        if "directories" in old_data:
+            cached_dirs = old_data["directories"]
+            log.info("loaded cached inventory: %d directories", len(cached_dirs))
+        else:
+            log.info("old inventory format — discarding, will rescan")
+            cached_dirs = {}
+    else:
+        log.info("no cached inventory at %s — full scan", inventory_path)
+
+    # Step 3: Walk each root's directory tree.
+    all_with_ids: list[dict] = []
+    missing_ids: list[str] = []
+    results: list[dict] = []
+    no_catalogue_desc: list[str] = []
+    no_catalogue_media: list[dict] = []
+    seen_keys: set[tuple] = set()
+    new_directories: dict[str, dict] = {}
+
+    n_cached = 0
+    n_rescanned = 0
+    n_new = 0
+
+    for root in roots:
+        if not root.exists():
+            log.warning("media root does not exist: %s", root)
+            continue
+
+        log.info("walking directory tree under %s ...", root)
+        for dirpath_str, dirnames, _filenames in os.walk(root):
+            dirpath = Path(dirpath_str)
+
+            # Skip junk subdirectories.
+            dirnames[:] = [
+                d for d in dirnames if d.lower() not in JUNK_SUBDIRS
+            ]
+
+            dir_key = str(dirpath)
+            try:
+                current_mtime = dirpath.stat().st_mtime
+            except OSError:
+                continue
+
+            cached_entry = cached_dirs.get(dir_key)
+            if cached_entry and cached_entry.get("mtime") == current_mtime:
+                # Directory unchanged — use cached entries.
+                dir_entries = cached_entry.get("entries", [])
+                dir_missing = cached_entry.get("missing_ids", [])
+                n_cached += 1
+            else:
+                # Directory is new or changed — rescan.
+                if cached_entry:
+                    n_rescanned += 1
+                else:
+                    n_new += 1
+                dir_results, dir_entries, dir_missing = _scan_single_directory(
+                    dirpath, catalogue_index,
+                )
+
+            # Store in new directory map (whether cached or freshly scanned).
+            new_directories[dir_key] = {
+                "mtime": current_mtime,
+                "entries": dir_entries,
+                "missing_ids": dir_missing,
+            }
+
+            missing_ids.extend(dir_missing)
+
+            # Step 5: Re-match all entries against current catalogue
+            # (catalogue may have changed since last scan).
+            for entry in dir_entries:
+                id_type = entry.get("id_type")
+                id_value = entry.get("id_value")
+                title = entry.get("title")
+                year = entry.get("year")
+
+                # Re-check catalogue match with current catalogue.
+                has_catalogue = False
+                if id_type == "tmdb" and id_value in by_tmdb:
+                    has_catalogue = True
+                elif title and year:
+                    if (title.lower().strip(), year) in by_title_year:
+                        has_catalogue = True
+                entry["has_catalogue"] = has_catalogue
+
+                all_with_ids.append(entry)
+
+                # Dedup.
+                media_id = entry.get("media_id", f"{id_type}-{id_value}")
+                season = entry.get("season")
+                episode = entry.get("episode")
+                dedup_key = (media_id, season, episode)
+                if dedup_key in seen_keys:
+                    continue
+                seen_keys.add(dedup_key)
+
+                media_entry = {
+                    "path": Path(entry["path"]) if isinstance(entry["path"], str) else entry["path"],
+                    "media_id": media_id,
+                    "id_type": id_type,
+                    "id_value": id_value,
+                    "title": title,
+                    "year": year,
+                    "size_bytes": entry.get("size_bytes", 0),
+                    "content_type": entry.get("content_type", "film"),
+                    "season": season,
+                    "episode": episode,
+                }
+
+                if has_catalogue:
+                    results.append(media_entry)
+                else:
+                    no_catalogue_desc.append(
+                        f"{media_id} {title} ({year}) — {Path(entry['path']).name}",
+                    )
+                    no_catalogue_media.append(media_entry)
+
+    log.info(
+        "directory scan: %d unchanged (cached), %d rescanned, %d new",
+        n_cached, n_rescanned, n_new,
+    )
+
+    if missing_ids:
+        log.warning("%d media files missing DB ID tag — skipped", len(missing_ids))
+        for p in missing_ids[:10]:
+            log.warning("  missing ID: %s", Path(p).name[:80])
+        if len(missing_ids) > 10:
+            log.warning("  ... and %d more", len(missing_ids) - 10)
+
+    if no_catalogue_desc:
+        log.info(
+            "%d media files have DB ID but no BEQ catalogue entry "
+            "(candidates for E84 self-training unlabelled pool)",
+            len(no_catalogue_desc),
+        )
+        for desc in no_catalogue_desc[:10]:
+            log.info("  no catalogue: %s", desc)
+        if len(no_catalogue_desc) > 10:
+            log.info("  ... and %d more", len(no_catalogue_desc) - 10)
+
+    # Step 6: Save updated inventory.
+    # Build backward-compatible top-level arrays for consumers.
+    flat_media = all_with_ids
+    flat_missing = sorted(set(missing_ids))
+
+    inventory_data = {
+        "format_version": 2,
+        "scanned_at": int(time.time()),
+        "media_roots": [str(r) for r in roots],
+        "directories": new_directories,
+        "n_total_with_ids": len(all_with_ids),
+        "n_catalogue_matched": sum(1 for m in all_with_ids if m.get("has_catalogue")),
+        "n_missing_ids": len(missing_ids),
+        # Backward-compatible top-level arrays for consumers
+        # (nn_acquisition_recommender, nn_cache_bias_report).
+        "media": flat_media,
+        "missing_ids": flat_missing,
+    }
+    log.info("writing updated inventory to %s ...", inventory_path)
+    inventory_path.write_text(json.dumps(inventory_data, indent=2) + "\n")
+    log.info(
+        "inventory written: %d files, %d catalogue-matched, %d missing IDs, "
+        "%d directories",
+        len(all_with_ids),
+        sum(1 for m in all_with_ids if m.get("has_catalogue")),
+        len(missing_ids),
+        len(new_directories),
+    )
+
+    results = _breadth_first_sort(results)
+    return results, missing_ids, all_with_ids, no_catalogue_media
+
+
 def _breadth_first_sort(media: list[dict]) -> list[dict]:
     """Sort media: movies by size, TV round-robin across shows, interleaved."""
     movies = sorted(
@@ -912,20 +1236,11 @@ def main(argv: list[str] | None = None):
     catalogue = fetch_catalogue(beq_dir)
     cat_index = build_catalogue_index(catalogue)
 
-    # Discover media (full filesystem scan — media_inventory.json is
-    # write-only, not used as a cache yet).
+    # Discover media (incremental — uses media_inventory.json as a
+    # directory-mtime cache, rescanning only changed/new directories).
     inventory_path = beq_dir / "media_inventory.json"
-    if inventory_path.exists():
-        import datetime
-        age = time.time() - inventory_path.stat().st_mtime
-        age_str = str(datetime.timedelta(seconds=int(age)))
-        log.info(
-            "media_inventory.json exists (age: %s) but is not used as cache — "
-            "rescanning filesystem. TODO: use inventory as cache.",
-            age_str,
-        )
-    media, missing_ids, all_with_ids, no_catalogue_media = discover_media(
-        media_roots, cat_index,
+    media, missing_ids, all_with_ids, no_catalogue_media = discover_media_incremental(
+        media_roots, cat_index, inventory_path,
     )
     log.info("found %d extractable titles (sorted by size, smallest first)", len(media))
     if no_catalogue_media:
@@ -936,31 +1251,9 @@ def main(argv: list[str] | None = None):
 
     if missing_ids:
         missing_file = beq_dir / "missing_ids.txt"
+        log.info("writing missing IDs to %s ...", missing_file)
         missing_file.write_text("\n".join(sorted(set(missing_ids))) + "\n")
         log.info("missing TMDb IDs written to %s", missing_file)
-
-    # Persist the full media inventory (every file with a DB ID, whether
-    # catalogue-matched or not, plus the missing-ID files).  Used by
-    # `bin/beq-designer report acquisitions` to filter out titles already
-    # in the library, and by `bin/beq-designer report cache-bias` to surface
-    # files that need their tmdb tags fixed.
-    inventory_file = beq_dir / "media_inventory.json"
-    inventory_file.write_text(json.dumps({
-        "scanned_at": int(time.time()),
-        "media_roots": [str(r) for r in media_roots],
-        "n_total_with_ids": len(all_with_ids),
-        "n_catalogue_matched": sum(1 for m in all_with_ids if m["has_catalogue"]),
-        "n_missing_ids": len(missing_ids),
-        "media": all_with_ids,
-        "missing_ids": sorted(set(missing_ids)),
-    }, indent=2) + "\n")
-    log.info(
-        "media inventory written to %s (%d files, %d catalogue-matched, "
-        "%d missing IDs)",
-        inventory_file, len(all_with_ids),
-        sum(1 for m in all_with_ids if m["has_catalogue"]),
-        len(missing_ids),
-    )
 
     if args.limit > 0:
         media = media[:args.limit]

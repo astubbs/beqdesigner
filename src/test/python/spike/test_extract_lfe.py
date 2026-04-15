@@ -1,10 +1,13 @@
-"""Unit tests for ``cli/extract.py`` — bias-corrected unmatched selection.
+"""Unit tests for ``cli/extract.py`` — bias-corrected unmatched selection
+and incremental media discovery.
 
 Only pure-function helpers are tested here — anything that actually
 shells out to ffmpeg belongs in an integration test.
 """
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 
 import pytest
@@ -200,3 +203,429 @@ def test_select_unmatched_greedy_rescoring(extract_mod):
     # Second pick is the remaining best — B (2010s era) is the next best
     # era gap now that A has been committed.
     assert picks[1]["title"] in ("B", "C")
+
+
+# ---------------------------------------------------------------------------
+# _scan_single_directory — single-directory non-recursive scan
+# ---------------------------------------------------------------------------
+
+
+def _make_catalogue_index(entries: list[dict] | None = None) -> dict:
+    """Build a catalogue_index for testing."""
+    by_tmdb: dict[str, dict] = {}
+    by_title_year: dict[tuple[str, str], dict] = {}
+    for e in (entries or []):
+        tid = str(e.get("theMovieDB", "")).strip()
+        if tid:
+            by_tmdb.setdefault(tid, e)
+        key = (e.get("title", "").lower().strip(), str(e.get("year", "")))
+        by_title_year.setdefault(key, e)
+    return {"by_tmdb": by_tmdb, "by_title_year": by_title_year}
+
+
+@pytest.fixture
+def _bypass_min_size(monkeypatch):
+    """Zero-byte fixture files need the size filter bypassed."""
+    import model.media_constants as mc
+    monkeypatch.setattr(mc, "MIN_FEATURE_SIZE_BYTES", 0)
+    # Also patch the module-level reference in extract.
+    monkeypatch.setattr(extract_mod_static, "MIN_FEATURE_SIZE_BYTES", 0)
+
+
+def test_scan_single_directory_finds_media(tmp_path, _bypass_min_size):
+    """Basic scan of a directory with one tagged movie file."""
+    movie_dir = tmp_path / "Dune (2021) [tmdb-438631]"
+    movie_dir.mkdir()
+    mkv = movie_dir / "Dune (2021) [tmdb-438631].mkv"
+    mkv.touch()
+
+    cat_index = _make_catalogue_index([
+        {"title": "Dune", "year": "2021", "theMovieDB": "438631",
+         "filters": [{"gain": 4.0}]},
+    ])
+
+    results, all_ids, missing = extract_mod_static._scan_single_directory(
+        movie_dir, cat_index,
+    )
+
+    assert len(all_ids) == 1
+    assert all_ids[0]["media_id"] == "tmdb-438631"
+    assert all_ids[0]["title"] == "Dune"
+    assert all_ids[0]["year"] == "2021"
+    assert all_ids[0]["has_catalogue"] is True
+    assert all_ids[0]["size_bytes"] == 0
+    assert all_ids[0]["content_type"] == "film"
+    assert len(results) == 1
+    assert missing == []
+
+
+def test_scan_single_directory_missing_id(tmp_path, _bypass_min_size):
+    """Files without a DB ID tag go into missing_ids."""
+    movie_dir = tmp_path / "Random Movie"
+    movie_dir.mkdir()
+    mkv = movie_dir / "random.mkv"
+    mkv.touch()
+
+    cat_index = _make_catalogue_index()
+    results, all_ids, missing = extract_mod_static._scan_single_directory(
+        movie_dir, cat_index,
+    )
+
+    assert results == []
+    assert all_ids == []
+    assert len(missing) == 1
+    assert "random.mkv" in missing[0]
+
+
+def test_scan_single_directory_not_recursive(tmp_path, _bypass_min_size):
+    """Subdirectory media files are NOT found (non-recursive scan)."""
+    root = tmp_path / "root"
+    root.mkdir()
+    subdir = root / "subdir"
+    subdir.mkdir()
+    (subdir / "Dune (2021) [tmdb-438631].mkv").touch()
+
+    cat_index = _make_catalogue_index()
+    results, all_ids, missing = extract_mod_static._scan_single_directory(
+        root, cat_index,
+    )
+
+    assert results == []
+    assert all_ids == []
+    assert missing == []
+
+
+def test_scan_single_directory_skips_non_mkv(tmp_path, _bypass_min_size):
+    """Non-.mkv files are skipped."""
+    movie_dir = tmp_path / "Dune (2021) [tmdb-438631]"
+    movie_dir.mkdir()
+    (movie_dir / "Dune.txt").touch()
+    (movie_dir / "Dune.jpg").touch()
+
+    cat_index = _make_catalogue_index()
+    results, all_ids, missing = extract_mod_static._scan_single_directory(
+        movie_dir, cat_index,
+    )
+
+    assert results == []
+    assert all_ids == []
+    assert missing == []
+
+
+def test_scan_single_directory_tv_detection(tmp_path, _bypass_min_size):
+    """TV episodes get content_type=TV and season/episode parsed."""
+    show_dir = tmp_path / "Blue Eye Samurai (2023) [tvdb-434151]" / "Season 1"
+    show_dir.mkdir(parents=True)
+    ep = show_dir / "S01E03 - Some Episode.mkv"
+    ep.touch()
+
+    cat_index = _make_catalogue_index()
+    results, all_ids, missing = extract_mod_static._scan_single_directory(
+        show_dir, cat_index,
+    )
+
+    assert len(all_ids) == 1
+    assert all_ids[0]["content_type"] == "TV"
+    assert all_ids[0]["season"] == 1
+    assert all_ids[0]["episode"] == 3
+
+
+def test_scan_single_directory_enriched_fields(tmp_path, _bypass_min_size):
+    """Entries include size_bytes, content_type, season, episode."""
+    movie_dir = tmp_path / "Inception (2010) [tmdb-27205]"
+    movie_dir.mkdir()
+    mkv = movie_dir / "Inception (2010) [tmdb-27205].mkv"
+    mkv.write_bytes(b"x" * 100)  # small but nonzero
+
+    cat_index = _make_catalogue_index([
+        {"title": "Inception", "year": "2010", "theMovieDB": "27205",
+         "filters": [{"gain": 5.0}]},
+    ])
+
+    results, all_ids, missing = extract_mod_static._scan_single_directory(
+        movie_dir, cat_index,
+    )
+
+    entry = all_ids[0]
+    assert entry["size_bytes"] == 100
+    assert entry["content_type"] == "film"
+    assert entry["season"] is None
+    assert entry["episode"] is None
+
+
+# ---------------------------------------------------------------------------
+# discover_media_incremental — end-to-end incremental discovery
+# ---------------------------------------------------------------------------
+
+
+def test_incremental_discovery_fresh_scan(tmp_path, _bypass_min_size):
+    """First run with no inventory scans everything."""
+    # Build a small library.
+    movie_dir = tmp_path / "library" / "Dune (2021) [tmdb-438631]"
+    movie_dir.mkdir(parents=True)
+    (movie_dir / "Dune (2021) [tmdb-438631].mkv").touch()
+
+    cat_index = _make_catalogue_index([
+        {"title": "Dune", "year": "2021", "theMovieDB": "438631",
+         "filters": [{"gain": 4.0}]},
+    ])
+
+    inventory_path = tmp_path / "media_inventory.json"
+    results, missing, all_ids, no_cat = extract_mod_static.discover_media_incremental(
+        [tmp_path / "library"], cat_index, inventory_path,
+    )
+
+    assert len(results) == 1
+    assert results[0]["title"] == "Dune"
+    assert len(all_ids) == 1
+    assert missing == []
+    assert no_cat == []
+
+    # Inventory file is written.
+    assert inventory_path.exists()
+    inv = json.loads(inventory_path.read_text())
+    assert inv["format_version"] == 2
+    assert "directories" in inv
+    # Backward-compatible flat arrays.
+    assert len(inv["media"]) == 1
+    assert inv["n_total_with_ids"] == 1
+    assert inv["n_catalogue_matched"] == 1
+
+
+def test_incremental_discovery_cached_rerun(tmp_path, _bypass_min_size):
+    """Second run with no changes uses cache (no rescan)."""
+    movie_dir = tmp_path / "library" / "Dune (2021) [tmdb-438631]"
+    movie_dir.mkdir(parents=True)
+    (movie_dir / "Dune (2021) [tmdb-438631].mkv").touch()
+
+    cat_index = _make_catalogue_index([
+        {"title": "Dune", "year": "2021", "theMovieDB": "438631",
+         "filters": [{"gain": 4.0}]},
+    ])
+
+    inventory_path = tmp_path / "media_inventory.json"
+
+    # First scan.
+    extract_mod_static.discover_media_incremental(
+        [tmp_path / "library"], cat_index, inventory_path,
+    )
+    first_inv = json.loads(inventory_path.read_text())
+
+    # Second scan — nothing changed.
+    results, missing, all_ids, no_cat = extract_mod_static.discover_media_incremental(
+        [tmp_path / "library"], cat_index, inventory_path,
+    )
+
+    assert len(results) == 1
+    assert results[0]["title"] == "Dune"
+    # The inventory is updated (new scanned_at) but content is same.
+    second_inv = json.loads(inventory_path.read_text())
+    assert second_inv["format_version"] == 2
+    assert len(second_inv["media"]) == 1
+
+
+def test_incremental_discovery_new_directory_detected(tmp_path, _bypass_min_size):
+    """Adding a new directory is detected and scanned."""
+    lib = tmp_path / "library"
+    lib.mkdir()
+
+    movie_dir = lib / "Dune (2021) [tmdb-438631]"
+    movie_dir.mkdir()
+    (movie_dir / "Dune (2021) [tmdb-438631].mkv").touch()
+
+    cat_index = _make_catalogue_index([
+        {"title": "Dune", "year": "2021", "theMovieDB": "438631",
+         "filters": [{"gain": 4.0}]},
+        {"title": "Inception", "year": "2010", "theMovieDB": "27205",
+         "filters": [{"gain": 5.0}]},
+    ])
+
+    inventory_path = tmp_path / "media_inventory.json"
+
+    # First scan — only Dune.
+    results1, _, _, _ = extract_mod_static.discover_media_incremental(
+        [lib], cat_index, inventory_path,
+    )
+    assert len(results1) == 1
+
+    # Add a new movie.
+    new_dir = lib / "Inception (2010) [tmdb-27205]"
+    new_dir.mkdir()
+    (new_dir / "Inception (2010) [tmdb-27205].mkv").touch()
+
+    # Second scan — should find both.
+    results2, _, all_ids2, _ = extract_mod_static.discover_media_incremental(
+        [lib], cat_index, inventory_path,
+    )
+    assert len(results2) == 2
+    titles = {r["title"] for r in results2}
+    assert "Dune" in titles
+    assert "Inception" in titles
+
+
+def test_incremental_discovery_dedup_across_directories(tmp_path, _bypass_min_size):
+    """Same media_id in two directories: only the first is kept."""
+    lib = tmp_path / "library"
+    dir_a = lib / "Dune (2021) [tmdb-438631]"
+    dir_b = lib / "backup" / "Dune (2021) [tmdb-438631]"
+    dir_a.mkdir(parents=True)
+    dir_b.mkdir(parents=True)
+    (dir_a / "Dune (2021) [tmdb-438631].mkv").touch()
+    (dir_b / "Dune (2021) [tmdb-438631].mkv").touch()
+
+    cat_index = _make_catalogue_index([
+        {"title": "Dune", "year": "2021", "theMovieDB": "438631",
+         "filters": [{"gain": 4.0}]},
+    ])
+
+    inventory_path = tmp_path / "media_inventory.json"
+    results, _, all_ids, _ = extract_mod_static.discover_media_incremental(
+        [lib], cat_index, inventory_path,
+    )
+
+    # all_with_ids has both (no dedup on raw entries).
+    assert len(all_ids) == 2
+    # results deduplicates by (media_id, season, episode).
+    assert len(results) == 1
+
+
+def test_incremental_discovery_catalogue_change(tmp_path, _bypass_min_size):
+    """Media that gains a catalogue entry on rescan moves to results."""
+    lib = tmp_path / "library"
+    movie_dir = lib / "NewMovie (2025) [tmdb-999999]"
+    movie_dir.mkdir(parents=True)
+    (movie_dir / "NewMovie (2025) [tmdb-999999].mkv").touch()
+
+    # First scan: no catalogue entry.
+    cat_index_v1 = _make_catalogue_index([])
+    inventory_path = tmp_path / "media_inventory.json"
+
+    results1, _, _, no_cat1 = extract_mod_static.discover_media_incremental(
+        [lib], cat_index_v1, inventory_path,
+    )
+    assert len(results1) == 0
+    assert len(no_cat1) == 1
+
+    # Second scan: catalogue now has an entry (catalogue updated, directory unchanged).
+    cat_index_v2 = _make_catalogue_index([
+        {"title": "NewMovie", "year": "2025", "theMovieDB": "999999",
+         "filters": [{"gain": 3.0}]},
+    ])
+    results2, _, _, no_cat2 = extract_mod_static.discover_media_incremental(
+        [lib], cat_index_v2, inventory_path,
+    )
+    assert len(results2) == 1
+    assert results2[0]["title"] == "NewMovie"
+    assert len(no_cat2) == 0
+
+
+def test_incremental_discovery_v1_discarded_and_rescanned(tmp_path, _bypass_min_size):
+    """A v1 inventory (no directories key) is discarded — full rescan."""
+    lib = tmp_path / "library"
+    movie_dir = lib / "Dune (2021) [tmdb-438631]"
+    movie_dir.mkdir(parents=True)
+    (movie_dir / "Dune (2021) [tmdb-438631].mkv").touch()
+
+    # Write a v1 inventory (old format — no directories key).
+    inventory_path = tmp_path / "media_inventory.json"
+    inventory_path.write_text(json.dumps({
+        "media": [{"path": "old", "media_id": "tmdb-1"}],
+        "missing_ids": [],
+    }))
+
+    cat_index = _make_catalogue_index([
+        {"title": "Dune", "year": "2021", "theMovieDB": "438631",
+         "filters": [{"gain": 4.0}]},
+    ])
+
+    results, _, all_ids, _ = extract_mod_static.discover_media_incremental(
+        [lib], cat_index, inventory_path,
+    )
+
+    # Should have done a fresh scan, not used the old data.
+    assert len(results) == 1
+    assert all_ids[0]["title"] == "Dune"
+    # Output is now v2 format.
+    inv = json.loads(inventory_path.read_text())
+    assert inv["format_version"] == 2
+    assert "directories" in inv
+
+
+def test_incremental_discovery_inventory_has_backward_compat_arrays(tmp_path, _bypass_min_size):
+    """The written inventory has top-level media and missing_ids arrays."""
+    lib = tmp_path / "library"
+    movie_dir = lib / "Dune (2021) [tmdb-438631]"
+    movie_dir.mkdir(parents=True)
+    (movie_dir / "Dune (2021) [tmdb-438631].mkv").touch()
+
+    # Also add a file without a tag.
+    notagdir = lib / "Untagged"
+    notagdir.mkdir()
+    (notagdir / "random.mkv").touch()
+
+    cat_index = _make_catalogue_index([
+        {"title": "Dune", "year": "2021", "theMovieDB": "438631",
+         "filters": [{"gain": 4.0}]},
+    ])
+
+    inventory_path = tmp_path / "media_inventory.json"
+    extract_mod_static.discover_media_incremental(
+        [lib], cat_index, inventory_path,
+    )
+
+    inv = json.loads(inventory_path.read_text())
+    # Top-level arrays for nn_acquisition_recommender and nn_cache_bias_report.
+    assert "media" in inv
+    assert "missing_ids" in inv
+    assert isinstance(inv["media"], list)
+    assert isinstance(inv["missing_ids"], list)
+    assert inv["n_total_with_ids"] == len(inv["media"])
+    assert inv["n_missing_ids"] == len(inv["missing_ids"])
+
+
+def test_incremental_discovery_breadth_first_sort_applied(tmp_path, _bypass_min_size):
+    """Results are breadth-first sorted (movies by size, TV round-robin)."""
+    lib = tmp_path / "library"
+
+    # Two movies of different sizes.
+    small_dir = lib / "Small (2020) [tmdb-111111]"
+    small_dir.mkdir(parents=True)
+    small = small_dir / "Small (2020) [tmdb-111111].mkv"
+    small.write_bytes(b"x" * 100)
+
+    big_dir = lib / "Big (2021) [tmdb-222222]"
+    big_dir.mkdir(parents=True)
+    big = big_dir / "Big (2021) [tmdb-222222].mkv"
+    big.write_bytes(b"x" * 1000)
+
+    cat_index = _make_catalogue_index([
+        {"title": "Small", "year": "2020", "theMovieDB": "111111",
+         "filters": [{"gain": 1.0}]},
+        {"title": "Big", "year": "2021", "theMovieDB": "222222",
+         "filters": [{"gain": 2.0}]},
+    ])
+
+    inventory_path = tmp_path / "media_inventory.json"
+    results, _, _, _ = extract_mod_static.discover_media_incremental(
+        [lib], cat_index, inventory_path,
+    )
+
+    assert len(results) == 2
+    # Breadth-first: movies sorted by size ascending.
+    assert results[0]["title"] == "Small"
+    assert results[1]["title"] == "Big"
+
+
+def test_incremental_discovery_nonexistent_root(tmp_path, _bypass_min_size):
+    """Non-existent root is warned but does not crash."""
+    cat_index = _make_catalogue_index()
+    inventory_path = tmp_path / "media_inventory.json"
+
+    results, missing, all_ids, no_cat = extract_mod_static.discover_media_incremental(
+        [tmp_path / "does_not_exist"], cat_index, inventory_path,
+    )
+
+    assert results == []
+    assert missing == []
+    assert all_ids == []
+    assert no_cat == []
