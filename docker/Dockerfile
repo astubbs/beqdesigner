@@ -36,4 +36,4 @@ ENV BEQ_DIR=/beq-shared
 ENV BEQ_MEDIA_DIR=/media
 
 ENTRYPOINT ["python3", "bin/beq-designer"]
-CMD ["--help"]
+CMD []
