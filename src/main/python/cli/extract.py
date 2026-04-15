@@ -57,6 +57,7 @@ from model.media_constants import (
     MIN_FEATURE_SIZE_BYTES,
     TITLE_YEAR_RE,
 )
+from model.media_utils import ProgressLogger, find_media_dirs
 
 log = logging.getLogger("extract_lfe")
 
@@ -677,6 +678,86 @@ def _collect_cached_subtree(
                 no_catalogue_media_out.append(entry)
 
 
+def _walk_root_with_progress(
+    root: Path,
+    catalogue_index: dict,
+    by_tmdb: dict,
+    by_title_year: dict,
+    new_directories: dict[str, dict],
+    all_with_ids: list[dict],
+    results: list[dict],
+    no_catalogue_media: list[dict],
+    no_catalogue_desc: list[str],
+    missing_ids: list[str],
+    seen_keys: set[tuple],
+    inventory_path: Path | None = None,
+    roots: list[Path] | None = None,
+) -> int:
+    """Walk a media root with progress logging using adaptive depth detection.
+
+    Saves inventory to disk after every title-level directory so that
+    a Ctrl+C loses at most one title's worth of scanning.
+
+    Returns the number of new directories scanned.
+    """
+    # Use find_media_dirs() to get total count for progress.
+    log.info("detecting directory depth under %s ...", root)
+    title_dirs = find_media_dirs(root)
+    total = len(title_dirs)
+    title_dirs_set = {str(d) for d in title_dirs}
+    log.info("walking %s (%d title directories) ...", root, total)
+
+    progress = ProgressLogger(total, logger=log, min_interval_s=5)
+    n_new = 0
+    n_title = 0
+    _last_save_time = time.time()
+    _SAVE_INTERVAL = 30  # save to disk at most every 30 seconds
+    for dirpath_str, dirnames, _filenames in os.walk(root):
+        dirpath = Path(dirpath_str)
+        dirnames[:] = [
+            d for d in dirnames if d.lower() not in JUNK_SUBDIRS
+        ]
+
+        # Track and log progress at title-level directories.
+        if total > 0 and dirpath_str in title_dirs_set:
+            n_title += 1
+            progress.update(n_title, label=dirpath.name)
+
+            # Periodic save so Ctrl+C doesn't lose more than ~30s of work.
+            now = time.time()
+            if inventory_path and roots and (now - _last_save_time) >= _SAVE_INTERVAL:
+                _save_inventory(inventory_path, new_directories,
+                                all_with_ids, missing_ids, roots)
+                _last_save_time = now
+
+        dir_key = str(dirpath)
+        try:
+            current_mtime = dirpath.stat().st_mtime
+        except OSError:
+            continue
+
+        _dir_results, dir_entries, dir_missing = _scan_single_directory(
+            dirpath, catalogue_index,
+        )
+        n_new += 1
+
+        new_directories[dir_key] = {
+            "mtime": current_mtime,
+            "entries": dir_entries,
+            "missing_ids": dir_missing,
+        }
+        missing_ids.extend(dir_missing)
+        for entry in dir_entries:
+            _process_cached_entry(
+                entry, by_tmdb, by_title_year,
+                all_with_ids, results, no_catalogue_media,
+                no_catalogue_desc, seen_keys,
+            )
+
+    progress.finish(f"walked {n_new} dirs ({n_title} titles)")
+    return n_new
+
+
 def discover_media_incremental(
     roots: list[Path], catalogue_index: dict, inventory_path: Path,
 ) -> tuple[list[dict], list[str], list[dict], list[dict]]:
@@ -702,9 +783,13 @@ def discover_media_incremental(
         t0 = time.time()
         try:
             raw = inventory_path.read_bytes()
-            log.info("read in %.1fs, parsing JSON...", time.time() - t0)
+            t_read = time.time() - t0
+            if t_read >= 5:
+                log.info("read in %.1fs, parsing JSON...", t_read)
             old_data = json.loads(raw)
-            log.info("inventory parsed in %.1fs", time.time() - t0)
+            t_total = time.time() - t0
+            if t_total >= 5:
+                log.info("inventory loaded in %.1fs", t_total)
         except (json.JSONDecodeError, OSError) as exc:
             log.warning("failed to parse inventory %s: %s — rescanning all", inventory_path, exc)
             old_data = {}
@@ -792,11 +877,15 @@ def discover_media_incremental(
         # Include roots themselves.
         check_parents |= root_strs
 
-        log.info("checking %d parent directories for changes...", len(check_parents))
+        n_parents = len(check_parents)
+        log.info("checking %d parent directories for changes...", n_parents)
+        parent_progress = ProgressLogger(n_parents, logger=log, min_interval_s=5)
 
         changed_dirs: set[str] = set()
-        for parent_key in sorted(check_parents):
+        sorted_parents = sorted(check_parents)
+        for idx, parent_key in enumerate(sorted_parents):
             parent_path = Path(parent_key)
+            parent_progress.update(idx + 1, label=parent_path.name)
             if not parent_path.exists():
                 continue
             try:
@@ -853,11 +942,14 @@ def discover_media_incremental(
                 n_cached += 1
 
             # Rescan only changed directories.
-            for dir_key in sorted(changed_dirs):
+            rescan_progress = ProgressLogger(
+                len(changed_dirs), logger=log, min_interval_s=5,
+            )
+            for rescan_idx, dir_key in enumerate(sorted(changed_dirs)):
                 dirpath = Path(dir_key)
                 if not dirpath.exists():
                     continue
-                log.info("  rescanning: %s", dirpath)
+                rescan_progress.update(rescan_idx + 1, label=dirpath.name)
                 try:
                     current_mtime = dirpath.stat().st_mtime
                 except OSError:
@@ -879,49 +971,25 @@ def discover_media_incremental(
                         no_catalogue_desc, seen_keys,
                     )
 
+        # Save after parent check + rescan so Ctrl+C doesn't lose that work.
+        _save_inventory(inventory_path, new_directories, all_with_ids,
+                        missing_ids, roots)
+
         # Walk any uncached roots (never scanned or interrupted).
         if uncached_roots:
             log.info("walking %d uncached root(s)...", len(uncached_roots))
             for root in uncached_roots:
-                log.info("walking directory tree under %s (not in cache)...", root)
-                n_walked = 0
-                for dirpath_str, dirnames, _filenames in os.walk(root):
-                    dirpath = Path(dirpath_str)
-                    n_walked += 1
-                    if n_walked % 500 == 0:
-                        log.info("  ... walked %d dirs so far", n_walked)
-                    dirnames[:] = [
-                        d for d in dirnames if d.lower() not in JUNK_SUBDIRS
-                    ]
-                    dir_key = str(dirpath)
-                    try:
-                        current_mtime = dirpath.stat().st_mtime
-                    except OSError:
-                        continue
-                    dir_results, dir_entries, dir_missing = _scan_single_directory(
-                        dirpath, catalogue_index,
-                    )
-                    n_new += 1
-                    new_directories[dir_key] = {
-                        "mtime": current_mtime,
-                        "entries": dir_entries,
-                        "missing_ids": dir_missing,
-                    }
-                    missing_ids.extend(dir_missing)
-                    for entry in dir_entries:
-                        _process_cached_entry(
-                            entry, by_tmdb, by_title_year,
-                            all_with_ids, results, no_catalogue_media,
-                            no_catalogue_desc, seen_keys,
-                        )
-                log.info("  done: walked %d dirs", n_walked)
-                # Save after each root.
+                walked = _walk_root_with_progress(
+                    root, catalogue_index, by_tmdb, by_title_year,
+                    new_directories, all_with_ids, results,
+                    no_catalogue_media, no_catalogue_desc,
+                    missing_ids, seen_keys,
+                    inventory_path=inventory_path, roots=roots,
+                )
+                n_new += walked
+                # Save after each root (walk also saves every ~30s).
                 _save_inventory(inventory_path, new_directories, all_with_ids,
                                 missing_ids, roots)
-
-        # Save after fast path + any uncached roots.
-        _save_inventory(inventory_path, new_directories, all_with_ids,
-                        missing_ids, roots)
 
     else:
         # SLOW PATH: no cache at all — full os.walk.
@@ -929,46 +997,15 @@ def discover_media_incremental(
             if not root.exists():
                 log.warning("media root does not exist: %s", root)
                 continue
-
-            log.info("walking directory tree under %s (first run, no cache)...", root)
-            n_walked = 0
-            for dirpath_str, dirnames, _filenames in os.walk(root):
-                dirpath = Path(dirpath_str)
-                n_walked += 1
-                if n_walked % 500 == 0:
-                    log.info("  ... walked %d dirs so far", n_walked)
-
-                dirnames[:] = [
-                    d for d in dirnames if d.lower() not in JUNK_SUBDIRS
-                ]
-
-                dir_key = str(dirpath)
-                try:
-                    current_mtime = dirpath.stat().st_mtime
-                except OSError:
-                    continue
-
-                dir_results, dir_entries, dir_missing = _scan_single_directory(
-                    dirpath, catalogue_index,
-                )
-                n_new += 1
-
-                new_directories[dir_key] = {
-                    "mtime": current_mtime,
-                    "entries": dir_entries,
-                    "missing_ids": dir_missing,
-                }
-                missing_ids.extend(dir_missing)
-                for entry in dir_entries:
-                    _process_cached_entry(
-                        entry, by_tmdb, by_title_year,
-                        all_with_ids, results, no_catalogue_media,
-                        no_catalogue_desc, seen_keys,
-                    )
-
-            log.info("  done: walked %d dirs", n_walked)
-
-            # Save after each root so Ctrl+C doesn't lose everything.
+            walked = _walk_root_with_progress(
+                root, catalogue_index, by_tmdb, by_title_year,
+                new_directories, all_with_ids, results,
+                no_catalogue_media, no_catalogue_desc,
+                missing_ids, seen_keys,
+                inventory_path=inventory_path, roots=roots,
+            )
+            n_new += walked
+            # Save after each root (walk also saves every ~30s).
             _save_inventory(inventory_path, new_directories, all_with_ids,
                             missing_ids, roots)
 

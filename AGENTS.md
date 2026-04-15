@@ -64,9 +64,33 @@ Use the single shared implementations in `spike/_auto_beq_helpers.py`:
   Machine-specific config (like `extract_config.json` with media root paths)
   lives in the local dir; portable data (wav-cache, catalogue, inventory) lives
   in the shared dir.
+- **Media depth detection**: `find_media_dirs()` in `model/media_utils.py` —
+  finds the directory depth where media files live by sampling one file,
+  then lists all directories at that depth. Adapts to any library
+  layout (flat, one-level, genre-grouped). Use for progress bars and
+  directory counting.
+- **Progress logging**: `ProgressLogger` in `model/media_utils.py` —
+  time-throttled progress with ETA. Only logs when `min_interval_s`
+  has elapsed (default 5s) or on the final item. Use for any loop
+  that may take >5s: directory walks, file scans, extraction batches.
 
 If a shared function is missing a feature you need, extend it rather
 than writing a parallel implementation.
+
+### Save results incrementally
+
+**Never defer saving results to the end of a long operation.** Any
+loop that builds up data (directory scanning, extraction, inventory
+construction) must save its results to disk as each logical unit
+completes — not in a single batch at the end. Users will Ctrl+C
+long-running operations on NAS/NFS volumes, and losing 20 minutes
+of work because the save was deferred to the end is unacceptable.
+
+Rules:
+- Save after each media root finishes scanning.
+- Save periodically during walks within a single root (every ~30s).
+- Save after each stage boundary (parent check → rescan → walk).
+- Extraction is inherently incremental (each WAV is an atomic file).
 
 ### Log before I/O
 

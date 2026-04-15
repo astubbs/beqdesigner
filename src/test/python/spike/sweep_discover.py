@@ -362,52 +362,8 @@ class DiscoveryResult:
     missing_ids: list[str] = field(default_factory=list)
 
 
-def _find_media_dirs(library_root: Path) -> list[Path]:
-    """Find directories at the depth where media files live.
-
-    Finds the first ``.mkv`` file, determines its parent's depth
-    relative to the root, then lists all directories at that depth.
-    This adapts to any layout (flat, one-level, genre-grouped, etc.).
-    Falls back to immediate children if no media files found.
-    """
-    # Find one media file to determine the depth. Check each top-level
-    # child individually so we don't traverse the entire tree on a slow
-    # network volume — we stop as soon as we find the first file.
-    sample: Path | None = None
-    for child in library_root.iterdir():
-        if child.is_dir():
-            for ext in _MEDIA_EXTENSIONS:
-                for p in child.rglob(f"*{ext}"):
-                    sample = p
-                    break
-                if sample:
-                    break
-        elif any(child.suffix == ext for ext in _MEDIA_EXTENSIONS):
-            sample = child
-        if sample:
-            break
-    if sample is None:
-        return sorted(p for p in library_root.iterdir() if p.is_dir())
-
-    # Walk up from the media file's parent to find the title directory —
-    # the highest ancestor (below root) whose name contains "(YEAR)".
-    # For "root/Show (2023)/Season 1/file.mkv" that's "Show (2023)" at depth 1.
-    # For "root/file.mkv" that's root itself.
-    _HAS_YEAR = re.compile(r"\(\d{4}\)")
-    title_dir: Path | None = None
-    cur = sample.parent
-    while cur != library_root and cur != cur.parent:
-        if _HAS_YEAR.search(cur.name):
-            title_dir = cur
-        cur = cur.parent
-
-    if title_dir is None:
-        # No dir with (YEAR) found — use immediate children of root.
-        return sorted(p for p in library_root.iterdir() if p.is_dir())
-
-    # The title dir's parent is the level we want to list.
-    level_parent = title_dir.parent
-    return sorted(p for p in level_parent.iterdir() if p.is_dir())
+# Moved to model.media_utils — import for backward compat.
+from model.media_utils import find_media_dirs as _find_media_dirs  # noqa: E402
 
 
 def inventory_root(library_root: Path) -> list[Path]:

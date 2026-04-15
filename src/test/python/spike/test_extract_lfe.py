@@ -1074,3 +1074,218 @@ def test_beq_dir_falls_back_to_audio_cache_dir_parent(tmp_path, monkeypatch):
     assert helpers.beq_dir() == parent
 
 
+# ---------------------------------------------------------------------------
+# find_media_dirs — adaptive depth detection
+# ---------------------------------------------------------------------------
+
+
+class TestFindMediaDirs:
+    """Tests for model.media_utils.find_media_dirs()."""
+
+    def test_flat_layout(self, tmp_path):
+        """Root contains .mkv files directly — returns immediate children dirs."""
+        from model.media_utils import find_media_dirs
+
+        (tmp_path / "movie.mkv").touch()
+        sub = tmp_path / "extras"
+        sub.mkdir()
+        result = find_media_dirs(tmp_path)
+        assert result == [sub]
+
+    def test_one_level_layout(self, tmp_path):
+        """Standard layout: root/Title (Year)/file.mkv."""
+        from model.media_utils import find_media_dirs
+
+        d1 = tmp_path / "Avatar (2009)"
+        d1.mkdir()
+        (d1 / "Avatar.mkv").touch()
+        d2 = tmp_path / "Dune (2021)"
+        d2.mkdir()
+        (d2 / "Dune.mkv").touch()
+        result = find_media_dirs(tmp_path)
+        assert sorted(result) == sorted([d1, d2])
+
+    def test_two_level_layout(self, tmp_path):
+        """TV layout: root/Show (Year)/Season 01/file.mkv."""
+        from model.media_utils import find_media_dirs
+
+        show = tmp_path / "Breaking Bad (2008)"
+        s1 = show / "Season 01"
+        s1.mkdir(parents=True)
+        (s1 / "S01E01.mkv").touch()
+        show2 = tmp_path / "The Wire (2002)"
+        s2 = show2 / "Season 01"
+        s2.mkdir(parents=True)
+        (s2 / "S01E01.mkv").touch()
+        result = find_media_dirs(tmp_path)
+        assert sorted(result) == sorted([show, show2])
+
+    def test_no_media_files(self, tmp_path):
+        """No .mkv files — falls back to immediate children."""
+        from model.media_utils import find_media_dirs
+
+        d1 = tmp_path / "subdir1"
+        d1.mkdir()
+        d2 = tmp_path / "subdir2"
+        d2.mkdir()
+        result = find_media_dirs(tmp_path)
+        assert sorted(result) == sorted([d1, d2])
+
+    def test_no_year_in_dirname(self, tmp_path):
+        """Media file exists but no (YEAR) in dir name — falls back to children."""
+        from model.media_utils import find_media_dirs
+
+        d1 = tmp_path / "SomeDir"
+        d1.mkdir()
+        (d1 / "video.mkv").touch()
+        result = find_media_dirs(tmp_path)
+        assert result == [d1]
+
+
+# ---------------------------------------------------------------------------
+# ProgressLogger — time-throttled progress with ETA
+# ---------------------------------------------------------------------------
+
+
+class TestProgressLogger:
+    """Tests for model.media_utils.ProgressLogger."""
+
+    def test_logs_final_item(self):
+        """The last item is always logged regardless of interval."""
+        from model.media_utils import ProgressLogger
+        import logging
+
+        msgs = []
+        logger = logging.getLogger("test_progress_final")
+        logger.handlers = [logging.StreamHandler()]
+        logger.handlers[0].emit = lambda r: msgs.append(r.getMessage())
+        logger.setLevel(logging.INFO)
+
+        progress = ProgressLogger(total=3, logger=logger, min_interval_s=9999)
+        progress.update(1, label="a")
+        progress.update(2, label="b")
+        progress.update(3, label="c")  # final — must log
+
+        # Only the final item should be logged (interval too large for others).
+        assert len(msgs) == 1
+        assert "3/3" in msgs[0]
+        assert "c" in msgs[0]
+
+    def test_respects_min_interval(self):
+        """Items before min_interval_s elapses are suppressed."""
+        from model.media_utils import ProgressLogger
+        import logging
+
+        msgs = []
+        logger = logging.getLogger("test_progress_interval")
+        logger.handlers = [logging.StreamHandler()]
+        logger.handlers[0].emit = lambda r: msgs.append(r.getMessage())
+        logger.setLevel(logging.INFO)
+
+        progress = ProgressLogger(total=100, logger=logger, min_interval_s=9999)
+        for i in range(1, 100):
+            progress.update(i)
+        # None should have been logged (interval not reached, not final).
+        assert len(msgs) == 0
+
+    def test_logs_when_interval_elapsed(self):
+        """Items after min_interval_s has elapsed are logged."""
+        from model.media_utils import ProgressLogger
+        import logging
+
+        msgs = []
+        logger = logging.getLogger("test_progress_elapsed")
+        logger.handlers = [logging.StreamHandler()]
+        logger.handlers[0].emit = lambda r: msgs.append(r.getMessage())
+        logger.setLevel(logging.INFO)
+
+        progress = ProgressLogger(total=10, logger=logger, min_interval_s=0)
+        progress.update(1, label="first")
+        progress.update(5, label="mid")
+
+        # With min_interval_s=0, both should log.
+        assert len(msgs) == 2
+        assert "1/10" in msgs[0]
+        assert "5/10" in msgs[1]
+
+    def test_finish_returns_elapsed(self):
+        """finish() logs and returns elapsed time."""
+        from model.media_utils import ProgressLogger
+        import logging
+
+        msgs = []
+        logger = logging.getLogger("test_progress_finish")
+        logger.handlers = [logging.StreamHandler()]
+        logger.handlers[0].emit = lambda r: msgs.append(r.getMessage())
+        logger.setLevel(logging.INFO)
+
+        progress = ProgressLogger(total=1, logger=logger)
+        elapsed = progress.finish("all done")
+        assert elapsed >= 0
+        assert "all done" in msgs[-1]
+
+    def test_eta_in_output(self):
+        """ETA and remaining time are shown for non-final items."""
+        from model.media_utils import ProgressLogger
+        import logging
+
+        msgs = []
+        logger = logging.getLogger("test_progress_eta")
+        logger.handlers = [logging.StreamHandler()]
+        logger.handlers[0].emit = lambda r: msgs.append(r.getMessage())
+        logger.setLevel(logging.INFO)
+
+        progress = ProgressLogger(total=100, logger=logger, min_interval_s=0)
+        # Force some elapsed time so ETA is computed.
+        progress._t0 -= 10  # pretend 10 seconds have passed
+        progress.update(50, label="halfway")
+
+        assert len(msgs) == 1
+        assert "50/100" in msgs[0]
+        assert "remaining" in msgs[0]
+        assert "ETA" in msgs[0]
+
+
+# ---------------------------------------------------------------------------
+# format_duration — human-readable time formatting
+# ---------------------------------------------------------------------------
+
+
+class TestFormatDuration:
+    """Tests for model.media_utils.format_duration()."""
+
+    def test_zero(self):
+        from model.media_utils import format_duration
+        assert format_duration(0) == "0s"
+
+    def test_seconds_only(self):
+        from model.media_utils import format_duration
+        assert format_duration(45) == "45s"
+
+    def test_minutes_and_seconds(self):
+        from model.media_utils import format_duration
+        assert format_duration(150) == "2m 30s"
+
+    def test_minutes_no_seconds(self):
+        from model.media_utils import format_duration
+        assert format_duration(120) == "2m"
+
+    def test_hours_and_minutes(self):
+        from model.media_utils import format_duration
+        assert format_duration(4980) == "1h 23m"
+
+    def test_hours_minutes_seconds(self):
+        from model.media_utils import format_duration
+        assert format_duration(4984) == "1h 23m 4s"
+
+    def test_hours_only(self):
+        from model.media_utils import format_duration
+        assert format_duration(3600) == "1h"
+
+    def test_fractional_rounds_down(self):
+        from model.media_utils import format_duration
+        assert format_duration(45.9) == "45s"
+
+    def test_negative_clamps_to_zero(self):
+        from model.media_utils import format_duration
+        assert format_duration(-5) == "0s"
