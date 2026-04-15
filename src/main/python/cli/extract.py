@@ -14,7 +14,7 @@ Usage:
 
 Directory structure (managed by the script):
     beq-dir/
-      .extract_config.json          # saved media roots (auto-created on first run)
+      extract_config.json           # saved media roots (auto-created on first run)
       beq_catalogue.json            # BEQ catalogue (auto-fetched from GitHub, freshness-checked)
       missing_ids.txt               # media files without DB ID tags (can't identify)
       media_inventory.json          # every media file with a DB ID, whether
@@ -1045,7 +1045,7 @@ def cleanup_tmp(wav_root: Path) -> int:
 # Config persistence
 # ---------------------------------------------------------------------------
 
-_CONFIG_NAME = ".extract_config.json"
+_CONFIG_NAME = "extract_config.json"
 
 
 def _load_or_prompt_config(
@@ -1066,7 +1066,7 @@ def _load_or_prompt_config(
             from spike._auto_beq_helpers import beq_dir as _bd
             default_beq = str(_bd())
         except Exception:
-            default_beq = str(Path.home() / "beqdesigner")
+            default_beq = str(Path.home() / ".config" / "beqdesigner")
         log.info("BEQ working directory not specified.")
         log.info("  Default: %s", default_beq)
         raw = input(f"BEQ working directory [{default_beq}]: ").strip()

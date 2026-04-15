@@ -95,7 +95,7 @@ def main():
         print()
 
     # Check for growth — save/load last count.
-    status_file = cache / ".status_last.json"
+    status_file = cache / "status_last.json"
     last = {}
     if status_file.exists():
         try:
