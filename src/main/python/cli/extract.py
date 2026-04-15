@@ -73,6 +73,54 @@ _SAMPLE_RATE = 1000  # Hz — coupled to BEQ analysis algorithm, not configurabl
 # ---------------------------------------------------------------------------
 
 
+def _is_media_root(path: Path) -> bool:
+    """Check if a directory looks like a media library root.
+
+    A media root contains title directories (with year tags like "(2020)")
+    or media files directly. A directory that only contains other plain
+    directories (no year tags, no media files) is likely an intermediate
+    grouping (e.g. /media/dmz/ containing library/ and kids/).
+    """
+    try:
+        for entry in os.scandir(path):
+            if entry.is_file() and any(
+                entry.name.endswith(ext) for ext in MEDIA_EXTENSIONS
+            ):
+                return True
+            if entry.is_dir() and TITLE_YEAR_RE.search(entry.name):
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def _discover_media_roots(media_dir: Path) -> list[Path]:
+    """Find media roots under a parent directory, handling nested mounts.
+
+    Directories that look like media roots (contain title dirs or media
+    files) are returned directly. Directories that don't (intermediate
+    grouping dirs like /media/dmz/) are recursed into one more level.
+
+    This handles mount layouts like::
+
+        /media/batou        → media root (contains "Avatar (2009)/")
+        /media/dmz/library  → media root (contains "Alien (1979)/")
+        /media/dmz/kids     → media root (contains "Frozen (2013)/")
+    """
+    roots: list[Path] = []
+    for child in sorted(media_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        if _is_media_root(child):
+            roots.append(child)
+        else:
+            # Not a media root — check one level deeper.
+            for grandchild in sorted(child.iterdir()):
+                if grandchild.is_dir() and _is_media_root(grandchild):
+                    roots.append(grandchild)
+    return roots
+
+
 def _human_size(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
         if abs(n) < 1024:
@@ -802,9 +850,19 @@ def discover_media_incremental(
         elif fmt_version >= 3:
             # v3+: relative paths — convert back to absolute for processing.
             raw_dirs = old_data["directories"]
+            n_unresolved = 0
+            root_names = [r.name for r in roots]
             for rel_key, dir_data in raw_dirs.items():
                 abs_key = _resolve_relative_path(rel_key, roots)
                 if abs_key is None:
+                    n_unresolved += 1
+                    if n_unresolved == 1:
+                        first_component = Path(rel_key).parts[0] if Path(rel_key).parts else "?"
+                        log.warning(
+                            "inventory path not resolved: %r "
+                            "(first component %r does not match any root name: %s)",
+                            rel_key, first_component, root_names,
+                        )
                     continue
                 dir_data_copy = dict(dir_data)
                 if "entries" in dir_data_copy:
@@ -817,6 +875,12 @@ def discover_media_incremental(
                         for p in dir_data_copy["missing_ids"]
                     ]
                 cached_dirs[abs_key] = dir_data_copy
+            if n_unresolved:
+                log.warning(
+                    "%d of %d cached directories could not be resolved "
+                    "— media root names may differ between machines",
+                    n_unresolved, len(raw_dirs),
+                )
             log.info("loaded cached inventory (v%d, relative paths): %d directories",
                      fmt_version, len(cached_dirs))
         else:
@@ -1268,8 +1332,10 @@ def _load_or_prompt_config(
     config_path = local_config_dir / _CONFIG_NAME
 
     # Backward compat: migrate from old location (shared dir) if present.
+    # Skip in auto-discovery mode (Docker) — config is rebuilt every run.
     old_config_path = beq_dir / _CONFIG_NAME
-    if not config_path.exists() and old_config_path.exists():
+    auto_discovery = bool(os.environ.get("BEQ_MEDIA_DIR"))
+    if not config_path.exists() and old_config_path.exists() and not auto_discovery:
         log.info("migrating %s from %s to %s", _CONFIG_NAME, old_config_path, config_path)
         import shutil
         shutil.copy2(old_config_path, config_path)
@@ -1288,10 +1354,10 @@ def _load_or_prompt_config(
     if media_dir_env and not media_roots_arg:
         media_dir = Path(media_dir_env)
         if media_dir.is_dir():
-            media_roots = sorted(
-                p for p in media_dir.iterdir() if p.is_dir()
-            )
+            media_roots = _discover_media_roots(media_dir)
             log.info("auto-discovered %d media roots under %s", len(media_roots), media_dir)
+            for r in media_roots:
+                log.info("  media root: %s", r)
 
     if media_roots_arg:
         media_roots = [p.expanduser().resolve() for p in media_roots_arg]
