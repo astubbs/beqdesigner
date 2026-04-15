@@ -1061,7 +1061,16 @@ def _load_or_prompt_config(
                 beq_dir = candidate
                 break
     if beq_dir is None:
-        beq_dir = Path(input("BEQ working directory (will be created if needed): ").strip())
+        # Try to get default from shared config, fall back to ~/beqdesigner.
+        try:
+            from spike._auto_beq_helpers import beq_dir as _bd
+            default_beq = str(_bd())
+        except Exception:
+            default_beq = str(Path.home() / "beqdesigner")
+        log.info("BEQ working directory not specified.")
+        log.info("  Default: %s", default_beq)
+        raw = input(f"BEQ working directory [{default_beq}]: ").strip()
+        beq_dir = Path(raw) if raw else Path(default_beq)
 
     beq_dir = beq_dir.expanduser().resolve()
     beq_dir.mkdir(parents=True, exist_ok=True)

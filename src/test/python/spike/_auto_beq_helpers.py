@@ -832,12 +832,33 @@ def ensure_analysis_reports_current(
 
 
 def beq_dir() -> Path:
-    """Return the BEQ working directory — parent of the WAV cache.
+    """Return the BEQ working directory.
 
-    Holds the wav-cache, beq_catalogue.json, media_inventory.json, and
-    production_model.joblib.  Derived from ``wav_cache_dir().parent`` so
-    it honours all the same env var / settings.json resolution rules.
+    Holds wav-cache/, beq_catalogue.json, media_inventory.json, and
+    production_model.joblib.
+
+    Resolution order:
+    1. ``BEQ_DIR`` env var
+    2. ``beq_dir`` in ``~/.config/beqdesigner/settings.json``
+    3. Derived from ``wav_cache_dir().parent``
     """
+    raw = os.environ.get("BEQ_DIR")
+    if raw:
+        p = Path(raw).expanduser()
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+    cfg_path = Path.home() / ".config" / "beqdesigner" / "settings.json"
+    if cfg_path.exists():
+        try:
+            data = json.loads(cfg_path.read_text())
+            raw = data.get("beq_dir")
+            if raw:
+                p = Path(raw).expanduser()
+                p.mkdir(parents=True, exist_ok=True)
+                return p
+        except Exception:
+            pass
+    # Fall back to wav_cache_dir parent.
     return wav_cache_dir().parent
 
 

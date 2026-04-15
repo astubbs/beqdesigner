@@ -23,6 +23,8 @@ RUN chmod +x bin/beq-designer
 ENV PYTHONPATH=/app/src/main/python:/app/src/test/python
 # Tell bin/beq-designer we're already in the venv (no poetry re-exec).
 ENV VIRTUAL_ENV=/usr/local
+# Default BEQ working directory (matches compose volume mount).
+ENV BEQ_DIR=/beq
 
 ENTRYPOINT ["python3", "bin/beq-designer"]
 CMD ["--help"]
