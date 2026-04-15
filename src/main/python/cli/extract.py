@@ -13,16 +13,19 @@ Usage:
     bin/beq-designer extract                              # uses saved config
 
 Directory structure (managed by the script):
-    beq-dir/
-      extract_config.json           # saved media roots (auto-created on first run)
+    beq-dir/                        # shared directory (e.g. NAS mount)
       beq_catalogue.json            # BEQ catalogue (auto-fetched from GitHub, freshness-checked)
       missing_ids.txt               # media files without DB ID tags (can't identify)
       media_inventory.json          # every media file with a DB ID, whether
                                     # catalogue-matched or not (used by the
-                                    # acquisition recommender to dedupe)
+                                    # acquisition recommender to dedupe).
+                                    # Paths are stored *relative* to media roots
+                                    # for portability across machines.
       wav-cache/
         AL/Alien (1979) [tmdb-348].lfe-1000hz.wav
         86/86 - Eighty Six [tvdb-378609]/Season 01/S01E02.lfe-1000hz.wav
+    ~/.config/beqdesigner/          # local config dir (machine-specific)
+      extract_config.json           # saved media roots (auto-created on first run)
 
 Only media with a matching BEQ catalogue entry is extracted. The catalogue
 is fetched from GitHub and cached locally — re-downloaded only when the
@@ -107,12 +110,21 @@ def fetch_catalogue(beq_dir: Path) -> list[dict]:
 
     cache_path = beq_dir / "beq_catalogue.json"
 
+    _CATALOGUE_TTL = 86400  # 24 hours
+
     req = urllib.request.Request(CATALOGUE_URL)
     if cache_path.exists():
         local_mtime = cache_path.stat().st_mtime
+        age_hours = (time.time() - local_mtime) / 3600
+        if age_hours < _CATALOGUE_TTL / 3600:
+            log.info("catalogue cached (%.0fh old, <24h) — skipping freshness check", age_hours)
+            data = cache_path.read_bytes()
+            catalogue = json.loads(data)
+            log.info("catalogue loaded: %d entries (%s)", len(catalogue), _human_size(len(data)))
+            return catalogue
         mtime_str = email.utils.formatdate(local_mtime, usegmt=True)
         req.add_header("If-Modified-Since", mtime_str)
-        log.info("checking catalogue freshness (cached: %s)...", mtime_str)
+        log.info("checking catalogue freshness (cached: %s, %.0fh old)...", mtime_str, age_hours)
 
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
@@ -435,6 +447,87 @@ def _scan_single_directory(
 
 
 
+def _strip_root_prefix(abs_path: str, roots: list[Path]) -> str:
+    """Strip the media root's *parent* prefix from an absolute path.
+
+    Keeps the root directory's own name as a prefix so that multiple roots
+    don't collide.  For example, with root ``/media/Movies``:
+    - ``/media/Movies/Dune/Dune.mkv`` → ``Movies/Dune/Dune.mkv``
+    - ``/media/Movies`` → ``Movies``
+
+    If the path doesn't start with any root, returns it unchanged (defensive).
+    """
+    for root in roots:
+        root_str = str(root)
+        root_parent_str = str(root.parent)
+        if abs_path.startswith(root_str + "/"):
+            return abs_path[len(root_parent_str) + 1:]
+        if abs_path == root_str:
+            return root.name
+    return abs_path
+
+
+def _resolve_relative_path(rel_path: str, roots: list[Path]) -> str | None:
+    """Resolve a relative path to an absolute path using root names.
+
+    Relative paths start with the root's basename (e.g. ``media-library/Movies/...``).
+    Match the first component against each root's name to reconstruct the
+    absolute path. Does NOT stat the filesystem — just string manipulation.
+
+    Returns the absolute path string, or None if no root matches.
+    """
+    rel = Path(rel_path)
+    first_component = rel.parts[0] if rel.parts else ""
+
+    for root in roots:
+        if root.name == first_component:
+            remaining = str(rel.relative_to(first_component)) if len(rel.parts) > 1 else ""
+            if remaining and remaining != ".":
+                return str(root / remaining)
+            return str(root)
+
+    # Fallback: try each root with the full relative path (no stat).
+    if roots:
+        return str(roots[0].parent / rel_path)
+
+    # No roots — can't resolve.
+    if roots:
+        for root in roots:
+            if root.name == first_component:
+                remaining = str(rel.relative_to(first_component)) if len(rel.parts) > 1 else ""
+                if remaining and remaining != ".":
+                    return str(root / remaining)
+                return str(root)
+        return str(roots[0].parent / rel_path)
+    return None
+
+
+def _make_entries_relative(entries: list[dict], roots: list[Path]) -> list[dict]:
+    """Convert absolute paths in entries to relative paths."""
+    result = []
+    for entry in entries:
+        entry_copy = dict(entry)
+        path_str = str(entry_copy.get("path", ""))
+        entry_copy["path"] = _strip_root_prefix(path_str, roots)
+        result.append(entry_copy)
+    return result
+
+
+def _make_entries_absolute(entries: list[dict], roots: list[Path]) -> list[dict]:
+    """Convert relative paths in entries back to absolute paths."""
+    result = []
+    for entry in entries:
+        entry_copy = dict(entry)
+        path_str = entry_copy.get("path", "")
+        # If already absolute, leave it (backward compat with v2 inventories).
+        if not os.path.isabs(path_str):
+            resolved = _resolve_relative_path(path_str, roots)
+            if resolved:
+                entry_copy["path"] = resolved
+        result.append(entry_copy)
+    return result
+
+
 def _save_inventory(
     inventory_path: Path,
     directories: dict,
@@ -442,20 +535,43 @@ def _save_inventory(
     missing_ids: list,
     roots: list[Path],
 ) -> None:
-    """Write the media inventory to disk."""
+    """Write the media inventory to disk.
+
+    Paths are stored relative to media roots for portability across machines
+    with different mount points (format_version 3).
+    """
+    # Make entries relative for storage.
+    relative_media = _make_entries_relative(all_with_ids, roots)
+    relative_missing = [_strip_root_prefix(p, roots) for p in missing_ids]
+
+    # Make directory entries relative too.
+    relative_dirs: dict = {}
+    for dir_key, dir_data in directories.items():
+        rel_key = _strip_root_prefix(dir_key, roots)
+        dir_data_copy = dict(dir_data)
+        if "entries" in dir_data_copy:
+            dir_data_copy["entries"] = _make_entries_relative(
+                dir_data_copy["entries"], roots,
+            )
+        if "missing_ids" in dir_data_copy:
+            dir_data_copy["missing_ids"] = [
+                _strip_root_prefix(p, roots) for p in dir_data_copy["missing_ids"]
+            ]
+        relative_dirs[rel_key] = dir_data_copy
+
     inventory_data = {
-        "format_version": 2,
+        "format_version": 3,
         "scanned_at": int(time.time()),
         "media_roots": [str(r) for r in roots],
-        "directories": directories,
-        "n_total_with_ids": len(all_with_ids),
-        "n_catalogue_matched": sum(1 for m in all_with_ids if m.get("has_catalogue")),
-        "n_missing_ids": len(missing_ids),
-        "media": all_with_ids,
-        "missing_ids": sorted(set(missing_ids)),
+        "directories": relative_dirs,
+        "n_total_with_ids": len(relative_media),
+        "n_catalogue_matched": sum(1 for m in relative_media if m.get("has_catalogue")),
+        "n_missing_ids": len(relative_missing),
+        "media": relative_media,
+        "missing_ids": sorted(set(relative_missing)),
     }
     log.info("saving inventory (%d files, %d dirs) to %s ...",
-             len(all_with_ids), len(directories), inventory_path)
+             len(relative_media), len(relative_dirs), inventory_path)
     inventory_path.write_text(json.dumps(inventory_data, indent=2) + "\n")
 
 
@@ -580,20 +696,49 @@ def discover_media_incremental(
     # Step 1: Load existing inventory (if present).
     cached_dirs: dict[str, dict] = {}
     if inventory_path.exists():
-        log.info("loading cached inventory from %s ...", inventory_path)
+        inv_size = inventory_path.stat().st_size
+        log.info("reading cached inventory (%s, %.1f MB) ...",
+                 inventory_path, inv_size / 1e6)
+        t0 = time.time()
         try:
-            old_data = json.loads(inventory_path.read_text())
+            raw = inventory_path.read_bytes()
+            log.info("read in %.1fs, parsing JSON...", time.time() - t0)
+            old_data = json.loads(raw)
+            log.info("inventory parsed in %.1fs", time.time() - t0)
         except (json.JSONDecodeError, OSError) as exc:
             log.warning("failed to parse inventory %s: %s — rescanning all", inventory_path, exc)
             old_data = {}
 
         # Step 2: Check format — if old format, discard and rescan.
-        if "directories" in old_data:
-            cached_dirs = old_data["directories"]
-            log.info("loaded cached inventory: %d directories", len(cached_dirs))
-        else:
+        fmt_version = old_data.get("format_version", 1)
+        if "directories" not in old_data:
             log.info("old inventory format — discarding, will rescan")
             cached_dirs = {}
+        elif fmt_version >= 3:
+            # v3+: relative paths — convert back to absolute for processing.
+            raw_dirs = old_data["directories"]
+            for rel_key, dir_data in raw_dirs.items():
+                abs_key = _resolve_relative_path(rel_key, roots)
+                if abs_key is None:
+                    continue
+                dir_data_copy = dict(dir_data)
+                if "entries" in dir_data_copy:
+                    dir_data_copy["entries"] = _make_entries_absolute(
+                        dir_data_copy["entries"], roots,
+                    )
+                if "missing_ids" in dir_data_copy:
+                    dir_data_copy["missing_ids"] = [
+                        _resolve_relative_path(p, roots) or p
+                        for p in dir_data_copy["missing_ids"]
+                    ]
+                cached_dirs[abs_key] = dir_data_copy
+            log.info("loaded cached inventory (v%d, relative paths): %d directories",
+                     fmt_version, len(cached_dirs))
+        else:
+            # v2: absolute paths — use as-is.
+            cached_dirs = old_data["directories"]
+            log.info("loaded cached inventory (v%d): %d directories",
+                     fmt_version, len(cached_dirs))
     else:
         log.info("no cached inventory at %s — full scan", inventory_path)
 
@@ -712,7 +857,7 @@ def discover_media_incremental(
                 dirpath = Path(dir_key)
                 if not dirpath.exists():
                     continue
-                log.info("  rescanning: %s", dirpath.name)
+                log.info("  rescanning: %s", dirpath)
                 try:
                     current_mtime = dirpath.stat().st_mtime
                 except OSError:
@@ -1052,14 +1197,16 @@ def _load_or_prompt_config(
     beq_dir_arg: Path | None,
     media_roots_arg: list[Path] | None,
 ) -> dict:
-    """Load saved config, merge with CLI args, prompt if missing, save."""
+    """Load saved config, merge with CLI args, prompt if missing, save.
+
+    extract_config.json is stored in the *local* config directory
+    (~/.config/beqdesigner/) because it contains machine-specific paths
+    (media roots). The shared BEQ directory (wav-cache, catalogue, inventory)
+    is separate and portable across machines.
+    """
+    from spike._auto_beq_helpers import beq_config_dir
+
     beq_dir = beq_dir_arg
-    if beq_dir is None:
-        for candidate in [Path.cwd(), Path.home() / "beqdesigner"]:
-            cfg = candidate / _CONFIG_NAME
-            if cfg.exists():
-                beq_dir = candidate
-                break
     if beq_dir is None:
         # Try to get default from shared config, fall back to ~/beqdesigner.
         try:
@@ -1078,7 +1225,18 @@ def _load_or_prompt_config(
     wav_root = beq_dir / "wav-cache"
     wav_root.mkdir(parents=True, exist_ok=True)
 
-    config_path = beq_dir / _CONFIG_NAME
+    # Config lives in local config dir (machine-specific), not in the
+    # shared BEQ directory.
+    local_config_dir = beq_config_dir()
+    config_path = local_config_dir / _CONFIG_NAME
+
+    # Backward compat: migrate from old location (shared dir) if present.
+    old_config_path = beq_dir / _CONFIG_NAME
+    if not config_path.exists() and old_config_path.exists():
+        log.info("migrating %s from %s to %s", _CONFIG_NAME, old_config_path, config_path)
+        import shutil
+        shutil.copy2(old_config_path, config_path)
+
     saved: dict = {}
     if config_path.exists():
         try:
@@ -1088,8 +1246,20 @@ def _load_or_prompt_config(
             pass
 
     media_roots: list[Path] = []
+    # Auto-discover from --media-dir if provided (e.g. /media in Docker).
+    media_dir_env = os.environ.get("BEQ_MEDIA_DIR")
+    if media_dir_env and not media_roots_arg:
+        media_dir = Path(media_dir_env)
+        if media_dir.is_dir():
+            media_roots = sorted(
+                p for p in media_dir.iterdir() if p.is_dir()
+            )
+            log.info("auto-discovered %d media roots under %s", len(media_roots), media_dir)
+
     if media_roots_arg:
         media_roots = [p.expanduser().resolve() for p in media_roots_arg]
+    elif media_roots:
+        pass  # already set from auto-discovery above
     elif saved.get("media_roots"):
         media_roots = [Path(p) for p in saved["media_roots"]]
         log.info("using %d saved media root(s)", len(media_roots))
@@ -1651,10 +1821,11 @@ def _run_extraction_phase(
 
         log.info("%s Extracting: %s (%s)%s [%s] — %.0f MB%s",
                  prefix, title, year, ep_label, media_id, size_mb, est_str)
-        log.info("  source: %s", m["path"])
+        media_path = Path(m["path"]) if not isinstance(m["path"], Path) else m["path"]
+        log.info("  source: %s", media_path)
 
         t0 = time.time()
-        ok = extract_one(m["path"], wav)
+        ok = extract_one(media_path, wav)
         elapsed = time.time() - t0
 
         if ok:

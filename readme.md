@@ -247,7 +247,7 @@ poetry install
 # 2. Configure your audio cache dir + library roots
 #    Edit ~/.config/beqdesigner/settings.json:
 #    {
-#      "audio_cache_dir": "~/Downloads/beqdesigner/audio-cache",
+#      "shared_beq_dir": "/path/to/beqdesigner",
 #      "library_roots": ["/path/to/your/Movies", "/path/to/your/TV"]
 #    }
 

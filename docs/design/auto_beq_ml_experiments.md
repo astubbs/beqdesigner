@@ -329,7 +329,7 @@ and new users get the metadata for free without hitting TMDb independently.
   Imports from `model.media_constants` + `model.wav_integrity` (stdlib-only, no numpy).
 - Atomic writes: `.tmp` → rename on success + `-f wav` for format, prevents corruption
 - Sample rate 1000 Hz hardcoded (coupled to BEQ analysis algorithm)
-- Config persisted at `{beq-dir}/.extract_config.json` — no args needed after first run
+- Config persisted at `~/.config/beqdesigner/extract_config.json` (local, machine-specific) — no args needed after first run
 - Self-hash logged at startup for version tracking on remote servers
 - Breadth-first extraction: alternates movies + TV, one episode per show per round
 

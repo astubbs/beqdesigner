@@ -23,8 +23,12 @@ RUN chmod +x bin/beq-designer
 ENV PYTHONPATH=/app/src/main/python:/app/src/test/python
 # Tell bin/beq-designer we're already in the venv (no poetry re-exec).
 ENV VIRTUAL_ENV=/usr/local
-# Default BEQ working directory (matches compose volume mount).
-ENV BEQ_DIR=/beq
+# Default BEQ shared working directory (matches compose volume mount).
+ENV BEQ_SHARED_DIR=/beq-shared
+# Backward compat alias.
+ENV BEQ_DIR=/beq-shared
+# Auto-discover media roots under /media (all mounted volumes).
+ENV BEQ_MEDIA_DIR=/media
 
 ENTRYPOINT ["python3", "bin/beq-designer"]
 CMD ["--help"]

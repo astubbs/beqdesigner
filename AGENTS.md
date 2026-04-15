@@ -58,7 +58,12 @@ Use the single shared implementations in `spike/_auto_beq_helpers.py`:
 - **Configuration**: `load_settings()` / `save_settings()` — reads/writes
   `~/.config/beqdesigner/settings.json`. Never create separate config files.
 - **Cache directories**: `audio_cache_dir()`, `wav_cache_dir()`,
-  `beq_config_dir()` — single source of truth for paths.
+  `beq_config_dir()`, `beq_dir()` — single source of truth for paths.
+  `beq_dir()` returns the *shared* (portable) directory; `beq_config_dir()`
+  returns the *local* machine-specific config directory (`~/.config/beqdesigner/`).
+  Machine-specific config (like `extract_config.json` with media root paths)
+  lives in the local dir; portable data (wav-cache, catalogue, inventory) lives
+  in the shared dir.
 
 If a shared function is missing a feature you need, extend it rather
 than writing a parallel implementation.
@@ -292,6 +297,8 @@ Markers are registered in `pyproject.toml` under `[tool.pytest.ini_options]`. Ad
 | `--verbose` / `SPIKE_VERBOSE=1` | enables `-s` (no capture) | off |
 | `AUTO_BEQ_MODEL_PATH` | path to production model file | auto-detected |
 | `SPIKE_MARKERS` | override marker filter (advanced) | `not integration and not experiment` |
+| `BEQ_SHARED_DIR` | shared BEQ directory (wav-cache, catalogue, inventory) | from `shared_beq_dir` in settings.json |
+| `BEQ_DIR` | **deprecated** — alias for `BEQ_SHARED_DIR` | — |
 
 ```bash
 # All spike tests

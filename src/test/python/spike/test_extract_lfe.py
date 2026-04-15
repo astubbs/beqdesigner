@@ -384,7 +384,7 @@ def test_incremental_discovery_fresh_scan(tmp_path, _bypass_min_size):
     # Inventory file is written.
     assert inventory_path.exists()
     inv = json.loads(inventory_path.read_text())
-    assert inv["format_version"] == 2
+    assert inv["format_version"] == 3
     assert "directories" in inv
     # Backward-compatible flat arrays.
     assert len(inv["media"]) == 1
@@ -420,7 +420,7 @@ def test_incremental_discovery_cached_rerun(tmp_path, _bypass_min_size):
     assert results[0]["title"] == "Dune"
     # The inventory is updated (new scanned_at) but content is same.
     second_inv = json.loads(inventory_path.read_text())
-    assert second_inv["format_version"] == 2
+    assert second_inv["format_version"] == 3
     assert len(second_inv["media"]) == 1
 
 
@@ -547,7 +547,7 @@ def test_incremental_discovery_v1_discarded_and_rescanned(tmp_path, _bypass_min_
     assert all_ids[0]["title"] == "Dune"
     # Output is now v2 format.
     inv = json.loads(inventory_path.read_text())
-    assert inv["format_version"] == 2
+    assert inv["format_version"] == 3
     assert "directories" in inv
 
 
@@ -815,5 +815,262 @@ def test_cache_path_numeric_title():
     root = Path("/cache")
     result = extract_mod_static.cache_path(root, "2001", "1968", "tmdb-62")
     assert result == root / "20" / "2001 (1968) [tmdb-62].lfe-1000hz.wav"
+
+
+# ---------------------------------------------------------------------------
+# Relative path helpers — portability across machines
+# ---------------------------------------------------------------------------
+
+
+def test_strip_root_prefix_basic():
+    """Strips the root's parent prefix, keeping root name as first component."""
+    roots = [Path("/media/Movies"), Path("/media/TV")]
+    assert extract_mod_static._strip_root_prefix(
+        "/media/Movies/Dune (2021)/Dune.mkv", roots,
+    ) == "Movies/Dune (2021)/Dune.mkv"
+
+
+def test_strip_root_prefix_root_itself():
+    """Root path becomes just the root's basename."""
+    roots = [Path("/media/Movies")]
+    assert extract_mod_static._strip_root_prefix(
+        "/media/Movies", roots,
+    ) == "Movies"
+
+
+def test_strip_root_prefix_second_root():
+    """Strips prefix from a path under the second root."""
+    roots = [Path("/media/Movies"), Path("/media/TV")]
+    assert extract_mod_static._strip_root_prefix(
+        "/media/TV/Show/S01E01.mkv", roots,
+    ) == "TV/Show/S01E01.mkv"
+
+
+def test_strip_root_prefix_no_match():
+    """Returns path unchanged when no root matches."""
+    roots = [Path("/media/Movies")]
+    path = "/other/path/file.mkv"
+    assert extract_mod_static._strip_root_prefix(path, roots) == path
+
+
+def test_resolve_relative_path_finds_existing(tmp_path):
+    """Resolves a relative path by matching root basename."""
+    root_movies = tmp_path / "Movies"
+    root_movies.mkdir()
+    target = root_movies / "Dune" / "Dune.mkv"
+    target.parent.mkdir(parents=True)
+    target.touch()
+
+    result = extract_mod_static._resolve_relative_path(
+        "Movies/Dune/Dune.mkv", [root_movies],
+    )
+    assert result == str(root_movies / "Dune" / "Dune.mkv")
+
+
+def test_resolve_relative_path_missing_returns_best_guess(tmp_path):
+    """When the path doesn't exist under any root, returns best guess."""
+    root_movies = tmp_path / "Movies"
+    root_movies.mkdir()
+    result = extract_mod_static._resolve_relative_path(
+        "Movies/Missing/file.mkv", [root_movies],
+    )
+    assert result == str(root_movies / "Missing" / "file.mkv")
+
+
+def test_inventory_stores_relative_paths(tmp_path, _bypass_min_size):
+    """Inventory v3 stores paths relative to media roots."""
+    lib = tmp_path / "library"
+    movie_dir = lib / "Dune (2021) [tmdb-438631]"
+    movie_dir.mkdir(parents=True)
+    (movie_dir / "Dune (2021) [tmdb-438631].mkv").touch()
+
+    cat_index = _make_catalogue_index([
+        {"title": "Dune", "year": "2021", "theMovieDB": "438631",
+         "filters": [{"gain": 4.0}]},
+    ])
+
+    inventory_path = tmp_path / "media_inventory.json"
+    extract_mod_static.discover_media_incremental(
+        [lib], cat_index, inventory_path,
+    )
+
+    inv = json.loads(inventory_path.read_text())
+    assert inv["format_version"] == 3
+
+    # Directory keys should be relative, not absolute.
+    for dir_key in inv["directories"]:
+        assert not os.path.isabs(dir_key), f"directory key is absolute: {dir_key}"
+
+    # Media entry paths should be relative.
+    for entry in inv["media"]:
+        assert not os.path.isabs(entry["path"]), f"media path is absolute: {entry['path']}"
+
+
+def test_inventory_relative_paths_resolve_on_reload(tmp_path, _bypass_min_size):
+    """Relative paths in a v3 inventory resolve correctly on reload."""
+    lib = tmp_path / "library"
+    movie_dir = lib / "Dune (2021) [tmdb-438631]"
+    movie_dir.mkdir(parents=True)
+    (movie_dir / "Dune (2021) [tmdb-438631].mkv").touch()
+
+    cat_index = _make_catalogue_index([
+        {"title": "Dune", "year": "2021", "theMovieDB": "438631",
+         "filters": [{"gain": 4.0}]},
+    ])
+
+    inventory_path = tmp_path / "media_inventory.json"
+
+    # First scan.
+    extract_mod_static.discover_media_incremental(
+        [lib], cat_index, inventory_path,
+    )
+
+    # Second scan — should reload from cache and resolve paths.
+    results, _, all_ids, _ = extract_mod_static.discover_media_incremental(
+        [lib], cat_index, inventory_path,
+    )
+
+    assert len(results) == 1
+    assert results[0]["title"] == "Dune"
+    # The returned entry paths should be absolute (resolved for processing).
+    for entry in all_ids:
+        assert os.path.isabs(entry["path"]), f"returned path should be absolute: {entry['path']}"
+
+
+def test_inventory_relative_paths_with_different_root(tmp_path, _bypass_min_size):
+    """Inventory relative paths work when the root mount point changes."""
+    # First scan under /tmp/.../old_mount/library.
+    old_mount = tmp_path / "old_mount"
+    lib_old = old_mount / "library"
+    movie_dir = lib_old / "Dune (2021) [tmdb-438631]"
+    movie_dir.mkdir(parents=True)
+    (movie_dir / "Dune (2021) [tmdb-438631].mkv").touch()
+
+    cat_index = _make_catalogue_index([
+        {"title": "Dune", "year": "2021", "theMovieDB": "438631",
+         "filters": [{"gain": 4.0}]},
+    ])
+
+    inventory_path = tmp_path / "media_inventory.json"
+    extract_mod_static.discover_media_incremental(
+        [lib_old], cat_index, inventory_path,
+    )
+
+    # "Move" library to a different mount point by copying.
+    import shutil
+    new_mount = tmp_path / "new_mount"
+    new_mount.mkdir()
+    lib_new = new_mount / "library"
+    shutil.copytree(lib_old, lib_new)
+
+    # Reload inventory with new root — should resolve relative paths.
+    results, _, all_ids, _ = extract_mod_static.discover_media_incremental(
+        [lib_new], cat_index, inventory_path,
+    )
+
+    assert len(results) == 1
+    # The path should be under the new root, not the old one.
+    assert str(lib_new) in all_ids[0]["path"], (
+        f"Expected path under {lib_new}, got {all_ids[0]['path']}"
+    )
+
+
+def test_extract_config_uses_local_config_dir(tmp_path, monkeypatch):
+    """extract_config.json is loaded from ~/.config/beqdesigner/, not shared dir."""
+    from spike._auto_beq_helpers import beq_config_dir as _real_beq_config_dir
+
+    local_config = tmp_path / "local_config"
+    local_config.mkdir()
+
+    # Write extract_config.json in local config dir.
+    config = {"media_roots": ["/test/media"]}
+    (local_config / "extract_config.json").write_text(json.dumps(config))
+
+    # Patch beq_config_dir to return our test dir.
+    monkeypatch.setattr(
+        "spike._auto_beq_helpers.beq_config_dir",
+        lambda: local_config,
+    )
+
+    beq_dir = tmp_path / "shared_beq"
+    beq_dir.mkdir()
+
+    # Should NOT look in beq_dir for extract_config.json.
+    result = extract_mod_static._load_or_prompt_config(beq_dir, None)
+    assert result["media_roots"] == [Path("/test/media")]
+
+
+# ---------------------------------------------------------------------------
+# beq_dir() — resolution order tests
+# ---------------------------------------------------------------------------
+
+
+def test_beq_dir_resolves_from_BEQ_SHARED_DIR(tmp_path, monkeypatch):
+    """BEQ_SHARED_DIR env var is the primary resolution source."""
+    from spike import _auto_beq_helpers as helpers
+    target = tmp_path / "shared"
+    target.mkdir()
+    monkeypatch.setenv("BEQ_SHARED_DIR", str(target))
+    # Clear BEQ_DIR to avoid interference.
+    monkeypatch.delenv("BEQ_DIR", raising=False)
+    assert helpers.beq_dir() == target
+
+
+def test_beq_dir_resolves_from_shared_beq_dir_setting(tmp_path, monkeypatch):
+    """shared_beq_dir in settings.json is the secondary resolution source."""
+    from spike import _auto_beq_helpers as helpers
+    monkeypatch.delenv("BEQ_SHARED_DIR", raising=False)
+    monkeypatch.delenv("BEQ_DIR", raising=False)
+
+    target = tmp_path / "shared"
+    target.mkdir()
+
+    cfg_dir = tmp_path / "config"
+    cfg_dir.mkdir()
+    settings = {"shared_beq_dir": str(target)}
+    (cfg_dir / "settings.json").write_text(json.dumps(settings))
+
+    # Patch Path.home to point to our tmp config.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".config" / "beqdesigner").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".config" / "beqdesigner" / "settings.json").write_text(
+        json.dumps(settings)
+    )
+
+    assert helpers.beq_dir() == target
+
+
+def test_beq_dir_falls_back_to_BEQ_DIR(tmp_path, monkeypatch):
+    """BEQ_DIR env var is used as backward-compatible fallback."""
+    from spike import _auto_beq_helpers as helpers
+    target = tmp_path / "old_beq"
+    target.mkdir()
+    monkeypatch.delenv("BEQ_SHARED_DIR", raising=False)
+    monkeypatch.setenv("BEQ_DIR", str(target))
+    # Isolate from real settings.json which may have shared_beq_dir.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".config" / "beqdesigner").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".config" / "beqdesigner" / "settings.json").write_text("{}")
+    assert helpers.beq_dir() == target
+
+
+def test_beq_dir_falls_back_to_audio_cache_dir_parent(tmp_path, monkeypatch):
+    """audio_cache_dir setting is used as backward compat — parent of wav-cache."""
+    from spike import _auto_beq_helpers as helpers
+    monkeypatch.delenv("BEQ_SHARED_DIR", raising=False)
+    monkeypatch.delenv("BEQ_DIR", raising=False)
+
+    parent = tmp_path / "beq_parent"
+    wav_cache = parent / "wav-cache"
+    wav_cache.mkdir(parents=True)
+
+    # Patch Path.home to use our test config.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    cfg_dir = tmp_path / ".config" / "beqdesigner"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    settings = {"audio_cache_dir": str(wav_cache)}
+    (cfg_dir / "settings.json").write_text(json.dumps(settings))
+
+    assert helpers.beq_dir() == parent
 
 
