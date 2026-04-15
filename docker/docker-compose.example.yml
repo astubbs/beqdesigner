@@ -32,6 +32,8 @@ services:
 
       # Media libraries (read-only). Mount under /media/ — each subdirectory
       # becomes a media root automatically. Add or remove as needed.
+      # IMPORTANT: keep mount names flat (no nesting like /media/a/b).
+      # Auto-discovery only checks one level under /media/.
       - "/path/to/your/Movies:/media/Movies:ro"
       - "/path/to/your/TV:/media/TV:ro"
       - "/path/to/your/Anime Movies:/media/Anime_Movies:ro"

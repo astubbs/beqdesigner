@@ -1074,66 +1074,6 @@ def test_beq_dir_falls_back_to_audio_cache_dir_parent(tmp_path, monkeypatch):
     assert helpers.beq_dir() == parent
 
 
-# ---------------------------------------------------------------------------
-# _discover_media_roots — nested mount detection
-# ---------------------------------------------------------------------------
-
-
-class TestDiscoverMediaRoots:
-    """Tests for cli.extract._discover_media_roots()."""
-
-    def test_flat_roots(self, tmp_path):
-        """Direct media roots under parent dir."""
-        from cli.extract import _discover_media_roots
-
-        r1 = tmp_path / "Movies"
-        r1.mkdir()
-        (r1 / "Avatar (2009)").mkdir()
-        r2 = tmp_path / "TV"
-        r2.mkdir()
-        (r2 / "Breaking Bad (2008)").mkdir()
-        result = _discover_media_roots(tmp_path)
-        assert sorted(result) == sorted([r1, r2])
-
-    def test_nested_roots(self, tmp_path):
-        """Intermediate grouping dir with media roots one level deeper."""
-        from cli.extract import _discover_media_roots
-
-        # /media/dmz/library and /media/dmz/kids
-        dmz = tmp_path / "dmz"
-        lib = dmz / "library"
-        lib.mkdir(parents=True)
-        (lib / "Alien (1979)").mkdir()
-        kids = dmz / "kids"
-        kids.mkdir()
-        (kids / "Frozen (2013)").mkdir()
-        result = _discover_media_roots(tmp_path)
-        assert sorted(result) == sorted([lib, kids])
-
-    def test_mixed_flat_and_nested(self, tmp_path):
-        """Some roots are direct, some are nested."""
-        from cli.extract import _discover_media_roots
-
-        # Direct root
-        batou = tmp_path / "batou"
-        batou.mkdir()
-        (batou / "Dune (2021)").mkdir()
-        # Nested roots
-        dmz = tmp_path / "dmz"
-        lib = dmz / "library"
-        lib.mkdir(parents=True)
-        (lib / "Alien (1979)").mkdir()
-        result = _discover_media_roots(tmp_path)
-        assert sorted(result) == sorted([batou, lib])
-
-    def test_empty_dir_skipped(self, tmp_path):
-        """Empty directories are not treated as media roots."""
-        from cli.extract import _discover_media_roots
-
-        (tmp_path / "empty").mkdir()
-        result = _discover_media_roots(tmp_path)
-        assert result == []
-
 
 # ---------------------------------------------------------------------------
 # find_media_dirs — adaptive depth detection

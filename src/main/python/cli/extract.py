@@ -73,53 +73,6 @@ _SAMPLE_RATE = 1000  # Hz — coupled to BEQ analysis algorithm, not configurabl
 # ---------------------------------------------------------------------------
 
 
-def _is_media_root(path: Path) -> bool:
-    """Check if a directory looks like a media library root.
-
-    A media root contains title directories (with year tags like "(2020)")
-    or media files directly. A directory that only contains other plain
-    directories (no year tags, no media files) is likely an intermediate
-    grouping (e.g. /media/dmz/ containing library/ and kids/).
-    """
-    try:
-        for entry in os.scandir(path):
-            if entry.is_file() and any(
-                entry.name.endswith(ext) for ext in MEDIA_EXTENSIONS
-            ):
-                return True
-            if entry.is_dir() and TITLE_YEAR_RE.search(entry.name):
-                return True
-    except OSError:
-        pass
-    return False
-
-
-def _discover_media_roots(media_dir: Path) -> list[Path]:
-    """Find media roots under a parent directory, handling nested mounts.
-
-    Directories that look like media roots (contain title dirs or media
-    files) are returned directly. Directories that don't (intermediate
-    grouping dirs like /media/dmz/) are recursed into one more level.
-
-    This handles mount layouts like::
-
-        /media/batou        → media root (contains "Avatar (2009)/")
-        /media/dmz/library  → media root (contains "Alien (1979)/")
-        /media/dmz/kids     → media root (contains "Frozen (2013)/")
-    """
-    roots: list[Path] = []
-    for child in sorted(media_dir.iterdir()):
-        if not child.is_dir():
-            continue
-        if _is_media_root(child):
-            roots.append(child)
-        else:
-            # Not a media root — check one level deeper.
-            for grandchild in sorted(child.iterdir()):
-                if grandchild.is_dir() and _is_media_root(grandchild):
-                    roots.append(grandchild)
-    return roots
-
 
 def _human_size(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
@@ -1354,7 +1307,9 @@ def _load_or_prompt_config(
     if media_dir_env and not media_roots_arg:
         media_dir = Path(media_dir_env)
         if media_dir.is_dir():
-            media_roots = _discover_media_roots(media_dir)
+            media_roots = sorted(
+                p for p in media_dir.iterdir() if p.is_dir()
+            )
             log.info("auto-discovered %d media roots under %s", len(media_roots), media_dir)
             for r in media_roots:
                 log.info("  media root: %s", r)
