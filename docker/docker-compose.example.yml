@@ -24,14 +24,14 @@ services:
     volumes:
       # BEQ working directory — stores config, catalogue cache, WAV output,
       # and media_inventory.json. WAVs go in {beq-dir}/wav-cache/ automatically.
-      - /volume3/jetspeed/beqdesigner:/beq
+      - "/volume3/jetspeed/beqdesigner:/beq"
 
       # Media libraries (read-only). Add or remove as needed.
       # The container path (/media/...) is what you pass to --media-root.
-      - /volume1/media/Movies:/media/Movies:ro
-      - /volume1/media/TV:/media/TV:ro
-      - /volume2/media/Anime Movies:/media/Anime_Movies:ro
-      - /volume2/media/Anime TV:/media/Anime_TV:ro
+      - "/volume1/media/Movies:/media/Movies:ro"
+      - "/volume1/media/TV:/media/TV:ro"
+      - "/volume2/media/Anime Movies:/media/Anime_Movies:ro"
+      - "/volume2/media/Anime TV:/media/Anime_TV:ro"
 
     # No default command — launches the interactive menu.
     # Pass subcommands directly: docker compose run beq-designer extract ...
