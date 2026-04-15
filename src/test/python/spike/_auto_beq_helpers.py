@@ -1435,6 +1435,27 @@ def extract_features_with_strategy(
     return extract_curve_features(curve, freqs_hz)
 
 
+def check_production_model() -> bool:
+    """Return True if a production model exists (fast — no loading).
+
+    Checks env vars and the shared beq_dir for model files. Does NOT
+    import any Qt, scipy, or heavy dependencies — safe for headless
+    Docker containers and CLI startup.
+    """
+    model_env = os.environ.get("AUTO_BEQ_MODEL_PATH")
+    if model_env:
+        return Path(model_env).exists()
+    if os.environ.get("AUTO_BEQ_ADVISOR", "").lower() == "torch_differentiable":
+        try:
+            return (beq_dir() / "e85_torch_filter.pt").exists()
+        except Exception:
+            return False
+    try:
+        return (beq_dir() / "production_model.joblib").exists()
+    except Exception:
+        return False
+
+
 # Backwards-compatible aliases (the existing test_auto_beq.py uses
 # underscore-prefixed names).
 _have_tool = have_tool

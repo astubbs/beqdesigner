@@ -124,11 +124,13 @@ def _model_status_line() -> str:
     global _cached_model_status
     if _cached_model_status is not None:
         return _cached_model_status
-    from cli.profile import _check_production_model
-    if _check_production_model():
-        _cached_model_status = "✓ production model found"
-    else:
-        _cached_model_status = "✗ no model — train one first"
+    # Import from shared helpers — NOT cli.profile, which pulls in the
+    # full Qt/GUI stack via generate → auto_beq → iir → xy → preferences.
+    from spike._auto_beq_helpers import check_production_model
+    _cached_model_status = (
+        "✓ production model found" if check_production_model()
+        else "✗ no model — train one first"
+    )
     return _cached_model_status
 
 

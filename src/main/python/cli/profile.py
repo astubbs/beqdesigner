@@ -38,22 +38,8 @@ from cli.generate import generate_profile
 # ---------------------------------------------------------------------------
 
 
-def _check_production_model() -> bool:
-    """Return True if a production model exists (fast — no loading)."""
-    import os as _os
-    if _os.environ.get("AUTO_BEQ_MODEL_PATH"):
-        return Path(_os.environ["AUTO_BEQ_MODEL_PATH"]).exists()
-    if _os.environ.get("AUTO_BEQ_ADVISOR", "").lower() == "torch_differentiable":
-        try:
-            from spike._auto_beq_helpers import beq_dir
-            return (beq_dir() / "e85_torch_filter.pt").exists()
-        except Exception:
-            return False
-    try:
-        from spike._auto_beq_helpers import beq_dir
-        return (beq_dir() / "production_model.joblib").exists()
-    except Exception:
-        return False
+# Shared implementation — no duplication.
+from spike._auto_beq_helpers import check_production_model as _check_production_model
 
 
 # ---------------------------------------------------------------------------
