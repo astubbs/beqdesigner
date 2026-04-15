@@ -7,15 +7,20 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Copy project files for poetry install.
+# 1. Install dependencies first (cached unless pyproject.toml/lock change).
 COPY pyproject.toml poetry.lock ./
+# Poetry needs at least the package source dir to exist for install.
+RUN mkdir -p src/main/python
+RUN poetry config virtualenvs.create false \
+    && poetry install --no-interaction --only main --no-root
+
+# 2. Copy source (changes here don't re-install deps).
 COPY src/ src/
 COPY bin/ bin/
 COPY build/ build/
 
-# Install dependencies (no dev deps, no interactive prompts).
-RUN poetry config virtualenvs.create false \
-    && poetry install --no-interaction --only main
+# 3. Install the project itself (fast — deps already installed).
+RUN poetry install --no-interaction --only main
 
 # Make entry point executable.
 RUN chmod +x bin/beq-designer
