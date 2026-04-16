@@ -1,7 +1,10 @@
+# Claude Code config (local only -- repo owner prefers AGENTS.md)
+CLAUDE.md
+
 # Generated at build time
 build/version.json
 
-# Local Docker compose (personal volume mounts — copy from example)
+# Local Docker compose (personal volume mounts -- copy from example)
 docker/docker-compose.yml
 
 # Byte-compiled / optimized / DLL files

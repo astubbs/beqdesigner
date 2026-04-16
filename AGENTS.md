@@ -2,6 +2,46 @@
 
 ## Mandatory rules
 
+### Git safety
+
+**NEVER commit or push without explicitly asking the user first.**
+Wait for approval. This is the #1 rule.
+
+### Development discipline
+
+- **Skateboard first.** Build the simplest end-to-end thing that
+  works, then improve it. Don't go deep into interesting features
+  before shipping. Before starting any feature, ask: "Is this
+  blocking the next public milestone?" If not, flag it and move on.
+- **Never paper over the real problem** -- make the proper fix. No
+  band-aids, no lazy imports to avoid a refactor, no duplicated code
+  to work around a dependency. If the architecture is wrong, fix
+  the architecture.
+- **Don't propose workarounds that require user action** when the
+  software can solve it. If the software has enough information to
+  derive the right answer, it should just do it.
+- **Be DRY.** Reuse existing functions. Don't copy code -- refactor
+  where necessary. Extract common patterns into shared utilities.
+- **Give things meaningful names** that describe what they do. Never
+  use random or generic names.
+- **Never weaken test assertions** -- classify exceptions instead of
+  ignoring them.
+- When you fix something or finish implementing something, record
+  what lessons you learnt.
+- Don't write with em dash characters.
+
+### UI/CLI layer separation
+
+**CLI and service code must never depend on Qt.** The `model/` layer
+and `cli/` layer must be importable without PyQt6. If a `model/`
+module imports from `model/preferences.py` or any Qt widget, that
+dependency must be refactored out so headless Docker containers and
+CLI scripts work without a display server.
+
+Current known violation: `model/auto_beq.py` -> `model/iir.py` ->
+`model/xy.py` -> `model/preferences.py` -> PyQt6. This blocks
+profile generation in Docker. Tracked for refactoring.
+
 ### Experiment logging
 
 **Every experiment MUST be logged in
@@ -321,8 +361,7 @@ Markers are registered in `pyproject.toml` under `[tool.pytest.ini_options]`. Ad
 | `--verbose` / `SPIKE_VERBOSE=1` | enables `-s` (no capture) | off |
 | `AUTO_BEQ_MODEL_PATH` | path to production model file | auto-detected |
 | `SPIKE_MARKERS` | override marker filter (advanced) | `not integration and not experiment` |
-| `BEQ_SHARED_DIR` | shared BEQ directory (wav-cache, catalogue, inventory) | from `shared_beq_dir` in settings.json |
-| `BEQ_DIR` | **deprecated** — alias for `BEQ_SHARED_DIR` | — |
+| `BEQ_SHARED_DIR` | shared BEQ directory (wav-cache, catalogue, inventory) — **required** | from `shared_beq_dir` in settings.json |
 
 ```bash
 # All spike tests
@@ -359,4 +398,11 @@ bin/beq-designer dev test --experiments --file src/test/python/spike/test_auto_b
 **Always verify behaviour with a test, not ad-hoc code.** When checking
 that something works (edge cases, parsing, formatting, etc.), write a
 test that captures the expectation. Don't run throwaway Python snippets
-or inline assertions — if it's worth verifying, it's worth a test.
+or inline assertions -- if it's worth verifying, it's worth a test.
+
+Additional test discipline:
+- Search for existing test harnesses and utilities before creating new
+  ones.
+- Run the complete test suite periodically, not just targeted tests.
+- Maintain good high-level test coverage. Only get detailed on
+  particularly complex functions that benefit from fine-grained testing.
