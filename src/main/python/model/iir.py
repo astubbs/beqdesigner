@@ -10,7 +10,7 @@ from functools import reduce
 from typing import Callable, List, Optional
 
 import numpy as np
-from model.xy import ComplexData
+from model.xy_data import ComplexData
 from scipy import signal
 
 DEFAULT_Q = 1 / math.sqrt(2.0)

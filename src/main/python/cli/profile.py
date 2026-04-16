@@ -30,9 +30,7 @@ from cli.common import (
     setup_log_file,
     show_banner,
 )
-# NOTE: cli.generate is imported lazily inside functions that use it,
-# because it pulls in model.auto_beq → model.iir → model.xy →
-# model.preferences → PyQt6, which crashes headless Docker containers.
+from cli.generate import generate_profile
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +418,6 @@ def _run_single(
     media_path: Path, author: str, output_path: Path, output_dir: Path, *, verbose: bool = False,
 ) -> dict | None:
     """Run generate_profile for a single file with rich progress display."""
-    from cli.generate import generate_profile
     console.print(f"\n[bold]Processing:[/bold] {media_path.name}")
 
     # Attach progress handler to both loggers (pipeline + shared helpers).

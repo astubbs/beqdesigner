@@ -1281,6 +1281,22 @@ def get_configured_media_roots() -> list[Path]:
     return []
 
 
+def save_extract_config(media_roots: list[Path]) -> Path:
+    """Save media roots to the local extract config file.
+
+    Returns the path the config was written to. This is the write side
+    of the config service -- get_configured_media_roots() is the read side.
+    """
+    from spike._auto_beq_helpers import beq_config_dir
+    config_path = beq_config_dir() / _CONFIG_NAME
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(
+        {"media_roots": [str(p) for p in media_roots]}, indent=2,
+    ) + "\n")
+    log.info("config saved to %s (%d media roots)", config_path, len(media_roots))
+    return config_path
+
+
 def _load_or_prompt_config(
     beq_dir_arg: Path | None,
     media_roots_arg: list[Path] | None,
@@ -1369,9 +1385,7 @@ def _load_or_prompt_config(
                 print(f"    ERROR: '{p}' does not exist. Please enter a valid path.")
                 continue  # re-prompt
 
-    config_data = {"media_roots": [str(p) for p in media_roots]}
-    config_path.write_text(json.dumps(config_data, indent=2) + "\n")
-    log.info("config saved to %s (%d media roots)", config_path, len(media_roots))
+    save_extract_config(media_roots)
 
     return {"beq_dir": beq_dir, "wav_root": wav_root, "media_roots": media_roots}
 

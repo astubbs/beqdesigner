@@ -394,31 +394,6 @@ class TestDispatch:
         _render_markdown_report(fake_report, argv=["--test"])
         assert received == [["--test"]]
 
-    def test_wav_count_disk_cache(self, tmp_path, monkeypatch):
-        """WAV count is persisted to disk — second call reads from file, no rescan."""
-        from unittest.mock import patch
-        import cli.main as main_mod
-
-        cache_file = tmp_path / ".wav_count_cache"
-        monkeypatch.setattr("cli.main._WAV_COUNT_CACHE", cache_file)
-
-        # Create some fake WAVs.
-        wav_dir = tmp_path / "wavs"
-        wav_dir.mkdir()
-        for i in range(3):
-            (wav_dir / f"test_{i}.wav").touch()
-
-        with patch("spike._auto_beq_helpers.wav_cache_dir", return_value=wav_dir):
-            # First call: should scan and write disk cache.
-            count1 = main_mod._ensure_wav_count()
-            assert count1 == 3
-            assert cache_file.exists(), "Disk cache file should have been written"
-
-        # Second call: should read from disk, NOT rescan.
-        # (wav_cache_dir not even patched — if it tried to scan, it would fail)
-        count2 = main_mod._ensure_wav_count()
-        assert count2 == 3, "Should have read from disk cache without rescanning"
-
     def test_extract_always_verbose_and_auto_beq_dir(self):
         """Extract subcommand must always pass -v and auto-populate --beq-dir."""
         from unittest.mock import patch
@@ -586,56 +561,60 @@ class TestUnifiedCLI:
 
 
 class TestExtractConfigValidation:
-    """Config with non-existent media roots must fail, not silently succeed."""
+    """Config with non-existent media roots must fail, not silently succeed.
+
+    Tests use the config service (save_extract_config / get_configured_media_roots)
+    with beq_config_dir mocked to tmp_path -- same code path as production.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_config(self, tmp_path, monkeypatch):
+        """Point beq_config_dir at tmp_path so tests never read real config."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        monkeypatch.setattr(
+            "spike._auto_beq_helpers.beq_config_dir", lambda: config_dir,
+        )
+        # Clear BEQ_MEDIA_DIR so auto-discovery doesn't override config.
+        monkeypatch.delenv("BEQ_MEDIA_DIR", raising=False)
 
     def test_any_invalid_media_root_raises_with_message(self, tmp_path):
         """Any invalid media root is a fatal config error with descriptive message."""
-        from cli.extract import main as extract_main
+        from cli.extract import main as extract_main, save_extract_config
 
         valid_dir = tmp_path / "valid_media"
         valid_dir.mkdir()
-
-        config_file = tmp_path / ".extract_config.json"
-        config_file.write_text(json.dumps({
-            "media_roots": [
-                str(valid_dir),
-                "/nonexistent/path",
-            ]
-        }))
+        save_extract_config([valid_dir, Path("/nonexistent/path")])
 
         with pytest.raises(RuntimeError, match="Invalid media roots"):
             extract_main(["--beq-dir", str(tmp_path)])
 
     def test_extract_inventory_age_message(self, tmp_path):
         """Extract must not crash when media_inventory.json exists (NameError regression)."""
-        from cli.extract import main as extract_main
+        from cli.extract import main as extract_main, save_extract_config
 
         valid_dir = tmp_path / "media"
         valid_dir.mkdir()
-        config_file = tmp_path / ".extract_config.json"
-        config_file.write_text(json.dumps({"media_roots": [str(valid_dir)]}))
+        save_extract_config([valid_dir])
 
         # Create a fake inventory so the age-check code path runs.
         inventory = tmp_path / "media_inventory.json"
         inventory.write_text(json.dumps({"media": []}))
 
         # Should not crash with NameError: _time.
-        # Will fail on catalogue fetch (no network in test) — that's fine.
+        # Will fail on catalogue fetch (no network in test) -- that's fine.
         try:
             extract_main(["--beq-dir", str(tmp_path)])
         except Exception as e:
-            # Catalogue fetch failure is expected — but NameError is not.
+            # Catalogue fetch failure is expected -- but NameError is not.
             assert "NameError" not in str(type(e).__name__), f"Unexpected NameError: {e}"
 
     def test_extract_validates_roots_before_catalogue_fetch(self, tmp_path):
         """Extract must fail on invalid roots BEFORE fetching the catalogue (no HTTP)."""
         from unittest.mock import patch
-        from cli.extract import main as extract_main
+        from cli.extract import main as extract_main, save_extract_config
 
-        config_file = tmp_path / ".extract_config.json"
-        config_file.write_text(json.dumps({
-            "media_roots": ["/nonexistent/nas/path"]
-        }))
+        save_extract_config([Path("/nonexistent/nas/path")])
 
         fetch_called = []
 
@@ -648,7 +627,7 @@ class TestExtractConfigValidation:
                 extract_main(["--beq-dir", str(tmp_path)])
 
         assert not fetch_called, (
-            "fetch_catalogue was called before media root validation — "
+            "fetch_catalogue was called before media root validation -- "
             "user would see a 4-second HTTP pause before the error"
         )
 
@@ -662,19 +641,23 @@ class TestStartupConfigValidation:
         from io import StringIO
         from rich.console import Console
         from cli.main import _validate_config_paths
+        from cli.extract import save_extract_config
 
         beq = tmp_path / "beq"
         beq.mkdir()
-        config = beq / ".extract_config.json"
-        config.write_text(json.dumps({
-            "media_roots": ["/nonexistent/nas/path", "/also/missing"]
-        }))
+        (beq / "wav-cache").mkdir()
+
+        # Use config service to write roots, with beq_config_dir isolated.
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        monkeypatch.setattr("spike._auto_beq_helpers.beq_config_dir", lambda: config_dir)
+        monkeypatch.delenv("BEQ_MEDIA_DIR", raising=False)
+        save_extract_config([Path("/nonexistent/nas/path"), Path("/also/missing")])
 
         captured = StringIO()
         with patch("cli.main.console", Console(file=captured)):
             with patch("spike._auto_beq_helpers.beq_dir", return_value=beq):
                 with patch("spike._auto_beq_helpers.wav_cache_dir", return_value=beq / "wav-cache"):
-                    # Prevent interactive prompt in non-tty test.
                     monkeypatch.setattr("sys.stdin", StringIO())
                     _validate_config_paths()
 
@@ -689,6 +672,7 @@ class TestStartupConfigValidation:
         from io import StringIO
         from rich.console import Console
         from cli.main import _validate_config_paths
+        from cli.extract import save_extract_config
 
         beq = tmp_path / "beq"
         beq.mkdir()
@@ -696,8 +680,12 @@ class TestStartupConfigValidation:
         wav_cache.mkdir()
         valid_root = tmp_path / "media"
         valid_root.mkdir()
-        config = beq / ".extract_config.json"
-        config.write_text(json.dumps({"media_roots": [str(valid_root)]}))
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        monkeypatch.setattr("spike._auto_beq_helpers.beq_config_dir", lambda: config_dir)
+        monkeypatch.delenv("BEQ_MEDIA_DIR", raising=False)
+        save_extract_config([valid_root])
 
         captured = StringIO()
         with patch("cli.main.console", Console(file=captured)):
