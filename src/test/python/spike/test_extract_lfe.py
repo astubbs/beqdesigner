@@ -835,6 +835,49 @@ def test_cache_path_id_unicode_safe():
     # The filename differs (it includes the title) but the dir is canonical.
 
 
+class TestCheckMkvHeader:
+    """_check_mkv_header pre-validates Matroska containers before ffmpeg runs."""
+
+    def test_valid_mkv_passes(self, tmp_path):
+        from cli.extract import _check_mkv_header
+        f = tmp_path / "good.mkv"
+        f.write_bytes(b"\x1a\x45\xdf\xa3" + b"...rest of file...")
+        assert _check_mkv_header(f) is None
+
+    def test_corrupt_mkv_returns_reason(self, tmp_path):
+        from cli.extract import _check_mkv_header
+        f = tmp_path / "corrupt.mkv"
+        # Bytes that aren't EBML magic.
+        f.write_bytes(b"\xf1\xd6\xa5\x26" + b"garbage")
+        reason = _check_mkv_header(f)
+        assert reason is not None
+        assert "not a valid Matroska" in reason
+        assert "f1 d6 a5 26" in reason  # actual bytes shown
+
+    def test_empty_file_returns_reason(self, tmp_path):
+        from cli.extract import _check_mkv_header
+        f = tmp_path / "empty.mkv"
+        f.write_bytes(b"")
+        reason = _check_mkv_header(f)
+        assert reason is not None
+        assert "too small" in reason
+
+    def test_truncated_file_returns_reason(self, tmp_path):
+        from cli.extract import _check_mkv_header
+        f = tmp_path / "trunc.mkv"
+        f.write_bytes(b"\x1a\x45")  # only 2 bytes
+        reason = _check_mkv_header(f)
+        assert reason is not None
+        assert "too small" in reason
+
+    def test_non_mkv_extension_skips_check(self, tmp_path):
+        """Non-MKV extensions can't be pre-validated -- just return None."""
+        from cli.extract import _check_mkv_header
+        f = tmp_path / "movie.mp4"
+        f.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+        assert _check_mkv_header(f) is None  # not MKV, skip the check
+
+
 def test_cache_path_invalid_media_id():
     """Malformed media_id raises ValueError."""
     root = Path("/cache")

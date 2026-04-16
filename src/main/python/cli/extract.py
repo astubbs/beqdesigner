@@ -1135,6 +1135,37 @@ def _probe_lfe(media_path: Path) -> bool:
         return False
 
 
+def _check_mkv_header(media_path: Path) -> str | None:
+    """Quick sanity check: file starts with EBML magic (1A 45 DF A3).
+
+    Returns None if the file looks like a valid Matroska/WebM container,
+    or a human-readable error string explaining why it doesn't. Avoids
+    spinning up ffmpeg only to have it fail on a corrupt or truncated file.
+
+    Only applied to .mkv / .webm files. Other extensions skip the check.
+    """
+    suffix = media_path.suffix.lower()
+    if suffix not in (".mkv", ".webm"):
+        return None  # not Matroska, can't pre-validate
+    try:
+        with media_path.open("rb") as f:
+            header = f.read(4)
+    except OSError as exc:
+        return f"cannot read file: {exc}"
+    if len(header) < 4:
+        return f"file is too small ({len(header)} bytes) — likely truncated or empty"
+    EBML_MAGIC = b"\x1a\x45\xdf\xa3"
+    if header != EBML_MAGIC:
+        actual = " ".join(f"{b:02x}" for b in header)
+        expected = " ".join(f"{b:02x}" for b in EBML_MAGIC)
+        return (
+            f"not a valid Matroska file — first 4 bytes are {actual!r}, "
+            f"expected EBML magic {expected!r}. "
+            f"File is probably corrupt; try replacing it from source."
+        )
+    return None
+
+
 def extract_one(media_path: Path, wav_path: Path) -> bool:
     """Extract LFE channel (or mono downmix) to a WAV file.
 
@@ -1142,6 +1173,14 @@ def extract_one(media_path: Path, wav_path: Path) -> bool:
     """
     tmp_path = wav_path.with_suffix(".tmp")
     wav_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Quick MKV header check before invoking ffmpeg (which is slow to start
+    # and produces a less helpful error message for corrupt containers).
+    invalid_reason = _check_mkv_header(media_path)
+    if invalid_reason is not None:
+        log.warning("  SKIP — %s", invalid_reason)
+        log.warning("  source: %s", media_path)
+        return False
 
     has_lfe = _probe_lfe(media_path)
     if has_lfe:
