@@ -94,8 +94,11 @@ def main():
             print(f"  {author:20s} {count:4d}")
         print()
 
-    # Check for growth — save/load last count.
-    status_file = cache / "status_last.json"
+    # Check for growth — save/load last count in local config dir.
+    # NEVER write to the WAV cache directory itself (would pollute the
+    # cache and break mtime-based change detection).
+    from spike._auto_beq_helpers import beq_config_dir
+    status_file = beq_config_dir() / "cache_status_last.json"
     last = {}
     if status_file.exists():
         try:

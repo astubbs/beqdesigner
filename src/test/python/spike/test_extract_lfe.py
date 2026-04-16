@@ -783,17 +783,87 @@ def test_incremental_discovery_subtree_pruning(tmp_path, _bypass_min_size):
 # ---------------------------------------------------------------------------
 
 
-def test_cache_path_two_letter_bucket():
-    """cache_path uses first two letters as bucket directory."""
+# ---------------------------------------------------------------------------
+# cache_path — canonical (ID-based) layout
+# ---------------------------------------------------------------------------
+
+
+def test_cache_path_id_based_film():
+    """cache_path uses {id_type}/{shard}/{id_value}/ structure for films."""
     root = Path("/cache")
     result = extract_mod_static.cache_path(root, "Avatar", "2009", "tmdb-19995")
+    assert result == (
+        root / "tmdb" / "19" / "19995" / "Avatar (2009) [tmdb-19995].lfe-1000hz.wav"
+    )
+
+
+def test_cache_path_id_based_tv():
+    """TV shows get title subdir with season folders under the ID dir."""
+    root = Path("/cache")
+    result = extract_mod_static.cache_path(
+        root, "Jujutsu Kaisen", "2020", "tvdb-377543",
+        content_type="TV", season=1, episode=1,
+    )
+    assert result == (
+        root / "tvdb" / "37" / "377543" / "Jujutsu Kaisen [tvdb-377543]"
+        / "Season 01" / "S01E01.lfe-1000hz.wav"
+    )
+
+
+def test_cache_path_id_based_imdb():
+    """IMDB IDs use the 'tt' prefix as the shard."""
+    root = Path("/cache")
+    result = extract_mod_static.cache_path(
+        root, "The Matrix", "1999", "imdb-tt0133093",
+    )
+    assert result == (
+        root / "imdb" / "tt" / "tt0133093"
+        / "The Matrix (1999) [imdb-tt0133093].lfe-1000hz.wav"
+    )
+
+
+def test_cache_path_id_unicode_safe():
+    """ID-based path is unaffected by title encoding (NFD vs NFC)."""
+    import unicodedata
+    nfd = unicodedata.normalize("NFD", "Bā'al")
+    nfc = unicodedata.normalize("NFC", "Bā'al")
+    root = Path("/cache")
+    # Same media_id -> same canonical directory regardless of title encoding.
+    p_nfd = extract_mod_static.cache_path(root, nfd, "2020", "tmdb-1")
+    p_nfc = extract_mod_static.cache_path(root, nfc, "2020", "tmdb-1")
+    assert p_nfd.parent == p_nfc.parent  # same dir
+    # The filename differs (it includes the title) but the dir is canonical.
+
+
+def test_cache_path_invalid_media_id():
+    """Malformed media_id raises ValueError."""
+    root = Path("/cache")
+    # No dash separator at all.
+    with pytest.raises(ValueError, match="must be 'type-value'"):
+        extract_mod_static.cache_path(root, "Avatar", "2009", "tmdb19995")
+    # Empty value.
+    with pytest.raises(ValueError, match="empty type or value"):
+        extract_mod_static.cache_path(root, "Avatar", "2009", "tmdb-")
+
+
+# ---------------------------------------------------------------------------
+# legacy_title_cache_path — title-bucket layout (reads only)
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_cache_path_two_letter_bucket():
+    """Legacy layout uses first two letters as bucket directory."""
+    from model.wav_cache import legacy_title_cache_path
+    root = Path("/cache")
+    result = legacy_title_cache_path(root, "Avatar", "2009", "tmdb-19995")
     assert result == root / "AV" / "Avatar (2009) [tmdb-19995].lfe-1000hz.wav"
 
 
-def test_cache_path_tv_with_seasons():
-    """TV shows get title subdir with season folders."""
+def test_legacy_cache_path_tv_with_seasons():
+    """Legacy TV layout: bucket / title / season / episode."""
+    from model.wav_cache import legacy_title_cache_path
     root = Path("/cache")
-    result = extract_mod_static.cache_path(
+    result = legacy_title_cache_path(
         root, "Jujutsu Kaisen", "2020", "tvdb-377543",
         content_type="TV", season=1, episode=1,
     )
@@ -803,18 +873,95 @@ def test_cache_path_tv_with_seasons():
     )
 
 
-def test_cache_path_short_title():
-    """Titles shorter than 2 chars get padded."""
+def test_legacy_cache_path_digit_then_space_no_trailing_space():
+    """Legacy bucket sanitisation: "3 Days" -> "3_" not "3 "."""
+    from model.wav_cache import legacy_title_cache_path
     root = Path("/cache")
-    result = extract_mod_static.cache_path(root, "X", "2020", "tmdb-12345")
-    assert result == root / "X_" / "X (2020) [tmdb-12345].lfe-1000hz.wav"
+    result = legacy_title_cache_path(root, "3 Days to Kill", "2014", "tmdb-1")
+    assert result.parent.name == "3_"
+    assert " " not in result.parent.name
 
 
-def test_cache_path_numeric_title():
-    """Titles starting with numbers work correctly."""
+def test_legacy_cache_path_single_letter_padded():
+    """Legacy bucket: single-letter titles get "_" padding."""
+    from model.wav_cache import legacy_title_cache_path
     root = Path("/cache")
-    result = extract_mod_static.cache_path(root, "2001", "1968", "tmdb-62")
-    assert result == root / "20" / "2001 (1968) [tmdb-62].lfe-1000hz.wav"
+    assert legacy_title_cache_path(root, "A", "2020", "tmdb-1").parent.name == "A_"
+    assert legacy_title_cache_path(root, "I", "2020", "tmdb-2").parent.name == "I_"
+
+
+def test_legacy_cache_path_unicode_normalised():
+    """Legacy bucket: NFC normalisation makes Mac and Linux agree."""
+    import unicodedata
+    from model.wav_cache import legacy_title_cache_path
+    nfd = unicodedata.normalize("NFD", "Bā'al")
+    nfc = unicodedata.normalize("NFC", "Bā'al")
+    assert nfd != nfc
+    root = Path("/cache")
+    bucket_nfd = legacy_title_cache_path(root, nfd, "2020", "tmdb-1").parent.name
+    bucket_nfc = legacy_title_cache_path(root, nfc, "2020", "tmdb-1").parent.name
+    assert bucket_nfd == bucket_nfc
+
+
+# ---------------------------------------------------------------------------
+# find_cached_wav — lookup with legacy fallback
+# ---------------------------------------------------------------------------
+
+
+class TestFindCachedWav:
+    """find_cached_wav checks ID-based path first, then legacy fallback."""
+
+    def test_finds_canonical_path(self, tmp_path):
+        from model.wav_cache import cache_path, find_cached_wav
+        path = cache_path(tmp_path, "Avatar", "2009", "tmdb-19995")
+        path.parent.mkdir(parents=True)
+        path.touch()
+        result = find_cached_wav(tmp_path, "Avatar", "2009", "tmdb-19995")
+        assert result == path
+
+    def test_falls_back_to_legacy(self, tmp_path):
+        """When canonical doesn't exist, find legacy title-bucket path."""
+        from model.wav_cache import find_cached_wav, legacy_title_cache_path
+        legacy = legacy_title_cache_path(tmp_path, "Avatar", "2009", "tmdb-19995")
+        legacy.parent.mkdir(parents=True)
+        legacy.touch()
+        result = find_cached_wav(tmp_path, "Avatar", "2009", "tmdb-19995")
+        assert result == legacy
+
+    def test_returns_none_when_neither_exists(self, tmp_path):
+        from model.wav_cache import find_cached_wav
+        result = find_cached_wav(tmp_path, "Avatar", "2009", "tmdb-19995")
+        assert result is None
+
+    def test_canonical_takes_precedence_over_legacy(self, tmp_path):
+        """If both exist, the canonical path wins."""
+        from model.wav_cache import cache_path, find_cached_wav, legacy_title_cache_path
+        canonical = cache_path(tmp_path, "Avatar", "2009", "tmdb-19995")
+        legacy = legacy_title_cache_path(tmp_path, "Avatar", "2009", "tmdb-19995")
+        canonical.parent.mkdir(parents=True)
+        legacy.parent.mkdir(parents=True)
+        canonical.touch()
+        legacy.touch()
+        result = find_cached_wav(tmp_path, "Avatar", "2009", "tmdb-19995")
+        assert result == canonical
+
+    def test_finds_legacy_with_trailing_space_bucket(self, tmp_path):
+        """Legacy WAVs in pre-fix buggy paths are still findable.
+
+        Some titles like "3 Days to Kill" got written to "3 /" (trailing
+        space) on Linux before the bucket sanitisation fix. The legacy
+        path computation uses the SANITISED bucket ("3_"), so files in
+        the buggy "3 /" dir would be missed. We don't try to find those
+        — they're orphans. This test documents that behaviour.
+        """
+        from model.wav_cache import find_cached_wav
+        # Write to the buggy unsanitised path.
+        buggy = tmp_path / "3 " / "3 Days to Kill (2014) [tmdb-1].lfe-1000hz.wav"
+        buggy.parent.mkdir(parents=True)
+        buggy.touch()
+        # find_cached_wav only knows the sanitised path "3_" -> miss.
+        result = find_cached_wav(tmp_path, "3 Days to Kill", "2014", "tmdb-1")
+        assert result is None  # buggy file is orphaned, not findable
 
 
 # ---------------------------------------------------------------------------

@@ -736,21 +736,21 @@ def _validate_config_paths() -> None:
             default=True,
         ).execute()
         if fix:
-            _repair_media_roots(_beq / ".extract_config.json")
+            _repair_media_roots()
 
 
-def _repair_media_roots(config_path: Path) -> None:
-    """Prompt user for new media roots, save to .extract_config.json.
+def _repair_media_roots() -> None:
+    """Prompt user for new media roots, save via the config service.
 
     Supports:
     - One path per prompt (empty to finish)
     - Comma-separated paths: /path/a, /path/b
     - Escaped spaces (backslash) or unescaped spaces
     """
-    import json as _json
     from InquirerPy import inquirer
+    from cli.extract import save_extract_config
 
-    new_roots: list[str] = []
+    new_roots: list[Path] = []
     console.print("[bold]Enter media library paths[/bold]")
     console.print("[dim]One per line, or comma-separated. Empty to finish.[/dim]")
     while True:
@@ -763,12 +763,12 @@ def _repair_media_roots(config_path: Path) -> None:
             part = part.replace("\\ ", " ")
             p = Path(part).resolve()
             if p.is_dir():
-                new_roots.append(str(p))
+                new_roots.append(p)
                 console.print(f"  [green]✓[/green] {p}")
             else:
                 console.print(f"  [red]✗ Not a directory: {p}[/red]")
     if new_roots:
-        config_path.write_text(_json.dumps({"media_roots": new_roots}, indent=2) + "\n")
+        config_path = save_extract_config(new_roots)
         console.print(f"\n[green]Saved {len(new_roots)} media roots to {config_path}[/green]")
     else:
         console.print("[yellow]No valid roots entered — config unchanged.[/yellow]")

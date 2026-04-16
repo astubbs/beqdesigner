@@ -1101,33 +1101,15 @@ def _breadth_first_sort(media: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def cache_path(
-    wav_root: Path,
-    title: str,
-    year: str,
-    media_id: str,
-    content_type: str = "film",
-    season: int | None = None,
-    episode: int | None = None,
-) -> Path:
-    """Build the portable cache path for a title.
-
-    Layout uses a two-letter bucket directory from the first two characters
-    of the title (uppercased, padded with ``_`` if shorter than 2 chars).
-
-    Films:  ``wav-cache/AV/Avatar (2009) [tmdb-19995].lfe-1000hz.wav``
-    TV:     ``wav-cache/JU/Jujutsu Kaisen [tvdb-377543]/Season 01/S01E01.lfe-1000hz.wav``
-    """
-    bucket = (title[:2] if len(title) >= 2 else title.ljust(2, "_")).upper()
-
-    if content_type.upper() == "TV" and season is not None and episode is not None:
-        title_dir = f"{title} [{media_id}]"
-        season_dir = f"Season {season:02d}"
-        wav_name = f"S{season:02d}E{episode:02d}.lfe-1000hz.wav"
-        return wav_root / bucket / title_dir / season_dir / wav_name
-
-    wav_name = f"{title} ({year}) [{media_id}].lfe-1000hz.wav"
-    return wav_root / bucket / wav_name
+# Cache layout helpers live in model/wav_cache.py — single source of truth
+# used by extraction, profile generation, verification, and status reports.
+# Re-exported here for backward compat.
+from model.wav_cache import (  # noqa: F401, E402
+    bucket_name,
+    cache_path,
+    find_cached_wav,
+    legacy_title_cache_path,
+)
 
 
 
@@ -1892,6 +1874,12 @@ def _run_extraction_phase(
         episode = m.get("episode")
         ep_label = f" S{season:02d}E{episode:02d}" if season is not None else ""
 
+        # Check both new (ID-based) and legacy (title-bucket) cache paths.
+        cached = find_cached_wav(
+            wav_root, title, year, media_id,
+            content_type=content_type, season=season, episode=episode,
+        )
+        # Always write to the canonical (ID-based) path on a fresh extraction.
         wav = cache_path(wav_root, title, year, media_id,
                          content_type=content_type, season=season, episode=episode)
 
@@ -1899,11 +1887,14 @@ def _run_extraction_phase(
 
         if extract_times:
             avg_rate = sum(extract_rates) / len(extract_rates)
-            remaining_mb = sum(mm.get("size_bytes", 0) / 1e6 for mm in media[i:] if not cache_path(
-                wav_root, mm["title"], mm["year"], mm["media_id"],
-                content_type=mm.get("content_type", "film"),
-                season=mm.get("season"), episode=mm.get("episode"),
-            ).exists())
+            remaining_mb = sum(
+                mm.get("size_bytes", 0) / 1e6 for mm in media[i:]
+                if find_cached_wav(
+                    wav_root, mm["title"], mm["year"], mm["media_id"],
+                    content_type=mm.get("content_type", "film"),
+                    season=mm.get("season"), episode=mm.get("episode"),
+                ) is None
+            )
             eta_s = remaining_mb / avg_rate if avg_rate > 0 else 0
             eta_time = datetime.now() + timedelta(seconds=eta_s)
             eta_str = f" {format_duration(eta_s)} remaining, ETA {eta_time.strftime('%H:%M')}"
@@ -1912,7 +1903,7 @@ def _run_extraction_phase(
 
         prefix = f"[{phase_label} {i + 1}/{total} {pct}%{eta_str}]"
 
-        if wav.exists():
+        if cached is not None:
             log.info("%s CACHED: %s (%s)%s [%s]", prefix, title, year, ep_label, media_id)
             skipped += 1
             continue
