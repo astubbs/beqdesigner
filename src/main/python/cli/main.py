@@ -674,8 +674,35 @@ def _validate_config_paths() -> None:
         console.print()
         raise SystemExit(1)
 
-    # Check if shared dir is empty — might be a misconfigured mount.
-    if _beq.exists() and not any(_beq.iterdir()):
+    # Sanity-check the shared dir. Two failure modes we care about:
+    # (1) Completely empty -- could be a fresh install OR a misconfigured mount
+    # (2) Inventory present but wav-cache missing/empty -- almost certainly
+    #     a misconfigured mount (the inventory says we have extracted titles,
+    #     but the WAVs aren't visible because a parent path is wrong).
+    inventory = _beq / "media_inventory.json"
+    wav_cache = _beq / "wav-cache"
+    has_inventory = inventory.exists() and inventory.stat().st_size > 100
+    wav_cache_empty = (not wav_cache.exists()) or not any(wav_cache.iterdir()) if wav_cache.exists() else True
+    is_completely_empty = _beq.exists() and not any(_beq.iterdir())
+
+    misconfig_likely = has_inventory and wav_cache_empty
+    if misconfig_likely:
+        console.print()
+        console.print("[red bold]ERROR: Shared directory looks misconfigured.[/red bold]")
+        console.print()
+        console.print(f"  Shared dir:  {_beq}")
+        console.print(f"  Inventory:   present ({inventory.stat().st_size // 1024} KB)")
+        console.print(f"  WAV cache:   {'missing' if not wav_cache.exists() else 'empty'}")
+        console.print()
+        console.print("The inventory says you have extracted titles, but the")
+        console.print("wav-cache directory is empty. This usually means a Docker")
+        console.print("volume mount points at the wrong path -- check that")
+        console.print(f"BEQ_SHARED_DIR (={_beq}) matches your compose file's")
+        console.print("volume mount target.")
+        console.print()
+        raise SystemExit(1)
+
+    if is_completely_empty:
         console.print()
         console.print(f"[yellow bold]WARNING: Shared directory is empty:[/yellow bold] {_beq}")
         console.print()
