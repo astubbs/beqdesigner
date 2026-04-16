@@ -108,7 +108,13 @@ Use the single shared implementations in `spike/_auto_beq_helpers.py`:
   returns the *local* machine-specific config directory (`~/.config/beqdesigner/`).
   Machine-specific config (like `extract_config.json` with media root paths)
   lives in the local dir; portable data (wav-cache, catalogue, inventory) lives
-  in the shared dir.
+  in the shared dir. **Canonical reference**: see the "Configuration storage"
+  section in [`docs/architecture.md`](docs/architecture.md) for the full
+  schema of both files and the split rationale.
+- **Extract config service**: `get_configured_media_roots()` (read) and
+  `save_extract_config()` (write) in `cli/extract.py` — single code path
+  for media root persistence. Tests must use this service, not write JSON
+  directly.
 - **Media depth detection**: `find_media_dirs()` in `model/media_utils.py` —
   finds the directory depth where media files live by sampling one file,
   then lists all directories at that depth. Adapts to any library
