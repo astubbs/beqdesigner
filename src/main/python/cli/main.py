@@ -204,7 +204,7 @@ def _dispatch(action: str, config: CliConfig, verbose: bool) -> None:
     """Route a menu choice to the same typer command function used by CLI."""
     handlers = {
         "profile": lambda: profile(media=None, author=None, output=None, output_dir=None, verbose=verbose),
-        "extract": lambda: extract(media_root=None, beq_dir_opt=None, limit=0, verify_only=False, yes=True, verbose=False),
+        "extract": lambda: extract(media_root=None, beq_dir_opt=None, limit=0, verify_only=False, verbose=False),
         "cache-status": lambda: cache_status(cache_dir=None),
         "verify": lambda: verify(cache_root=None, delete=False, verbose=False),
         "nn-report": lambda: nn_report(output=None),
@@ -307,8 +307,6 @@ def extract(
     beq_dir_opt: Optional[Path] = typer.Option(None, "--beq-dir", help="BEQ working directory."),  # noqa: UP007
     limit: int = typer.Option(0, "--limit", help="Max titles (0 = unlimited)."),
     verify_only: bool = typer.Option(False, "--verify", help="Verify existing cache only."),
-    yes: bool = typer.Option(True, "-y", "--yes",
-                             help="Auto-answer prompts (default)."),
     verbose: bool = typer.Option(False, "-v", "--verbose"),
 ) -> None:
     """Extract LFE audio from media library to WAV cache."""
@@ -324,7 +322,8 @@ def extract(
         argv.extend(["--limit", str(limit)])
     if verify_only:
         argv.append("--verify")
-    if yes:
+    # Inherit --yes from the global flag (set in env by main_callback).
+    if os.environ.get("BEQ_AUTO_YES") == "1":
         argv.append("--yes")
     from cli.extract import main as extract_main
     extract_main(argv)
@@ -612,9 +611,18 @@ def main_callback(
     ctx: typer.Context,
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Show DEBUG messages."),
     quiet: bool = typer.Option(False, "-q", "--quiet", help="Only show warnings and errors."),
+    yes: bool = typer.Option(True, "-y", "--yes",
+                             help="Auto-answer prompts (default). Pass --no-yes to disable."),
+    no_yes: bool = typer.Option(False, "--no-yes",
+                                help="Disable auto-yes — prompt interactively."),
 ) -> None:
     """BEQ Designer — run with no subcommand for interactive menus."""
     import sys as _sys
+
+    # Stash --yes in an env var so subcommands inherit it without needing
+    # the flag on every command. --no-yes overrides --yes.
+    effective_yes = yes and not no_yes
+    os.environ["BEQ_AUTO_YES"] = "1" if effective_yes else "0"
 
     # Log level: default INFO, -v for DEBUG, -q for WARNING only.
     if quiet:
