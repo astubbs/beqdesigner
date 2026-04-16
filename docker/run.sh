@@ -53,13 +53,20 @@ if [ "$PULL" = true ]; then
     git -C .. pull
 fi
 
+# Detect docker compose vs docker-compose (Synology DSM uses the latter).
+if docker compose version >/dev/null 2>&1; then
+    DC="docker compose"
+else
+    DC="docker-compose"
+fi
+
 if [ "$BUILD" = true ]; then
     # Write git version info for the Docker build (container has no .git).
     GIT_BRANCH=$(git -C .. rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
     GIT_COMMIT=$(git -C .. rev-parse --short HEAD 2>/dev/null || echo "unknown")
     echo "{\"branch\": \"$GIT_BRANCH\", \"commit\": \"$GIT_COMMIT\"}" > ../build/version.json
 
-    docker compose -f "$COMPOSE_FILE" build
+    $DC -f "$COMPOSE_FILE" build
 fi
 
-docker compose -f "$COMPOSE_FILE" run --remove-orphans beq-designer "$@"
+$DC -f "$COMPOSE_FILE" run --remove-orphans beq-designer "$@"
