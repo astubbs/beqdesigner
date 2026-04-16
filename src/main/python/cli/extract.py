@@ -1135,6 +1135,42 @@ def _probe_lfe(media_path: Path) -> bool:
         return False
 
 
+def _failed_sentinel_path(wav_path: Path) -> Path:
+    """Path to the sidecar sentinel marking a previously failed extraction."""
+    return wav_path.with_suffix(".failed")
+
+
+def _write_failed_sentinel(wav_path: Path, reason: str) -> None:
+    """Record an extraction failure so we don't retry every run.
+
+    Writes a JSON sidecar at ``{wav_path}.failed`` with the failure reason
+    and timestamp. Delete the sentinel (or fix the source file) to retry.
+    """
+    sentinel = _failed_sentinel_path(wav_path)
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        sentinel.write_text(json.dumps({
+            "reason": reason,
+            "timestamp": time.time(),
+            "iso": datetime.now().isoformat(timespec="seconds"),
+        }, indent=2) + "\n")
+        log.info("  recorded failure: %s (delete to retry)", sentinel)
+    except OSError as exc:
+        log.warning("  could not write failure sentinel %s: %s", sentinel, exc)
+
+
+def _check_failed_sentinel(wav_path: Path) -> str | None:
+    """Return the prior failure reason if a .failed sentinel exists."""
+    sentinel = _failed_sentinel_path(wav_path)
+    if not sentinel.exists():
+        return None
+    try:
+        data = json.loads(sentinel.read_text())
+        return f"{data.get('reason', 'unknown')} (last attempt: {data.get('iso', '?')})"
+    except (json.JSONDecodeError, OSError):
+        return "previously failed (sentinel unreadable)"
+
+
 def _check_mkv_header(media_path: Path) -> str | None:
     """Quick sanity check: file starts with EBML magic (1A 45 DF A3).
 
@@ -1204,13 +1240,22 @@ def extract_one(media_path: Path, wav_path: Path) -> bool:
     log.debug("  tmp: %s", tmp_path)
     log.debug("  out: %s", wav_path)
 
+    # Scale ffmpeg timeout by file size: 5min base + 1min per GB.
+    # Avoids timeouts on huge 4K Bluray rips (50GB+).
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        size_gb = media_path.stat().st_size / (1024 ** 3)
+    except OSError:
+        size_gb = 0
+    timeout_s = max(300, int(300 + size_gb * 60))
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
     except subprocess.TimeoutExpired:
-        log.error("  ffmpeg timed out after 10 minutes")
+        log.error("  ffmpeg timed out after %ds", timeout_s)
         log.error("  source: %s", media_path)
         log.error("  target: %s", tmp_path)
         tmp_path.unlink(missing_ok=True)
+        _write_failed_sentinel(wav_path, f"ffmpeg timeout after {timeout_s}s")
         return False
 
     if result.returncode != 0:
@@ -1220,6 +1265,9 @@ def extract_one(media_path: Path, wav_path: Path) -> bool:
         log.error("  target: %s", tmp_path)
         log.error("  cmd: %s", " ".join(cmd))
         tmp_path.unlink(missing_ok=True)
+        _write_failed_sentinel(
+            wav_path, f"ffmpeg exit {result.returncode}: {result.stderr.strip()[:200]}",
+        )
         return False
 
     # Validate before committing to cache.
@@ -1227,6 +1275,7 @@ def extract_one(media_path: Path, wav_path: Path) -> bool:
     if not ok:
         log.error("  extracted WAV failed integrity check: %s", reason)
         tmp_path.unlink(missing_ok=True)
+        _write_failed_sentinel(wav_path, f"WAV integrity check failed: {reason}")
         return False
 
     # Atomic rename — only on success.
@@ -1648,14 +1697,15 @@ def select_unmatched_to_extract(
 
 def _prompt_unmatched_extraction(
     no_catalogue_count: int,
-    default_n: int = 50,
+    default_n: int | None = None,
     assume_yes: bool = False,
 ) -> int:
     """Interactive prompt: extract N unmatched media? Returns chosen N or 0.
 
     Always prints the informational message so the user sees what's about
     to happen. If ``assume_yes`` is True (or stdin isn't a TTY), auto-answers
-    yes with ``default_n`` items -- no prompt. Otherwise prompts interactively.
+    yes with ``default_n`` items (or ALL if default_n is None) -- no prompt.
+    Otherwise prompts interactively.
 
     Returns the chosen N, clamped to ``[0, no_catalogue_count]``.
     """
@@ -1674,11 +1724,17 @@ def _prompt_unmatched_extraction(
 
     auto = assume_yes or not sys.stdin.isatty()
     if auto:
-        n = min(default_n, no_catalogue_count)
+        # Default to ALL unmatched. Pass --extract-unmatched N to limit.
+        if default_n is None:
+            n = no_catalogue_count
+            label = "all"
+        else:
+            n = min(default_n, no_catalogue_count)
+            label = f"limit {default_n}"
         reason = "--yes" if assume_yes else "non-interactive (no TTY)"
         print(f"Extract WAVs for some of them? [y/N] y  (auto: {reason})",
               flush=True)
-        print(f"How many? {n}  (auto: default)", flush=True)
+        print(f"How many? {n}  (auto: {label})", flush=True)
         return n
 
     try:
@@ -1964,6 +2020,16 @@ def _run_extraction_phase(
 
         if cached is not None:
             log.info("%s CACHED: %s (%s)%s [%s]", prefix, title, year, ep_label, media_id)
+            skipped += 1
+            continue
+
+        # Skip if we previously tried and failed (e.g. ffmpeg timeout, corrupt source).
+        prior_failure = _check_failed_sentinel(wav)
+        if prior_failure:
+            log.warning("%s PREVIOUSLY FAILED: %s (%s)%s [%s] — %s",
+                        prefix, title, year, ep_label, media_id, prior_failure)
+            log.warning("  delete %s to retry",
+                        _failed_sentinel_path(wav))
             skipped += 1
             continue
 
