@@ -1919,6 +1919,14 @@ def _run_extraction_phase(
                  prefix, title, year, ep_label, media_id, size_mb, est_str)
         media_path = Path(m["path"]) if not isinstance(m["path"], Path) else m["path"]
         log.info("  source: %s", media_path)
+        # Diagnostic: explain why this is being extracted (cache miss).
+        legacy = legacy_title_cache_path(
+            wav_root, title, year, media_id,
+            content_type=content_type, season=season, episode=episode,
+        )
+        log.info("  cache miss — media_id=%s", media_id)
+        log.info("    canonical path (not found): %s", wav)
+        log.info("    legacy path (not found):    %s", legacy)
 
         t0 = time.time()
         ok = extract_one(media_path, wav)
