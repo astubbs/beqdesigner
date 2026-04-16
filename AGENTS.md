@@ -7,6 +7,11 @@
 **NEVER commit or push without explicitly asking the user first.**
 Wait for approval. This is the #1 rule.
 
+**Run the full default test suite before every commit.** Use
+`bin/beq-designer dev test` (runs `not integration and not experiment`
+markers, ~1 min). This catches cross-module breakage that targeted
+test runs miss. Do not commit if any test fails.
+
 ### Development discipline
 
 - **Skateboard first.** Build the simplest end-to-end thing that
