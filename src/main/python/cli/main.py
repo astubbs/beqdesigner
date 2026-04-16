@@ -21,6 +21,8 @@ from typing import Optional
 
 import typer
 
+log = logging.getLogger("beq_cli")
+
 from cli.common import (
     REPO_ROOT,
     CliConfig,
@@ -59,63 +61,6 @@ _MAIN_MENU = [
     ("Quit", "quit"),
 ]
 
-import json as _json
-import time as _time
-
-_WAV_COUNT_CACHE = Path.home() / ".config" / "beqdesigner" / ".wav_count_cache"
-_WAV_COUNT_MAX_AGE = 3600  # 1 hour
-
-
-def _ensure_wav_count() -> int:
-    """Get WAV count from disk cache or scan. Survives process restarts."""
-    # Check disk cache first.
-    if _WAV_COUNT_CACHE.exists():
-        try:
-            data = _json.loads(_WAV_COUNT_CACHE.read_text())
-            age = _time.time() - data.get("timestamp", 0)
-            if age < _WAV_COUNT_MAX_AGE:
-                return data["count"]
-        except Exception:
-            pass
-
-    # Scan and cache to disk.
-    t0 = _time.monotonic()
-    try:
-        from spike._auto_beq_helpers import wav_cache_dir
-        cache = wav_cache_dir()
-        console.print("[dim]Scanning WAV cache...[/dim]", end=" ")
-        count = sum(1 for _ in cache.rglob("*.wav"))
-        elapsed = _time.monotonic() - t0
-        console.print(f"[dim]{count} files found ({elapsed:.1f}s).[/dim]")
-    except Exception as exc:
-        elapsed = _time.monotonic() - t0
-        console.print(f"[dim]failed ({elapsed:.1f}s): {exc}[/dim]")
-        return -1
-
-    # Write to disk cache.
-    try:
-        _WAV_COUNT_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        _WAV_COUNT_CACHE.write_text(_json.dumps({
-            "count": count, "timestamp": _time.time(),
-        }))
-    except Exception:
-        pass
-    return count
-
-
-def _cache_status_line() -> str:
-    """Quick status line — reads from disk cache without scanning."""
-    if _WAV_COUNT_CACHE.exists():
-        try:
-            data = _json.loads(_WAV_COUNT_CACHE.read_text())
-            age = _time.time() - data.get("timestamp", 0)
-            if age < _WAV_COUNT_MAX_AGE:
-                return f"✓ {data['count']} WAVs cached"
-        except Exception:
-            pass
-    return "not scanned yet"
-
-
 _cached_model_status: str | None = None
 
 
@@ -136,8 +81,15 @@ def _model_status_line() -> str:
 
 def _build_tools_menu() -> list[tuple[str, object]]:
     """Build the Tools menu dynamically with live status."""
-    cache_status = _cache_status_line()
     model_status = _model_status_line()
+
+    # Quick WAV cache check — just existence, no counting.
+    try:
+        from spike._auto_beq_helpers import wav_cache_dir
+        cache = wav_cache_dir()
+        cache_status = "✓ configured" if cache.exists() else "not found"
+    except Exception:
+        cache_status = "not configured"
 
     return [
         (f"STEP 1: EXTRACT AUDIO ({cache_status})", None),
@@ -701,42 +653,71 @@ def main_callback(
 def _validate_config_paths() -> None:
     """Check all configured paths at startup. Warn and offer to fix if invalid."""
     import json as _json
-    log = logging.getLogger("beq_cli")
 
     problems: list[str] = []
     _beq = None
 
-    # WAV cache.
+    # Shared dir — required, everything derives from it.
+    from spike._auto_beq_helpers import beq_dir as _bd
     try:
-        from spike._auto_beq_helpers import wav_cache_dir
-        log.info("checking WAV cache configuration...")
+        _beq = _bd()
+    except Exception:
+        console.print()
+        console.print("[red bold]ERROR: BEQ shared directory is not configured.[/red bold]")
+        console.print()
+        console.print("Set one of the following:")
+        console.print("  • [bold]BEQ_SHARED_DIR[/bold] environment variable")
+        console.print("  • [bold]shared_beq_dir[/bold] in ~/.config/beqdesigner/settings.json")
+        console.print()
+        console.print("Example:")
+        console.print("  export BEQ_SHARED_DIR=/path/to/your/beqdesigner")
+        console.print()
+        raise SystemExit(1)
+
+    # Check if shared dir is empty — might be a misconfigured mount.
+    if _beq.exists() and not any(_beq.iterdir()):
+        console.print()
+        console.print(f"[yellow bold]WARNING: Shared directory is empty:[/yellow bold] {_beq}")
+        console.print()
+        try:
+            from cli.common import menu_select
+            answer = menu_select(
+                "Is this a new installation?",
+                [("Yes — initialise this directory", "yes"),
+                 ("No — something is wrong (exit)", "no")],
+            )
+        except (KeyboardInterrupt, EOFError):
+            answer = None
+        if answer != "yes":
+            console.print()
+            console.print("Check that the directory path is correct and any")
+            console.print("network mounts are active, then try again.")
+            console.print()
+            raise SystemExit(1)
+        log.info("initialising new shared directory: %s", _beq)
+
+    # WAV cache — derived from shared dir.
+    from spike._auto_beq_helpers import wav_cache_dir
+    log.info("checking WAV cache configuration...")
+    try:
         cache = wav_cache_dir()
         if not cache.exists():
             problems.append(f"WAV cache does not exist: {cache}")
-    except RuntimeError:
-        pass  # not configured — banner will show NOT CONFIGURED
+    except RuntimeError as exc:
+        problems.append(str(exc))
 
-    # BEQ dir + extract config media roots.
-    try:
-        from spike._auto_beq_helpers import beq_dir as _bd
-        _beq = _bd()
-        extract_config = _beq / ".extract_config.json"
-        if extract_config.exists():
-            roots = _json.loads(extract_config.read_text()).get("media_roots", [])
-            if roots:
-                log.info("validating %d configured media root(s)...", len(roots))
-                for r in roots:
-                    if not Path(r).exists():
-                        problems.append(f"Media root does not exist: {r}")
-    except Exception:
-        pass
+    # Validate media roots — uses the same resolution as the extract command.
+    from cli.extract import get_configured_media_roots
+    roots = get_configured_media_roots()
+    if roots:
+        log.info("validating %d configured media root(s)...", len(roots))
+        for r in roots:
+            if not r.exists():
+                problems.append(f"Media root does not exist: {r}")
 
     # Pre-cache model status so Tools menu doesn't have to stat the NAS.
     log.info("checking for production model...")
     _model_status_line()  # populates _cached_model_status
-
-    # Pre-cache WAV count from disk (or scan if expired).
-    _ensure_wav_count()
 
     if not problems:
         return

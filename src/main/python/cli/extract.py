@@ -1248,6 +1248,39 @@ def cleanup_tmp(wav_root: Path) -> int:
 _CONFIG_NAME = "extract_config.json"
 
 
+def get_configured_media_roots() -> list[Path]:
+    """Return the current media roots without prompting or side effects.
+
+    Resolution order:
+    1. ``BEQ_MEDIA_DIR`` env var — auto-discover all dirs under it
+    2. ``extract_config.json`` in local config dir (~/.config/beqdesigner/)
+    3. Empty list (not configured)
+
+    This is the single source of truth for "what media roots does this
+    machine have?" — used by both the extract command and startup validation.
+    """
+    # 1. Auto-discovery (Docker).
+    media_dir_env = os.environ.get("BEQ_MEDIA_DIR")
+    if media_dir_env:
+        media_dir = Path(media_dir_env)
+        if media_dir.is_dir():
+            return sorted(p for p in media_dir.iterdir() if p.is_dir())
+
+    # 2. Local config file.
+    try:
+        from spike._auto_beq_helpers import beq_config_dir
+        config_path = beq_config_dir() / _CONFIG_NAME
+        if config_path.exists():
+            data = json.loads(config_path.read_text())
+            roots = data.get("media_roots", [])
+            if roots:
+                return [Path(p) for p in roots]
+    except Exception:
+        pass
+
+    return []
+
+
 def _load_or_prompt_config(
     beq_dir_arg: Path | None,
     media_roots_arg: list[Path] | None,

@@ -844,20 +844,17 @@ def beq_dir() -> Path:
     ``beq_config_dir()`` (~/.config/beqdesigner/).
 
     Resolution order:
-    1. ``BEQ_SHARED_DIR`` env var (preferred)
+    1. ``BEQ_SHARED_DIR`` env var
     2. ``shared_beq_dir`` in ``~/.config/beqdesigner/settings.json``
-    3. ``BEQ_DIR`` env var (backward compat)
-    4. ``audio_cache_dir`` in settings.json (backward compat — parent of wav-cache)
-    5. Derived from ``wav_cache_dir().parent`` (last resort)
+
+    Raises RuntimeError if not configured.
     """
-    # 1. New env var.
     raw = os.environ.get("BEQ_SHARED_DIR")
     if raw:
         p = Path(raw).expanduser()
         p.mkdir(parents=True, exist_ok=True)
         return p
 
-    # 2. New settings key.
     cfg_path = Path.home() / ".config" / "beqdesigner" / "settings.json"
     if cfg_path.exists():
         try:
@@ -870,30 +867,12 @@ def beq_dir() -> Path:
         except Exception:
             pass
 
-    # 3. Old env var (backward compat).
-    raw = os.environ.get("BEQ_DIR")
-    if raw:
-        log.debug("BEQ_DIR is deprecated — use BEQ_SHARED_DIR instead")
-        p = Path(raw).expanduser()
-        p.mkdir(parents=True, exist_ok=True)
-        return p
-
-    # 4. Old settings key (backward compat) — audio_cache_dir points to
-    #    wav-cache, so the shared dir is its parent.
-    if cfg_path.exists():
-        try:
-            data = json.loads(cfg_path.read_text())
-            raw = data.get("audio_cache_dir")
-            if raw:
-                log.debug("deriving beq_dir from deprecated audio_cache_dir setting")
-                p = Path(raw).expanduser().parent
-                p.mkdir(parents=True, exist_ok=True)
-                return p
-        except Exception:
-            pass
-
-    # 5. Fall back to wav_cache_dir parent.
-    return wav_cache_dir().parent
+    raise RuntimeError(
+        "BEQ shared directory not configured. "
+        "Set BEQ_SHARED_DIR env var or add "
+        '{"shared_beq_dir": "/path/to/dir"} '
+        "to ~/.config/beqdesigner/settings.json"
+    )
 
 
 def wav_cache_dir() -> Path:
@@ -930,10 +909,17 @@ def wav_cache_dir() -> Path:
                         explicit_source = f"audio_cache_dir in {cfg_path}"
                 except Exception:
                     pass
+    # Derive from beq_dir() as last resort.
+    if not raw:
+        try:
+            raw = str(beq_dir() / "wav-cache")
+            explicit_source = None  # auto-derived, will auto-create
+        except Exception:
+            pass
     if not raw:
         raise RuntimeError(
-            "WAV cache dir not configured. Set BEQ_WAV_CACHE env var "
-            "or add {\"wav_cache_dir\": \"/path/to/cache\"} "
+            "WAV cache dir not configured. Set BEQ_SHARED_DIR env var, "
+            "or BEQ_WAV_CACHE, or add {\"wav_cache_dir\": \"/path/to/cache\"} "
             "to ~/.config/beqdesigner/settings.json"
         )
 

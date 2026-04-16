@@ -216,18 +216,39 @@ def save_config(config: CliConfig) -> None:
 
 
 def get_version_info() -> tuple[str, str, str]:
-    """Return (version, branch, commit) for the current repo."""
-    try:
-        branch = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
-        ).stdout.strip()
-        commit = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, cwd=str(REPO_ROOT),
-        ).stdout.strip()
-    except Exception:
-        branch, commit = "unknown", "unknown"
+    """Return (version, branch, commit) for the current repo.
+
+    Resolution order:
+    1. build/version.json (written by run.sh before Docker build)
+    2. Live git commands (when running outside Docker)
+    """
+    branch = ""
+    commit = ""
+
+    # 1. Check version.json (baked into Docker image by run.sh).
+    version_file = REPO_ROOT / "build" / "version.json"
+    if version_file.exists():
+        try:
+            import json as _json
+            data = _json.loads(version_file.read_text())
+            branch = data.get("branch", "")
+            commit = data.get("commit", "")
+        except Exception:
+            pass
+
+    # 2. Fall back to live git.
+    if not branch or branch == "unknown":
+        try:
+            branch = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, cwd=str(REPO_ROOT),
+            ).stdout.strip()
+            commit = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, cwd=str(REPO_ROOT),
+            ).stdout.strip()
+        except Exception:
+            branch, commit = "unknown", "unknown"
     try:
         from importlib.metadata import version as _pkg_version
         version = _pkg_version("beqdesigner")
@@ -244,7 +265,19 @@ def show_banner(title: str, config: CliConfig, log_file: Path | None = None) -> 
     from rich.panel import Panel
     from spike._auto_beq_helpers import wav_cache_dir
 
+    from spike._auto_beq_helpers import beq_dir
+
     version, branch, commit = get_version_info()
+
+    # Shared directory — required, everything derives from it.
+    try:
+        shared_dir = beq_dir()
+        shared_str = str(shared_dir)
+    except Exception:
+        shared_dir = None
+        shared_str = "[red]NOT CONFIGURED — set BEQ_SHARED_DIR env var[/red]"
+
+    # WAV cache — derived from shared dir.
     try:
         cache_dir = str(wav_cache_dir())
     except RuntimeError as exc:
@@ -258,27 +291,27 @@ def show_banner(title: str, config: CliConfig, log_file: Path | None = None) -> 
         model_info = "E85 differentiable-DSP (torch)"
     elif _os.environ.get("AUTO_BEQ_MODEL_PATH"):
         model_info = f"custom ({_os.environ['AUTO_BEQ_MODEL_PATH']})"
-    else:
-        try:
-            from spike._auto_beq_helpers import beq_dir
-            prod = beq_dir() / "production_model.joblib"
-            if prod.exists():
-                model_info = f"E82 production ({prod.name})"
-            else:
-                model_info = "[yellow]no production model — will train inline (slow)[/yellow]"
-        except Exception:
+    elif shared_dir:
+        prod = shared_dir / "production_model.joblib"
+        if prod.exists():
+            model_info = f"E82 production ({prod.name})"
+        else:
             model_info = "[yellow]no production model — will train inline (slow)[/yellow]"
+    else:
+        model_info = "[yellow]unknown — shared dir not configured[/yellow]"
 
     out_abs = str(Path(config.output_dir).resolve())
+    # Pad labels to align values (longest label is "Shared dir:" = 11 chars).
     lines = [
-        f"[bold]Version:[/bold]   {version} ({branch} @ {commit})",
-        f"[bold]Model:[/bold]     {model_info}",
-        f"[bold]Output:[/bold]    [link=file://{out_abs}]{config.output_dir}[/link]",
-        f"[bold]WAV cache:[/bold] {cache_dir}",
+        f"[bold]Version:   [/bold] {version} ({branch} @ {commit})",
+        f"[bold]Shared dir:[/bold] {shared_str}",
+        f"[bold]WAV cache: [/bold] {cache_dir}",
+        f"[bold]Model:     [/bold] {model_info}",
+        f"[bold]Output:    [/bold] [link=file://{out_abs}]{config.output_dir}[/link]",
     ]
     if log_file:
         log_abs = str(log_file.resolve())
-        lines.append(f"[bold]Log file:[/bold]  [link=file://{log_abs}]{log_file}[/link]")
+        lines.append(f"[bold]Log file:  [/bold] [link=file://{log_abs}]{log_file}[/link]")
 
     banner = "\n".join(lines)
     console.print()

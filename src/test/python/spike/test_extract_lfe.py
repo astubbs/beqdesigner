@@ -1040,39 +1040,79 @@ def test_beq_dir_resolves_from_shared_beq_dir_setting(tmp_path, monkeypatch):
     assert helpers.beq_dir() == target
 
 
-def test_beq_dir_falls_back_to_BEQ_DIR(tmp_path, monkeypatch):
-    """BEQ_DIR env var is used as backward-compatible fallback."""
-    from spike import _auto_beq_helpers as helpers
-    target = tmp_path / "old_beq"
-    target.mkdir()
-    monkeypatch.delenv("BEQ_SHARED_DIR", raising=False)
-    monkeypatch.setenv("BEQ_DIR", str(target))
-    # Isolate from real settings.json which may have shared_beq_dir.
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    (tmp_path / ".config" / "beqdesigner").mkdir(parents=True, exist_ok=True)
-    (tmp_path / ".config" / "beqdesigner" / "settings.json").write_text("{}")
-    assert helpers.beq_dir() == target
-
-
-def test_beq_dir_falls_back_to_audio_cache_dir_parent(tmp_path, monkeypatch):
-    """audio_cache_dir setting is used as backward compat — parent of wav-cache."""
+def test_beq_dir_errors_when_not_configured(tmp_path, monkeypatch):
+    """beq_dir() raises RuntimeError when nothing is configured."""
     from spike import _auto_beq_helpers as helpers
     monkeypatch.delenv("BEQ_SHARED_DIR", raising=False)
-    monkeypatch.delenv("BEQ_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "fakehome")
 
-    parent = tmp_path / "beq_parent"
-    wav_cache = parent / "wav-cache"
-    wav_cache.mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="not configured"):
+        helpers.beq_dir()
 
-    # Patch Path.home to use our test config.
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    cfg_dir = tmp_path / ".config" / "beqdesigner"
-    cfg_dir.mkdir(parents=True, exist_ok=True)
-    settings = {"audio_cache_dir": str(wav_cache)}
-    (cfg_dir / "settings.json").write_text(json.dumps(settings))
 
-    assert helpers.beq_dir() == parent
 
+# ---------------------------------------------------------------------------
+# wav_cache_dir — resolution from BEQ_SHARED_DIR
+# ---------------------------------------------------------------------------
+
+
+class TestWavCacheDirResolution:
+    """wav_cache_dir() should auto-derive from BEQ_SHARED_DIR."""
+
+    def test_derives_from_beq_shared_dir(self, tmp_path, monkeypatch):
+        """When BEQ_SHARED_DIR is set, wav_cache_dir returns {shared}/wav-cache."""
+        from spike import _auto_beq_helpers as helpers
+        monkeypatch.setenv("BEQ_SHARED_DIR", str(tmp_path))
+        monkeypatch.delenv("BEQ_WAV_CACHE", raising=False)
+        monkeypatch.delenv("BEQ_DIR", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "fakehome")
+
+        result = helpers.wav_cache_dir()
+        assert result == tmp_path / "wav-cache"
+        assert result.exists()  # auto-created
+
+    def test_explicit_wav_cache_takes_precedence(self, tmp_path, monkeypatch):
+        """BEQ_WAV_CACHE overrides BEQ_SHARED_DIR derivation."""
+        from spike import _auto_beq_helpers as helpers
+        explicit = tmp_path / "my-custom-cache"
+        explicit.mkdir()
+        monkeypatch.setenv("BEQ_WAV_CACHE", str(explicit))
+        monkeypatch.setenv("BEQ_SHARED_DIR", str(tmp_path / "shared"))
+
+        result = helpers.wav_cache_dir()
+        assert result == explicit
+
+    def test_errors_when_nothing_configured(self, tmp_path, monkeypatch):
+        """Raises RuntimeError when no config can resolve."""
+        from spike import _auto_beq_helpers as helpers
+        monkeypatch.delenv("BEQ_SHARED_DIR", raising=False)
+        monkeypatch.delenv("BEQ_WAV_CACHE", raising=False)
+        monkeypatch.delenv("BEQ_DIR", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "fakehome")
+
+        with pytest.raises(RuntimeError, match="not configured"):
+            helpers.wav_cache_dir()
+
+
+class TestCheckProductionModel:
+    """check_production_model() in shared helpers, no Qt import."""
+
+    def test_finds_joblib_model(self, tmp_path, monkeypatch):
+        from spike import _auto_beq_helpers as helpers
+        monkeypatch.setenv("BEQ_SHARED_DIR", str(tmp_path))
+        monkeypatch.delenv("AUTO_BEQ_MODEL_PATH", raising=False)
+        monkeypatch.delenv("AUTO_BEQ_ADVISOR", raising=False)
+        (tmp_path / "production_model.joblib").touch()
+
+        assert helpers.check_production_model() is True
+
+    def test_missing_model(self, tmp_path, monkeypatch):
+        from spike import _auto_beq_helpers as helpers
+        monkeypatch.setenv("BEQ_SHARED_DIR", str(tmp_path))
+        monkeypatch.delenv("AUTO_BEQ_MODEL_PATH", raising=False)
+        monkeypatch.delenv("AUTO_BEQ_ADVISOR", raising=False)
+
+        assert helpers.check_production_model() is False
 
 
 # ---------------------------------------------------------------------------
@@ -1151,8 +1191,8 @@ class TestFindMediaDirs:
 class TestProgressLogger:
     """Tests for model.media_utils.ProgressLogger."""
 
-    def test_logs_final_item(self):
-        """The last item is always logged regardless of interval."""
+    def test_logs_first_and_final_item(self):
+        """The first and last items are always logged regardless of interval."""
         from model.media_utils import ProgressLogger
         import logging
 
@@ -1167,13 +1207,15 @@ class TestProgressLogger:
         progress.update(2, label="b")
         progress.update(3, label="c")  # final — must log
 
-        # Only the final item should be logged (interval too large for others).
-        assert len(msgs) == 1
-        assert "3/3" in msgs[0]
-        assert "c" in msgs[0]
+        # First and final items logged; middle suppressed by interval.
+        assert len(msgs) == 2
+        assert "1/3" in msgs[0]
+        assert "a" in msgs[0]
+        assert "3/3" in msgs[1]
+        assert "c" in msgs[1]
 
-    def test_respects_min_interval(self):
-        """Items before min_interval_s elapses are suppressed."""
+    def test_respects_min_interval_after_first(self):
+        """Items after the first are suppressed until min_interval_s elapses."""
         from model.media_utils import ProgressLogger
         import logging
 
@@ -1186,8 +1228,9 @@ class TestProgressLogger:
         progress = ProgressLogger(total=100, logger=logger, min_interval_s=9999)
         for i in range(1, 100):
             progress.update(i)
-        # None should have been logged (interval not reached, not final).
-        assert len(msgs) == 0
+        # Only the first item should be logged (interval too large for rest).
+        assert len(msgs) == 1
+        assert "1/100" in msgs[0]
 
     def test_logs_when_interval_elapsed(self):
         """Items after min_interval_s has elapsed are logged."""

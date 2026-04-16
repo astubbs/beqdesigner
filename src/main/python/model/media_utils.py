@@ -80,13 +80,20 @@ class ProgressLogger:
         self.level = level
         self._t0 = time.time()
         self._last_log_time = self._t0  # first log after min_interval_s elapses
+        self._first_logged = False
 
     def update(self, current: int, label: str = "") -> None:
-        """Record progress. Logs only if enough time has passed or this is the last item."""
+        """Record progress. Logs only if enough time has passed or this is the last item.
+
+        The very first update is always emitted so the user gets immediate
+        feedback that work has started.
+        """
         now = time.time()
         is_last = current >= self.total
-        if not is_last and (now - self._last_log_time) < self.min_interval_s:
+        is_first = not self._first_logged
+        if not is_first and not is_last and (now - self._last_log_time) < self.min_interval_s:
             return
+        self._first_logged = True
 
         self._last_log_time = now
         elapsed = now - self._t0
@@ -114,6 +121,26 @@ class ProgressLogger:
             self.level, "  %s (%s)", message, format_duration(elapsed),
         )
         return elapsed
+
+def dir_fingerprint(directory: Path) -> str:
+    """Compute a cheap fingerprint from a directory's immediate children mtimes.
+
+    Returns a string that changes whenever a child is added, removed, or
+    modified. Uses only ``os.scandir`` — one readdir call, no recursive
+    walk. Suitable for cache invalidation without full rescans.
+    """
+    import os as _os
+    try:
+        dir_mtime = _os.stat(directory).st_mtime
+        children = sorted(
+            (e.name, e.stat().st_mtime)
+            for e in _os.scandir(directory)
+            if e.is_dir()
+        )
+        return f"{dir_mtime}:{children}"
+    except OSError:
+        return ""
+
 
 _HAS_YEAR = re.compile(r"\(\d{4}\)")
 
