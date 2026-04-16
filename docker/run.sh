@@ -69,4 +69,6 @@ if [ "$BUILD" = true ]; then
     $DC -f "$COMPOSE_FILE" build
 fi
 
-$DC -f "$COMPOSE_FILE" run --remove-orphans beq-designer "$@"
+# -it forces interactive + TTY so prompts work across all Docker variants
+# (Synology's docker-compose otherwise attaches a TTY without stdin).
+$DC -f "$COMPOSE_FILE" run --rm -it --remove-orphans beq-designer "$@"

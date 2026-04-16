@@ -1647,29 +1647,41 @@ def select_unmatched_to_extract(
 
 
 def _prompt_unmatched_extraction(
-    no_catalogue_count: int, default_n: int = 50,
+    no_catalogue_count: int,
+    default_n: int = 50,
+    assume_yes: bool = False,
 ) -> int:
-    """Interactive prompt: extract N unmatched media? Returns 0 if no.
+    """Interactive prompt: extract N unmatched media? Returns chosen N or 0.
 
-    Only prompts when stdin is a TTY (script invocation from a terminal).
-    Returns 0 for non-TTY or "n"; otherwise returns the user's chosen N,
-    clamped to ``[0, no_catalogue_count]``.
+    Always prints the informational message so the user sees what's about
+    to happen. If ``assume_yes`` is True (or stdin isn't a TTY), auto-answers
+    yes with ``default_n`` items -- no prompt. Otherwise prompts interactively.
+
+    Returns the chosen N, clamped to ``[0, no_catalogue_count]``.
     """
-    if not sys.stdin.isatty():
-        return 0
+    print()
+    print(
+        f"Found {no_catalogue_count} media files with DB IDs but no "
+        f"BEQ catalogue entry.",
+        flush=True,
+    )
+    print(
+        "These can grow the E84 self-training unlabelled pool. "
+        "Selection uses bias-corrected diversity scoring against the "
+        "catalogue distribution.",
+        flush=True,
+    )
+
+    auto = assume_yes or not sys.stdin.isatty()
+    if auto:
+        n = min(default_n, no_catalogue_count)
+        reason = "--yes" if assume_yes else "non-interactive (no TTY)"
+        print(f"Extract WAVs for some of them? [y/N] y  (auto: {reason})",
+              flush=True)
+        print(f"How many? {n}  (auto: default)", flush=True)
+        return n
+
     try:
-        print()
-        print(
-            f"Found {no_catalogue_count} media files with DB IDs but no "
-            f"BEQ catalogue entry.",
-            flush=True,
-        )
-        print(
-            "These can grow the E84 self-training unlabelled pool. "
-            "Selection uses bias-corrected diversity scoring against the "
-            "catalogue distribution.",
-            flush=True,
-        )
         resp = input(
             f"Extract WAVs for some of them? [y/N] ",
         ).strip().lower()
@@ -1720,6 +1732,12 @@ def main(argv: list[str] | None = None):
              "scoring. These grow the E84 self-training unlabelled pool. "
              "If omitted and run interactively, the script prompts. Pass "
              "0 to force-skip the prompt in scripted runs.",
+    )
+    parser.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Auto-answer yes to all prompts (non-interactive mode). "
+             "The prompt is still printed so the user can see what's "
+             "happening. Useful for Docker / scripted runs.",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true",
@@ -1803,7 +1821,9 @@ def main(argv: list[str] | None = None):
     if no_catalogue_media:
         n_to_extract = args.extract_unmatched
         if n_to_extract is None:
-            n_to_extract = _prompt_unmatched_extraction(len(no_catalogue_media))
+            n_to_extract = _prompt_unmatched_extraction(
+                len(no_catalogue_media), assume_yes=args.yes,
+            )
         if n_to_extract > 0:
             log.info("")
             log.info("=" * 60)
