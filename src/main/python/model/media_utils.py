@@ -22,16 +22,38 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def format_duration(seconds: float) -> str:
+def format_duration(seconds: float, approximate: bool = True) -> str:
     """Format seconds as a human-readable duration, omitting zero units.
 
-    Examples: ``"45s"``, ``"2m 30s"``, ``"1h 23m"``, ``"1h 23m 4s"``.
+    When ``approximate`` is True (default), drops insignificant units
+    for large durations: hours drop seconds, many-hours drop minutes.
+
+    Examples:
+        5       -> "5s"
+        150     -> "2m 30s"
+        3700    -> "1h 1m"      (seconds dropped -- approximate)
+        36000   -> "~10h"       (minutes dropped -- approximate)
+        7260    -> "2h 1m"
     """
     s = int(seconds)
     if s < 0:
         s = 0
     h, s = divmod(s, 3600)
     m, s = divmod(s, 60)
+
+    if approximate:
+        if h >= 5:
+            # Many hours: round to nearest hour.
+            if m >= 30:
+                h += 1
+            return f"~{h}h"
+        if h >= 1:
+            # Hours: show hours + minutes, drop seconds.
+            if m:
+                return f"{h}h:{m}m"
+            return f"{h}h"
+
+    # Under an hour, or non-approximate: show all non-zero units.
     parts = []
     if h:
         parts.append(f"{h}h")
@@ -39,7 +61,7 @@ def format_duration(seconds: float) -> str:
         parts.append(f"{m}m")
     if s or not parts:
         parts.append(f"{s}s")
-    return " ".join(parts)
+    return ":".join(parts)
 
 
 # ---------------------------------------------------------------------------

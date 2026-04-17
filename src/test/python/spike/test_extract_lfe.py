@@ -1498,7 +1498,7 @@ class TestFormatDuration:
 
     def test_minutes_and_seconds(self):
         from model.media_utils import format_duration
-        assert format_duration(150) == "2m 30s"
+        assert format_duration(150) == "2m:30s"
 
     def test_minutes_no_seconds(self):
         from model.media_utils import format_duration
@@ -1506,15 +1506,27 @@ class TestFormatDuration:
 
     def test_hours_and_minutes(self):
         from model.media_utils import format_duration
-        assert format_duration(4980) == "1h 23m"
+        assert format_duration(4980) == "1h:23m"
 
-    def test_hours_minutes_seconds(self):
+    def test_hours_minutes_seconds_approximate(self):
+        """With approximate=True (default), hours drop seconds."""
         from model.media_utils import format_duration
-        assert format_duration(4984) == "1h 23m 4s"
+        assert format_duration(4984) == "1h:23m"  # seconds dropped
+
+    def test_hours_minutes_seconds_exact(self):
+        from model.media_utils import format_duration
+        assert format_duration(4984, approximate=False) == "1h:23m:4s"
 
     def test_hours_only(self):
         from model.media_utils import format_duration
         assert format_duration(3600) == "1h"
+
+    def test_many_hours_approximate(self):
+        """5+ hours rounds to nearest hour with ~ prefix."""
+        from model.media_utils import format_duration
+        assert format_duration(36000) == "~10h"
+        assert format_duration(19800) == "~6h"  # 5h 30m -> ~6h (rounds up)
+        assert format_duration(18000) == "~5h"  # exactly 5h
 
     def test_fractional_rounds_down(self):
         from model.media_utils import format_duration
