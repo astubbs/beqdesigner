@@ -1769,33 +1769,80 @@ def _prompt_unmatched_extraction(
     no_catalogue_count: int,
     default_n: int | None = None,
     assume_yes: bool = False,
+    phase1_stats: dict | None = None,
+    media_list: list[dict] | None = None,
+    wav_root: Path | None = None,
 ) -> int:
     """Interactive prompt: extract N unmatched media? Returns chosen N or 0.
 
-    Always prints the informational message so the user sees what's about
-    to happen. If ``assume_yes`` is True (or stdin isn't a TTY), auto-answers
-    yes with ``default_n`` items (or ALL if default_n is None) -- no prompt.
-    Otherwise prompts interactively.
+    Always prints the informational message and time estimate so the user
+    sees what's about to happen. If ``assume_yes`` is True (or BEQ_AUTO_YES
+    env var is set, or stdin isn't a TTY), auto-answers yes -- no prompt.
 
     Returns the chosen N, clamped to ``[0, no_catalogue_count]``.
     """
+    from model.media_utils import format_duration
+    import shutil
+
     print()
     print(
         f"Found {no_catalogue_count} media files with DB IDs but no "
         f"BEQ catalogue entry.",
         flush=True,
     )
-    print(
-        "These can grow the E84 self-training unlabelled pool. "
-        "Selection uses bias-corrected diversity scoring against the "
-        "catalogue distribution.",
-        flush=True,
-    )
+
+    # Compute time estimate from phase 1 stats.
+    rate_mbs = 0.0
+    avg_size_mb = 0.0
+    if phase1_stats and phase1_stats.get("elapsed", 0) > 0:
+        total_mb = sum(
+            m.get("size_bytes", 0) / 1e6 for m in (media_list or [])
+        )
+        if no_catalogue_count > 0:
+            avg_size_mb = total_mb / no_catalogue_count
+        p1_extracted = phase1_stats.get("extracted", 0)
+        p1_elapsed = phase1_stats["elapsed"]
+        if p1_extracted > 0:
+            rate_mbs = (p1_extracted * avg_size_mb) / p1_elapsed if avg_size_mb else 0
+
+    def _estimate_for_n(n: int) -> str:
+        if rate_mbs <= 0 or avg_size_mb <= 0:
+            return ""
+        est_s = (n * avg_size_mb) / rate_mbs
+        eta = datetime.now() + timedelta(seconds=est_s)
+        est_gb = (n * avg_size_mb) / 1024
+        return (
+            f"  Est: {format_duration(est_s)} | "
+            f"ETA {eta.strftime('%H:%M')} | "
+            f"~{est_gb:.1f} GB WAV output"
+        )
+
+    # Show phase 1 rate and disk space.
+    if phase1_stats and phase1_stats.get("extracted", 0) > 0:
+        p1_rate = phase1_stats["extracted"] / phase1_stats["elapsed"]
+        print(
+            f"Phase 1 rate: {p1_rate:.1f} titles/min "
+            f"({format_duration(phase1_stats['elapsed'])} "
+            f"for {phase1_stats['extracted'] + phase1_stats['skipped']} titles)",
+            flush=True,
+        )
+    if wav_root:
+        try:
+            usage = shutil.disk_usage(wav_root)
+            free_gb = usage.free / (1024 ** 3)
+            print(f"WAV cache disk space: {free_gb:.1f} GB available", flush=True)
+        except OSError:
+            pass
+
+    # Show estimate for the full count.
+    full_est = _estimate_for_n(no_catalogue_count)
+    if full_est:
+        print(f"All {no_catalogue_count}: {full_est}", flush=True)
+    print(flush=True)
 
     env_yes = os.environ.get("BEQ_AUTO_YES") == "1"
     auto = assume_yes or env_yes or not sys.stdin.isatty()
     if auto:
-        # Default to ALL unmatched. Pass --extract-unmatched N to limit.
         if default_n is None:
             n = no_catalogue_count
             label = "all"
@@ -1808,10 +1855,70 @@ def _prompt_unmatched_extraction(
             reason = "BEQ_AUTO_YES env"
         else:
             reason = "non-interactive (no TTY)"
+        est = _estimate_for_n(n)
         print(f"Extract WAVs? y  (auto: {reason}, count: {n} ({label}))",
               flush=True)
+        if est:
+            print(est, flush=True)
         return n
 
+    # Interactive prompt with live time estimate via prompt_toolkit.
+    try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.formatted_text import HTML
+
+        effective_default = no_catalogue_count if default_n is None else default_n
+        default_label = "all" if default_n is None else str(default_n)
+
+        current_input = [""]
+
+        def _toolbar():
+            raw = current_input[0].strip()
+            if not raw:
+                n = effective_default
+            else:
+                try:
+                    n = int(raw)
+                except ValueError:
+                    return HTML("<b>Enter a number, y, or n</b>")
+            n = max(0, min(n, no_catalogue_count))
+            est = _estimate_for_n(n)
+            if est:
+                return HTML(f"<b>{est.strip()}</b>")
+            return HTML(f"<b>{n} titles</b>")
+
+        class _InputCapture:
+            """Capture input as user types for toolbar updates."""
+            def __init__(self, session):
+                self._session = session
+
+        session = PromptSession(bottom_toolbar=_toolbar)
+
+        # Hook into the buffer to update current_input on each keystroke.
+        def _on_text_changed(buf):
+            current_input[0] = buf.text
+
+        session.default_buffer.on_text_changed += _on_text_changed
+
+        resp = session.prompt(
+            f"Extract WAVs? [y/N/number] (default {default_label}, max {no_catalogue_count}): ",
+        )
+        resp = resp.strip().lower()
+        if not resp or resp in ("y", "yes"):
+            return min(effective_default, no_catalogue_count)
+        if resp in ("n", "no"):
+            return 0
+        try:
+            n = int(resp)
+            return max(0, min(n, no_catalogue_count))
+        except ValueError:
+            print(f"not a number ({resp!r}) — skipping")
+            return 0
+    except ImportError:
+        # Fallback if prompt_toolkit not available.
+        pass
+
+    # Plain input fallback.
     try:
         default_label = "all" if default_n is None else str(default_n)
         effective_default = no_catalogue_count if default_n is None else default_n
@@ -1822,12 +1929,11 @@ def _prompt_unmatched_extraction(
             return min(effective_default, no_catalogue_count)
         if resp in ("n", "no"):
             return 0
-        # Accept a number directly (e.g. "100").
         try:
             n = int(resp)
             return max(0, min(n, no_catalogue_count))
         except ValueError:
-            print(f"not a number ({resp!r}) — skipping unmatched extraction")
+            print(f"not a number ({resp!r}) — skipping")
             return 0
     except (EOFError, KeyboardInterrupt):
         print()
@@ -1953,7 +2059,11 @@ def main(argv: list[str] | None = None):
         n_to_extract = args.extract_unmatched
         if n_to_extract is None:
             n_to_extract = _prompt_unmatched_extraction(
-                len(no_catalogue_media), assume_yes=args.yes,
+                len(no_catalogue_media),
+                assume_yes=args.yes,
+                phase1_stats=matched_stats,
+                media_list=no_catalogue_media,
+                wav_root=wav_root,
             )
         if n_to_extract > 0:
             log.info("")
