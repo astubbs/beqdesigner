@@ -611,18 +611,9 @@ def main_callback(
     ctx: typer.Context,
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Show DEBUG messages."),
     quiet: bool = typer.Option(False, "-q", "--quiet", help="Only show warnings and errors."),
-    yes: bool = typer.Option(True, "-y", "--yes",
-                             help="Auto-answer prompts (default). Pass --no-yes to disable."),
-    no_yes: bool = typer.Option(False, "--no-yes",
-                                help="Disable auto-yes — prompt interactively."),
 ) -> None:
     """BEQ Designer — run with no subcommand for interactive menus."""
     import sys as _sys
-
-    # Stash --yes in an env var so subcommands inherit it without needing
-    # the flag on every command. --no-yes overrides --yes.
-    effective_yes = yes and not no_yes
-    os.environ["BEQ_AUTO_YES"] = "1" if effective_yes else "0"
 
     # Log level: default INFO, -v for DEBUG, -q for WARNING only.
     if quiet:

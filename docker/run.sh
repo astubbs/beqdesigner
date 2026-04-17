@@ -71,7 +71,7 @@ fi
 
 # -it forces interactive + TTY so prompts work across all Docker variants
 # (Synology's docker-compose otherwise attaches a TTY without stdin).
-# Inject -y FIRST (before any subcommand) so the global flag is honoured
-# regardless of how the user orders args. -y is the typer global default
-# anyway, but explicit is safer than relying on default propagation.
-$DC -f "$COMPOSE_FILE" run --rm -it --remove-orphans beq-designer -y "$@"
+# BEQ_AUTO_YES is set in the Dockerfile (default on). The prompt still
+# prints what's happening but auto-answers. Use --no-yes on the CLI to
+# override and prompt interactively.
+$DC -f "$COMPOSE_FILE" run --rm -it --remove-orphans beq-designer "$@"

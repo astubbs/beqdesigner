@@ -1686,6 +1686,40 @@ def select_unmatched_to_extract(
         have_total, target_total,
     )
 
+    # Explain the selection algorithm.
+    log.info("")
+    log.info("  Selection algorithm: greedy bias-corrected diversity scoring")
+    log.info("  ---------------------------------------------------------------")
+    log.info("  The BEQ catalogue has a distribution across format (Atmos, TrueHD,")
+    log.info("  DTS-HD, DD+), era (decade), and content type (film/TV). Our")
+    log.info("  current cache may over-represent some categories and under-represent")
+    log.info("  others. Each candidate is scored by how much it fills the BIGGEST")
+    log.info("  gap between our cache distribution and the catalogue distribution.")
+    log.info("  At each step, the selected title updates the cache distribution,")
+    log.info("  so subsequent picks target the NEXT biggest gap. This ensures")
+    log.info("  maximum diversity across the training set.")
+    log.info("")
+
+    # Show top distribution gaps.
+    gaps: list[tuple[str, float]] = []
+    for dim_name, have_d, target_d in [
+        ("format", have_format, target_format),
+        ("era", have_era, target_era),
+        ("type", have_ct, target_ct),
+    ]:
+        for key in sorted(set(list(have_d.keys()) + list(target_d.keys()))):
+            have_pct = have_d.get(key, 0) * 100 / max(have_total, 1)
+            target_pct = target_d.get(key, 0) * 100 / max(target_total, 1)
+            deficit = target_pct - have_pct
+            if deficit > 1:  # only show significant gaps
+                gaps.append((f"{dim_name}:{key}", deficit))
+    gaps.sort(key=lambda x: -x[1])
+    if gaps:
+        log.info("  Top distribution gaps (cache%% vs catalogue%%):")
+        for label, deficit in gaps[:8]:
+            log.info("    %s: %.1f%% under-represented", label, deficit)
+        log.info("")
+
     # Greedy loop: score, pick best, update have distribution, repeat.
     from model.media_utils import ProgressLogger
     progress = ProgressLogger(min(n, len(representatives)), logger=log, min_interval_s=5)
@@ -1758,7 +1792,8 @@ def _prompt_unmatched_extraction(
         flush=True,
     )
 
-    auto = assume_yes or not sys.stdin.isatty()
+    env_yes = os.environ.get("BEQ_AUTO_YES") == "1"
+    auto = assume_yes or env_yes or not sys.stdin.isatty()
     if auto:
         # Default to ALL unmatched. Pass --extract-unmatched N to limit.
         if default_n is None:
@@ -1767,10 +1802,14 @@ def _prompt_unmatched_extraction(
         else:
             n = min(default_n, no_catalogue_count)
             label = f"limit {default_n}"
-        reason = "--yes" if assume_yes else "non-interactive (no TTY)"
-        print(f"Extract WAVs for some of them? [y/N] y  (auto: {reason})",
+        if assume_yes:
+            reason = "--yes"
+        elif env_yes:
+            reason = "BEQ_AUTO_YES env"
+        else:
+            reason = "non-interactive (no TTY)"
+        print(f"Extract WAVs? y  (auto: {reason}, count: {n} ({label}))",
               flush=True)
-        print(f"How many? {n}  (auto: {label})", flush=True)
         return n
 
     try:
@@ -1924,15 +1963,19 @@ def main(argv: list[str] | None = None):
                 n_to_extract,
             )
             log.info("=" * 60)
-            have_entries = [e for e in catalogue if e.get("filters") and (
-                any(
-                    m["has_catalogue"] and m.get("id_type") == "tmdb"
-                    and m.get("id_value") == str(e.get("theMovieDB", "")).strip()
-                    for m in all_with_ids
-                )
-            )]
-            # Fallback if the above is empty (e.g. id_type mismatch): use
-            # all trainable catalogue entries so target stats are non-zero.
+            # Build set of TMDB IDs we have WAVs for (O(N) instead of O(N*M)).
+            matched_tmdb_ids = {
+                m["id_value"]
+                for m in all_with_ids
+                if m.get("has_catalogue") and m.get("id_type") == "tmdb"
+            }
+            have_entries = [
+                e for e in catalogue
+                if e.get("filters")
+                and str(e.get("theMovieDB", "")).strip() in matched_tmdb_ids
+            ]
+            # Fallback if empty (e.g. id_type mismatch): use all trainable
+            # catalogue entries so target stats are non-zero.
             if not have_entries:
                 have_entries = [e for e in catalogue if e.get("filters")]
             selected = select_unmatched_to_extract(

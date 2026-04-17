@@ -32,6 +32,8 @@ ENV VIRTUAL_ENV=/usr/local
 ENV BEQ_SHARED_DIR=/beq-designer-shared
 # Auto-discover media roots under /media (all mounted volumes).
 ENV BEQ_MEDIA_DIR=/media
+# Auto-answer prompts (extract unmatched, etc.) — no interactive blocking.
+ENV BEQ_AUTO_YES=1
 
 ENTRYPOINT ["python3", "bin/beq-designer"]
 CMD []
