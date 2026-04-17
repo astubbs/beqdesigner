@@ -1791,39 +1791,43 @@ def _prompt_unmatched_extraction(
         flush=True,
     )
 
-    # Compute time estimate from phase 1 stats.
-    rate_mbs = 0.0
+    # Compute time estimate from phase 1 stats or a conservative default.
     avg_size_mb = 0.0
-    if phase1_stats and phase1_stats.get("elapsed", 0) > 0:
-        total_mb = sum(
-            m.get("size_bytes", 0) / 1e6 for m in (media_list or [])
-        )
-        if no_catalogue_count > 0:
-            avg_size_mb = total_mb / no_catalogue_count
-        p1_extracted = phase1_stats.get("extracted", 0)
+    if media_list and no_catalogue_count > 0:
+        total_mb = sum(m.get("size_bytes", 0) / 1e6 for m in media_list)
+        avg_size_mb = total_mb / no_catalogue_count
+
+    # Extraction rate: use phase 1 if we extracted anything, else a
+    # conservative default (80 MB/s is typical for ffmpeg LFE extraction
+    # on NAS hardware).
+    _DEFAULT_RATE_MBS = 80.0
+    rate_mbs = _DEFAULT_RATE_MBS
+    rate_source = "estimated"
+    if phase1_stats and phase1_stats.get("extracted", 0) > 0:
+        p1_extracted = phase1_stats["extracted"]
         p1_elapsed = phase1_stats["elapsed"]
-        if p1_extracted > 0:
-            rate_mbs = (p1_extracted * avg_size_mb) / p1_elapsed if avg_size_mb else 0
+        if p1_elapsed > 0 and avg_size_mb > 0:
+            rate_mbs = (p1_extracted * avg_size_mb) / p1_elapsed
+            rate_source = "measured"
 
     def _estimate_for_n(n: int) -> str:
-        if rate_mbs <= 0 or avg_size_mb <= 0:
+        if avg_size_mb <= 0:
             return ""
         est_s = (n * avg_size_mb) / rate_mbs
         eta = datetime.now() + timedelta(seconds=est_s)
         est_gb = (n * avg_size_mb) / 1024
         return (
-            f"  Est: {format_duration(est_s)} | "
+            f"~{format_duration(est_s)} | "
             f"ETA {eta.strftime('%H:%M')} | "
             f"~{est_gb:.1f} GB WAV output"
         )
 
-    # Show phase 1 rate and disk space.
-    if phase1_stats and phase1_stats.get("extracted", 0) > 0:
+    # Show context BEFORE the prompt.
+    if rate_source == "measured":
         p1_rate = phase1_stats["extracted"] / phase1_stats["elapsed"]
         print(
-            f"Phase 1 rate: {p1_rate:.1f} titles/min "
-            f"({format_duration(phase1_stats['elapsed'])} "
-            f"for {phase1_stats['extracted'] + phase1_stats['skipped']} titles)",
+            f"Extraction rate: {rate_mbs:.0f} MB/s ({rate_source}, "
+            f"{p1_rate:.1f} titles/min in phase 1)",
             flush=True,
         )
     if wav_root:
@@ -1833,11 +1837,9 @@ def _prompt_unmatched_extraction(
             print(f"WAV cache disk space: {free_gb:.1f} GB available", flush=True)
         except OSError:
             pass
-
-    # Show estimate for the full count.
     full_est = _estimate_for_n(no_catalogue_count)
     if full_est:
-        print(f"All {no_catalogue_count}: {full_est}", flush=True)
+        print(f"All {no_catalogue_count} titles: {full_est}", flush=True)
     print(flush=True)
 
     env_yes = os.environ.get("BEQ_AUTO_YES") == "1"
