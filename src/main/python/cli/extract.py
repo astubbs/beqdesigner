@@ -1779,11 +1779,13 @@ def _prompt_unmatched_extraction(
         ).strip().lower()
         if resp not in ("y", "yes"):
             return 0
+        default_label = "all" if default_n is None else str(default_n)
+        effective_default = no_catalogue_count if default_n is None else default_n
         raw = input(
-            f"How many? (default {default_n}, max {no_catalogue_count}): ",
+            f"How many? (default {default_label}, max {no_catalogue_count}): ",
         ).strip()
         if not raw:
-            return min(default_n, no_catalogue_count)
+            return min(effective_default, no_catalogue_count)
         try:
             n = int(raw)
         except ValueError:
