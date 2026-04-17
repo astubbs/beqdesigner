@@ -43,26 +43,27 @@ def main():
     print(f"WAV cache: {cache}")
     print()
 
-    # Raw WAV counts.
-    all_wavs = sorted(cache.rglob("*.lfe-1000hz.wav"))
-    movies_dir = cache / "Movies"
-    tv_dir = cache / "TV"
-    raw_movies = len(list(movies_dir.rglob("*.lfe-1000hz.wav"))) if movies_dir.exists() else 0
-    raw_tv = len(list(tv_dir.rglob("*.lfe-1000hz.wav"))) if tv_dir.exists() else 0
+    # Raw WAV counts -- walk bucket dirs with progress instead of rglob.
+    import os as _os
+    from model.media_utils import ProgressLogger
+    from model.wav_cache import WAV_SUFFIX
 
-    # TV show count (unique show dirs under TV/Letter/ShowName/).
-    tv_shows = set()
-    if tv_dir.exists():
-        for letter_dir in tv_dir.iterdir():
-            if letter_dir.is_dir():
-                for show_dir in letter_dir.iterdir():
-                    if show_dir.is_dir():
-                        tv_shows.add(show_dir.name)
+    log = logging.getLogger("cache_status")
+    log.info("scanning WAV cache at %s ...", cache)
+    bucket_dirs = sorted(
+        e.path for e in _os.scandir(cache)
+        if e.is_dir()
+    )
+    progress = ProgressLogger(len(bucket_dirs), logger=log, min_interval_s=5)
+    all_wavs: list[Path] = []
+    for i, bucket_path in enumerate(bucket_dirs):
+        for dirpath, _dirnames, filenames in _os.walk(bucket_path):
+            for f in filenames:
+                if f.endswith(WAV_SUFFIX):
+                    all_wavs.append(Path(dirpath) / f)
+        progress.update(i + 1, label=_os.path.basename(bucket_path))
 
     print(f"Raw WAV files:        {len(all_wavs)}")
-    print(f"  Movies:             {raw_movies}")
-    print(f"  TV episodes:        {raw_tv}")
-    print(f"  TV shows:           {len(tv_shows)}")
     print()
 
     # Catalogue-matched (usable for training).

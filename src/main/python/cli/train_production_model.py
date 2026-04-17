@@ -49,7 +49,7 @@ logging.basicConfig(
 log = logging.getLogger("train_production_model")
 
 
-def main():
+def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(
         description="Train the production 50:1 weighted hybrid BEQ model (E82)",
     )
@@ -100,7 +100,7 @@ def main():
         help="E84: number of self-training iterations after the baseline. "
              "Default: 2. Only used when --self-train is set.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # Late imports so --help is fast.
     from model.auto_beq import DEFAULT_GRID

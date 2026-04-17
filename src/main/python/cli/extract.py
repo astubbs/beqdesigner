@@ -1780,6 +1780,56 @@ def select_unmatched_to_extract(
         progress.update(pick + 1, label=best_cand.get("title", ""))
 
     progress.finish(f"selected {len(selected)} unique titles")
+
+    # --- Round 2: if budget remains, pick additional episodes round-robin ---
+    # Each title already has one episode selected. Now cycle through titles
+    # picking random additional episodes until the budget runs out.
+    if n > len(selected) and len(selected) > 0:
+        import random
+        remaining_budget = n - len(selected)
+        # Build pool of remaining episodes per selected title.
+        selected_ids = {m["media_id"] for m in selected}
+        # Map media_id -> list of uncached episodes not yet selected.
+        extra_pool: dict[str, list[dict]] = {}
+        for m in uncached:
+            if m["media_id"] in selected_ids:
+                # Check this specific episode isn't already selected.
+                ep_key = (m["media_id"], m.get("season"), m.get("episode"))
+                already = any(
+                    (s["media_id"], s.get("season"), s.get("episode")) == ep_key
+                    for s in selected
+                )
+                if not already:
+                    extra_pool.setdefault(m["media_id"], []).append(m)
+
+        # Shuffle each title's remaining episodes.
+        for eps in extra_pool.values():
+            random.shuffle(eps)
+
+        extra_selected: list[dict] = []
+        # Round-robin: cycle through titles, one episode per round.
+        title_ids = list(extra_pool.keys())
+        while extra_selected.__len__() < remaining_budget and title_ids:
+            exhausted: list[str] = []
+            for tid in title_ids:
+                if len(extra_selected) >= remaining_budget:
+                    break
+                eps = extra_pool[tid]
+                if eps:
+                    extra_selected.append(eps.pop(0))
+                else:
+                    exhausted.append(tid)
+            for tid in exhausted:
+                title_ids.remove(tid)
+
+        if extra_selected:
+            log.info(
+                "  round 2: %d additional episodes from %d titles (round-robin)",
+                len(extra_selected),
+                len({m["media_id"] for m in extra_selected}),
+            )
+            selected.extend(extra_selected)
+
     return selected
 
 

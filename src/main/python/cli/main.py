@@ -532,14 +532,14 @@ def dev_playground(
 def dev_train() -> None:
     """Train the production XGBoost model (E82 50:1 weighted hybrid)."""
     from cli.train_production_model import main as train_main
-    train_main()
+    train_main([])  # empty argv -- don't pass typer's sys.argv to nested argparse
 
 
 @dev_app.command(name="train-torch")
 def dev_train_torch() -> None:
     """Train the differentiable-DSP model (E85+)."""
     from cli.train_torch_model import main as train_main
-    train_main()
+    train_main([])
 
 
 # ---------------------------------------------------------------------------

@@ -854,12 +854,19 @@ def deduplicate_by_title_response_avg(
     n_refit_failed = 0
     if multi_author_jobs:
         from concurrent.futures import ProcessPoolExecutor, as_completed
+        import multiprocessing as _mp
         import os as _os
+
+        # Use 'spawn' to avoid forking the parent's logging handlers,
+        # Rich console, and CLI state into child workers. 'fork' causes
+        # banner/log spam because children inherit the parent's stderr
+        # handlers and every log.info() prints to the terminal.
+        ctx = _mp.get_context("spawn")
 
         if n_workers is None:
             n_workers = max(2, _os.cpu_count() // 2)
 
-        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
             futures = [
                 pool.submit(_process_multi_author_group, job)
                 for job in multi_author_jobs

@@ -159,12 +159,14 @@ def test_valid_wav_passes_all_checks(tmp_path):
 
 def test_verify_cache_finds_corrupt(tmp_path):
     """verify_cache correctly separates valid and corrupt WAVs."""
-    # Create 3 valid WAVs.
-    for name in ("a.wav", "b.wav", "c.wav"):
-        _make_wav(tmp_path / name, n_frames=60_000)
+    # Create 3 valid WAVs in a bucket subdir (verify_cache walks subdirs).
+    bucket = tmp_path / "AB"
+    bucket.mkdir()
+    for name in ("a.lfe-1000hz.wav", "b.lfe-1000hz.wav", "c.lfe-1000hz.wav"):
+        _make_wav(bucket / name, n_frames=60_000)
 
     # Truncate one.
-    corrupt = tmp_path / "b.wav"
+    corrupt = bucket / "b.lfe-1000hz.wav"
     original_size = corrupt.stat().st_size
     with corrupt.open("r+b") as f:
         f.truncate(original_size // 4)

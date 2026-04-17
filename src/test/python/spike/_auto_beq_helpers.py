@@ -737,15 +737,26 @@ _ID_RE = __import__("re").compile(r"\[(tmdb|tvdb|imdb)-([^\]]+)\]")
 
 
 def _latest_wav_mtime(cache_root: Path) -> float:
-    """Return the max mtime across all WAV files in the cache, or 0.0."""
+    """Return the max mtime across top-level dirs in the cache, or 0.0.
+
+    Uses directory mtimes (cheap -- one scandir) rather than statting
+    every WAV file (slow on NFS). A directory's mtime changes when
+    files are added/removed inside it, which is good enough for
+    staleness detection.
+    """
     latest = 0.0
-    for p in cache_root.rglob("*.lfe-1000hz.wav"):
-        try:
-            m = p.stat().st_mtime
-            if m > latest:
-                latest = m
-        except OSError:
-            pass
+    try:
+        latest = max(latest, cache_root.stat().st_mtime)
+        for entry in os.scandir(cache_root):
+            if entry.is_dir():
+                try:
+                    m = entry.stat().st_mtime
+                    if m > latest:
+                        latest = m
+                except OSError:
+                    pass
+    except OSError:
+        pass
     return latest
 
 
@@ -1308,7 +1319,23 @@ def discover_wav_catalogue_pairs() -> list[dict]:
 
     _title_year_re = __import__("re").compile(r"^(.+?)\s*\((\d{4})\)")
 
-    wav_files = sorted(cache_root.rglob("*.lfe-1000hz.wav"))
+    # Walk bucket dirs instead of rglob (much faster on NFS).
+    from model.media_utils import ProgressLogger
+    from model.wav_cache import WAV_SUFFIX
+    bucket_dirs = sorted(
+        e.path for e in os.scandir(cache_root)
+        if e.is_dir()
+    )
+    progress = ProgressLogger(len(bucket_dirs), logger=log, min_interval_s=5)
+    wav_files: list[Path] = []
+    for i, bucket_path in enumerate(bucket_dirs):
+        for dirpath, _dirnames, filenames in os.walk(bucket_path):
+            for f in filenames:
+                if f.endswith(WAV_SUFFIX):
+                    wav_files.append(Path(dirpath) / f)
+        progress.update(i + 1, label=os.path.basename(bucket_path))
+    wav_files.sort()
+    log.info("found %d WAV files in %d bucket dirs", len(wav_files), len(bucket_dirs))
     pairs = []
 
     for wav in wav_files:

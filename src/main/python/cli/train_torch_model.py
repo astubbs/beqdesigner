@@ -33,7 +33,7 @@ logging.basicConfig(
 log = logging.getLogger("train_torch_model")
 
 
-def main():
+def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(
         description="Train the E85 differentiable-DSP production model.",
     )
@@ -48,7 +48,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr-warm", type=float, default=1e-3)
     parser.add_argument("--lr-acoustic", type=float, default=5e-4)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     from model.auto_beq import DEFAULT_GRID
     from model.auto_beq_catalogue import _fetch_or_cache
