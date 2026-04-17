@@ -1979,6 +1979,12 @@ def main(argv: list[str] | None = None):
              "happening. Useful for Docker / scripted runs.",
     )
     parser.add_argument(
+        "--no-parallel", action="store_true",
+        help="Disable parallel extraction across drives. Default is to "
+             "run one extraction thread per media root (assuming each "
+             "root is on a separate physical disk).",
+    )
+    parser.add_argument(
         "-v", "--verbose", action="store_true",
         help="Enable debug logging.",
     )
@@ -2048,10 +2054,12 @@ def main(argv: list[str] | None = None):
         log.info("limited to %d titles", len(media))
 
     # --- Phase 1: catalogue-matched extraction ---
+    parallel = not args.no_parallel
     matched_stats = _run_extraction_phase(
         media=media,
         wav_root=wav_root,
         phase_label="catalogue-matched",
+        parallel=parallel,
     )
 
     # --- Phase 2: uncatalogued extraction (E84 unlabelled pool) ---
@@ -2115,6 +2123,7 @@ def main(argv: list[str] | None = None):
                 media=selected,
                 wav_root=wav_root,
                 phase_label="uncatalogued",
+                parallel=parallel,
             )
 
     # --- Summary ---
@@ -2145,85 +2154,200 @@ def _run_extraction_phase(
     media: list[dict],
     wav_root: Path,
     phase_label: str,
+    parallel: bool = True,
 ) -> dict:
     """Run the shared extraction loop for a list of media dicts.
 
+    When ``parallel`` is True (default), partitions media by source drive
+    (media root) and runs one extraction thread per drive. This maximises
+    I/O throughput when each media root is on a separate physical disk.
+
     Returns a stats dict with keys: ``total``, ``extracted``, ``skipped``,
-    ``errors``, ``elapsed``. ETA tracking is independent per phase.
-    Used by both the catalogue-matched main phase and the optional E84
-    uncatalogued extraction phase so the actual ffmpeg path stays in
-    one place.
+    ``errors``, ``elapsed``.
     """
     total = len(media)
     if total == 0:
         return {"total": 0, "extracted": 0, "skipped": 0, "errors": 0, "elapsed": 0.0}
+
+    # Partition by media root for parallel extraction.
+    # Each root is assumed to be on a different physical drive.
+    if parallel:
+        by_root: dict[str, list[dict]] = {}
+        for m in media:
+            # Find the root: first two path components (e.g. /media/batou).
+            p = Path(m["path"])
+            # Walk up to find the mount-level parent.
+            parts = p.parts
+            if len(parts) >= 3:
+                root_key = str(Path(*parts[:3]))  # e.g. /media/batou
+            else:
+                root_key = str(p.parent)
+            by_root.setdefault(root_key, []).append(m)
+
+        n_drives = len(by_root)
+        if n_drives > 1:
+            log.info("")
+            log.info("=" * 60)
+            log.info("  %s extraction: %d titles across %d drives (parallel)",
+                     phase_label, total, n_drives)
+            for root_key, items in sorted(by_root.items()):
+                log.info("    %s: %d titles", root_key, len(items))
+            log.info("=" * 60)
+
+            return _run_parallel_extraction(
+                by_root, wav_root, phase_label, total,
+            )
 
     log.info("")
     log.info("=" * 60)
     log.info("  %s extraction: %d titles", phase_label, total)
     log.info("=" * 60)
 
-    extracted = 0
-    skipped = 0
-    errors = 0
-    start_time = time.time()
-    extract_times: list[float] = []
+    return _run_sequential_extraction(media, wav_root, phase_label, total)
+
+
+def _run_parallel_extraction(
+    by_root: dict[str, list[dict]],
+    wav_root: Path,
+    phase_label: str,
+    total: int,
+) -> dict:
+    """Run extraction with one thread per media root (drive)."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    # Shared counters (thread-safe via lock).
+    lock = threading.Lock()
+    stats = {"extracted": 0, "skipped": 0, "errors": 0, "completed": 0}
     extract_rates: list[float] = []
+    start_time = time.time()
 
-    for i, m in enumerate(media):
-        title = m["title"]
-        year = m["year"]
-        media_id = m["media_id"]
-        size_mb = m.get("size_bytes", 0) / 1e6
-        content_type = m.get("content_type", "film")
-        season = m.get("season")
-        episode = m.get("episode")
-        ep_label = f" S{season:02d}E{episode:02d}" if season is not None else ""
-
-        # Check both new (ID-based) and legacy (title-bucket) cache paths.
-        cached = find_cached_wav(
-            wav_root, title, year, media_id,
-            content_type=content_type, season=season, episode=episode,
-        )
-        # Always write to the canonical (ID-based) path on a fresh extraction.
-        wav = cache_path(wav_root, title, year, media_id,
-                         content_type=content_type, season=season, episode=episode)
-
-        pct = (i + 1) * 100 // total
-
-        if extract_times:
-            avg_rate = sum(extract_rates) / len(extract_rates)
-            remaining_mb = sum(
-                mm.get("size_bytes", 0) / 1e6 for mm in media[i:]
-                if find_cached_wav(
-                    wav_root, mm["title"], mm["year"], mm["media_id"],
-                    content_type=mm.get("content_type", "film"),
-                    season=mm.get("season"), episode=mm.get("episode"),
-                ) is None
+    def _extract_from_root(root_key: str, items: list[dict]) -> None:
+        for m in items:
+            result = _extract_single_item(
+                m, wav_root, phase_label, total, stats, extract_rates,
+                lock, start_time,
             )
-            eta_s = remaining_mb / avg_rate if avg_rate > 0 else 0
+
+    with ThreadPoolExecutor(max_workers=len(by_root)) as executor:
+        futures = {
+            executor.submit(_extract_from_root, root_key, items): root_key
+            for root_key, items in by_root.items()
+        }
+        for future in as_completed(futures):
+            root_key = futures[future]
+            try:
+                future.result()
+            except Exception as exc:
+                log.error("extraction worker for %s failed: %s", root_key, exc)
+
+    elapsed = time.time() - start_time
+    return {
+        "total": total,
+        "extracted": stats["extracted"],
+        "skipped": stats["skipped"],
+        "errors": stats["errors"],
+        "elapsed": elapsed,
+    }
+
+
+def _run_sequential_extraction(
+    media: list[dict],
+    wav_root: Path,
+    phase_label: str,
+    total: int,
+) -> dict:
+    """Run extraction sequentially (single drive or --no-parallel)."""
+    import threading
+
+    lock = threading.Lock()  # no-op for single thread but keeps API uniform
+    stats = {"extracted": 0, "skipped": 0, "errors": 0, "completed": 0}
+    extract_rates: list[float] = []
+    start_time = time.time()
+
+    for m in media:
+        _extract_single_item(
+            m, wav_root, phase_label, total, stats, extract_rates,
+            lock, start_time,
+        )
+
+    elapsed = time.time() - start_time
+    return {
+        "total": total,
+        "extracted": stats["extracted"],
+        "skipped": stats["skipped"],
+        "errors": stats["errors"],
+        "elapsed": elapsed,
+    }
+
+
+def _extract_single_item(
+    m: dict,
+    wav_root: Path,
+    phase_label: str,
+    total: int,
+    stats: dict,
+    extract_rates: list[float],
+    lock,
+    start_time: float,
+) -> None:
+    """Extract a single media item. Thread-safe via lock on shared stats."""
+    import threading
+
+    title = m["title"]
+    year = m["year"]
+    media_id = m["media_id"]
+    size_mb = m.get("size_bytes", 0) / 1e6
+    content_type = m.get("content_type", "film")
+    season = m.get("season")
+    episode = m.get("episode")
+    ep_label = f" S{season:02d}E{episode:02d}" if season is not None else ""
+
+    # Check both new (ID-based) and legacy (title-bucket) cache paths.
+    cached = find_cached_wav(
+        wav_root, title, year, media_id,
+        content_type=content_type, season=season, episode=episode,
+    )
+    # Always write to the canonical (ID-based) path on a fresh extraction.
+    wav = cache_path(wav_root, title, year, media_id,
+                     content_type=content_type, season=season, episode=episode)
+
+    with lock:
+        stats["completed"] += 1
+        completed = stats["completed"]
+        pct = completed * 100 // total
+
+        if extract_rates:
+            avg_rate = sum(extract_rates) / len(extract_rates)
+            # Rough estimate: remaining items * avg time per item.
+            remaining_items = total - completed
+            avg_time = (time.time() - start_time) / completed
+            eta_s = remaining_items * avg_time
             eta_time = datetime.now() + timedelta(seconds=eta_s)
             eta_str = f" {format_duration(eta_s)} remaining, ETA {eta_time.strftime('%H:%M')}"
         else:
             eta_str = ""
 
-        prefix = f"[{phase_label} {i + 1}/{total} {pct}%{eta_str}]"
+        prefix = f"[{phase_label} {completed}/{total} {pct}%{eta_str}]"
 
-        if cached is not None:
-            log.info("%s CACHED: %s (%s)%s [%s]", prefix, title, year, ep_label, media_id)
-            skipped += 1
-            continue
+    if cached is not None:
+        log.info("%s CACHED: %s (%s)%s [%s]", prefix, title, year, ep_label, media_id)
+        with lock:
+            stats["skipped"] += 1
+        return
 
-        # Skip if we previously tried and failed (e.g. ffmpeg timeout, corrupt source).
-        prior_failure = _check_failed_sentinel(wav)
-        if prior_failure:
-            log.warning("%s PREVIOUSLY FAILED: %s (%s)%s [%s] — %s",
-                        prefix, title, year, ep_label, media_id, prior_failure)
-            log.warning("  delete %s to retry",
-                        _failed_sentinel_path(wav))
-            skipped += 1
-            continue
+    # Skip if we previously tried and failed.
+    prior_failure = _check_failed_sentinel(wav)
+    if prior_failure:
+        log.warning("%s PREVIOUSLY FAILED: %s (%s)%s [%s] -- %s",
+                    prefix, title, year, ep_label, media_id, prior_failure)
+        log.warning("  delete %s to retry", _failed_sentinel_path(wav))
+        with lock:
+            stats["skipped"] += 1
+        return
 
+    # Estimate per-item time.
+    with lock:
         if extract_rates:
             avg_rate = sum(extract_rates) / len(extract_rates)
             est_s = size_mb / avg_rate if avg_rate > 0 else 0
@@ -2231,42 +2355,39 @@ def _run_extraction_phase(
         else:
             est_str = ""
 
-        log.info("%s Extracting: %s (%s)%s [%s] — %.0f MB%s",
-                 prefix, title, year, ep_label, media_id, size_mb, est_str)
-        media_path = Path(m["path"]) if not isinstance(m["path"], Path) else m["path"]
-        log.info("  source: %s", media_path)
-        # Diagnostic: explain why this is being extracted (cache miss).
-        legacy = legacy_title_cache_path(
-            wav_root, title, year, media_id,
-            content_type=content_type, season=season, episode=episode,
-        )
-        log.info("  cache miss — media_id=%s", media_id)
-        log.info("    canonical path (not found): %s", wav)
-        log.info("    legacy path (not found):    %s", legacy)
+    media_path = Path(m["path"]) if not isinstance(m["path"], Path) else m["path"]
+    legacy = legacy_title_cache_path(
+        wav_root, title, year, media_id,
+        content_type=content_type, season=season, episode=episode,
+    )
+    # Single log call for the whole extraction header -- prevents interleaving
+    # with other threads' log lines in parallel mode.
+    log.info(
+        "%s Extracting: %s (%s)%s [%s] -- %.0f MB%s\n"
+        "  source: %s\n"
+        "  cache miss -- media_id=%s\n"
+        "    canonical path (not found): %s\n"
+        "    legacy path (not found):    %s",
+        prefix, title, year, ep_label, media_id, size_mb, est_str,
+        media_path, media_id, wav, legacy,
+    )
 
-        t0 = time.time()
-        ok = extract_one(media_path, wav)
-        elapsed = time.time() - t0
+    t0 = time.time()
+    ok = extract_one(media_path, wav)
+    elapsed = time.time() - t0
 
-        if ok:
-            wav_size = wav.stat().st_size
-            wav_duration = wav_size / (_SAMPLE_RATE * 2)
-            rate = size_mb / elapsed if elapsed > 0 else 0
-            log.info("  done in %.1fs (%.1f MB/s) — %d bytes (%.0fs audio)",
-                     elapsed, rate, wav_size, wav_duration)
-            extracted += 1
-            extract_times.append(elapsed)
+    if ok:
+        wav_size = wav.stat().st_size
+        wav_duration = wav_size / (_SAMPLE_RATE * 2)
+        rate = size_mb / elapsed if elapsed > 0 else 0
+        log.info("  done in %.1fs (%.1f MB/s) -- %d bytes (%.0fs audio)",
+                 elapsed, rate, wav_size, wav_duration)
+        with lock:
+            stats["extracted"] += 1
             extract_rates.append(rate)
-        else:
-            errors += 1
-
-    return {
-        "total": total,
-        "extracted": extracted,
-        "skipped": skipped,
-        "errors": errors,
-        "elapsed": time.time() - start_time,
-    }
+    else:
+        with lock:
+            stats["errors"] += 1
 
 
 if __name__ == "__main__":

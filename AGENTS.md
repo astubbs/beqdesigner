@@ -7,6 +7,11 @@
 **NEVER commit or push without explicitly asking the user first.**
 Wait for approval. This is the #1 rule.
 
+**User acceptance before every commit.** Do not ask to commit until
+the user has tested the implementation as an end user and confirmed it
+looks right. Implement, let them verify, fix anything they flag, then
+ask to commit. No exceptions.
+
 **Run the full default test suite before every commit.** Use
 `bin/beq-designer dev test` (runs `not integration and not experiment`
 markers, ~1 min). This catches cross-module breakage that targeted
@@ -34,6 +39,34 @@ test runs miss. Do not commit if any test fails.
 - When you fix something or finish implementing something, record
   what lessons you learnt.
 - Don't write with em dash characters.
+- **If constructing data in memory** that is eventually going to be
+  saved, save it as soon as it's created. Don't delay in case the
+  programme crashes or the user exits.
+
+### Architecture and state
+
+- **Collapse parallel state when bugs recur.** If a subsystem keeps
+  sprouting new bugs and each fix adds a Map/Set/flag or a "when X
+  changes, update Y" sync hook, stop. Those are symptoms of too many
+  caches holding the same information in different shapes. Draw the
+  state graph, identify the minimal keying, and collapse.
+- **Pick the full cache key up front.** Key a cache by everything it
+  needs to distinguish. When you later need an additional dimension,
+  re-key the original; do not add a parallel cache.
+- **Reducer pattern for concurrent mutations.** When multiple async
+  operations write to one reactive container in parallel, the mutation
+  API must take a mutation function that reads latest state --
+  `update(prev => next)`, not `apply(new Map(snapshot))`.
+
+### UI discipline
+
+- **Don't mutate UI in response to toggle state.** When a
+  checkbox/switch is turned on, don't append "(active)" to its label,
+  don't reveal helper text that was hidden when off, don't change
+  button text. The control itself (checked state, color, focus) already
+  shows whether it's on. Only change UI across genuinely different
+  modes (e.g., "+ Add" vs "In Library"), not on/off status of the
+  same feature.
 
 ### UI/CLI layer separation
 
