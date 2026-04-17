@@ -5,12 +5,20 @@
 ### Git safety
 
 **NEVER commit or push without explicitly asking the user first.**
-Wait for approval. This is the #1 rule.
+Wait for approval. This is the #1 rule. The user almost always spots
+a bug during validation, so committing prematurely creates noise in
+the git log. Let them test first.
 
 **User acceptance before every commit.** Do not ask to commit until
 the user has tested the implementation as an end user and confirmed it
 looks right. Implement, let them verify, fix anything they flag, then
 ask to commit. No exceptions.
+
+**PR discipline:** after opening a PR, follow up on the duplication
+reports. Duplicate-code and file-similarity tools post comments
+flagging new clones and similarity warnings. Read them, identify
+duplication introduced by *this* PR, and refactor to remove it
+before the PR merges.
 
 **Run the full default test suite before every commit.** Use
 `bin/beq-designer dev test` (runs `not integration and not experiment`
@@ -32,6 +40,11 @@ test runs miss. Do not commit if any test fails.
   derive the right answer, it should just do it.
 - **Be DRY.** Reuse existing functions. Don't copy code -- refactor
   where necessary. Extract common patterns into shared utilities.
+- **Use shared libraries, refactor where needed.** When a pattern
+  exists in one place and is needed in another, move it to a shared
+  module (e.g. `model/wav_cache.py`, `model/media_utils.py`). Do NOT
+  copy-paste or write a parallel implementation. Code that drifts out
+  of sync between modules is a recurring source of bugs.
 - **Give things meaningful names** that describe what they do. Never
   use random or generic names.
 - **Never weaken test assertions** -- classify exceptions instead of
@@ -67,6 +80,19 @@ test runs miss. Do not commit if any test fails.
   shows whether it's on. Only change UI across genuinely different
   modes (e.g., "+ Add" vs "In Library"), not on/off status of the
   same feature.
+- **Verify UI with your own eyes.** When building or changing any
+  interface (visual or text), use your tools to verify the result
+  looks correct and is high quality. For CLI output, run the command
+  and read the output. Do not assume a UI change is correct just
+  because it compiles. Look at it.
+- **Show progress for any wait over 200ms.** When the user won't get
+  an instant response (I/O, network, builds, long computations),
+  start rendering progress as soon as the delay exceeds ~200ms. Show
+  as much information as possible: percentage complete, ETA, time
+  elapsed, rate, and x/y counts. Do a small amount of upfront work
+  to discover the total (y) so progress bars can be meaningful. Never
+  leave the user staring at a blank screen wondering if something is
+  happening.
 
 ### UI/CLI layer separation
 
