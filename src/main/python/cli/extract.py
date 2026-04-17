@@ -1202,28 +1202,37 @@ def _check_mkv_header(media_path: Path) -> str | None:
     return None
 
 
-def extract_one(media_path: Path, wav_path: Path) -> bool:
+def extract_one(
+    media_path: Path,
+    wav_path: Path,
+    title_label: str = "",
+    has_lfe: bool | None = None,
+) -> bool:
     """Extract LFE channel (or mono downmix) to a WAV file.
 
     Uses atomic write: extracts to .tmp, validates, renames on success.
+    All log output is grouped into atomic multi-line calls prefixed with
+    ``title_label`` so parallel extraction threads don't interleave.
+
+    If ``has_lfe`` is None, probes the file (slower). Pass the result
+    of ``_probe_lfe()`` from the caller to avoid a redundant ffprobe.
     """
     tmp_path = wav_path.with_suffix(".tmp")
     wav_path.parent.mkdir(parents=True, exist_ok=True)
+    prefix = f"[{title_label}] " if title_label else ""
 
-    # Quick MKV header check before invoking ffmpeg (which is slow to start
-    # and produces a less helpful error message for corrupt containers).
+    # Quick MKV header check before invoking ffmpeg.
     invalid_reason = _check_mkv_header(media_path)
     if invalid_reason is not None:
-        log.warning("  SKIP — %s", invalid_reason)
-        log.warning("  source: %s", media_path)
+        log.warning("%sSKIP: %s\n  source: %s", prefix, invalid_reason, media_path)
         return False
 
-    has_lfe = _probe_lfe(media_path)
+    if has_lfe is None:
+        has_lfe = _probe_lfe(media_path)
     if has_lfe:
         af_filter = "pan=mono|c0=LFE"
     else:
         af_filter = "aresample"
-        log.info("  no LFE channel — falling back to mono downmix")
 
     cmd = [
         "ffmpeg", "-y", "-v", "error",
@@ -1251,19 +1260,20 @@ def extract_one(media_path: Path, wav_path: Path) -> bool:
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
     except subprocess.TimeoutExpired:
-        log.error("  ffmpeg timed out after %ds", timeout_s)
-        log.error("  source: %s", media_path)
-        log.error("  target: %s", tmp_path)
+        log.error(
+            "%sffmpeg timed out after %ds\n  source: %s\n  target: %s",
+            prefix, timeout_s, media_path, tmp_path,
+        )
         tmp_path.unlink(missing_ok=True)
         _write_failed_sentinel(wav_path, f"ffmpeg timeout after {timeout_s}s")
         return False
 
     if result.returncode != 0:
-        log.error("  ffmpeg failed (code %d)", result.returncode)
-        log.error("  stderr: %s", result.stderr.strip())
-        log.error("  source: %s", media_path)
-        log.error("  target: %s", tmp_path)
-        log.error("  cmd: %s", " ".join(cmd))
+        log.error(
+            "%sffmpeg failed (code %d)\n  stderr: %s\n  source: %s\n  target: %s",
+            prefix, result.returncode, result.stderr.strip(),
+            media_path, tmp_path,
+        )
         tmp_path.unlink(missing_ok=True)
         _write_failed_sentinel(
             wav_path, f"ffmpeg exit {result.returncode}: {result.stderr.strip()[:200]}",
@@ -1273,7 +1283,10 @@ def extract_one(media_path: Path, wav_path: Path) -> bool:
     # Validate before committing to cache.
     ok, reason = validate_wav_header(tmp_path)
     if not ok:
-        log.error("  extracted WAV failed integrity check: %s", reason)
+        log.error(
+            "%sWAV integrity check failed: %s\n  source: %s",
+            prefix, reason, media_path,
+        )
         tmp_path.unlink(missing_ok=True)
         _write_failed_sentinel(wav_path, f"WAV integrity check failed: {reason}")
         return False
@@ -1721,6 +1734,11 @@ def select_unmatched_to_extract(
         log.info("")
 
     # Greedy loop: score, pick best, update have distribution, repeat.
+    log.info("  Selecting titles: scoring each candidate by how much it fills")
+    log.info("  the biggest gap, picking the best, then re-scoring the rest")
+    log.info("  against the updated distribution. Each pick targets the next")
+    log.info("  biggest remaining gap for maximum training diversity.")
+    log.info("")
     from model.media_utils import ProgressLogger
     progress = ProgressLogger(min(n, len(representatives)), logger=log, min_interval_s=5)
     selected: list[dict] = []
@@ -2223,10 +2241,11 @@ def _run_parallel_extraction(
     start_time = time.time()
 
     def _extract_from_root(root_key: str, items: list[dict]) -> None:
+        drive_label = Path(root_key).name  # e.g. "batou", "dmz24"
         for m in items:
-            result = _extract_single_item(
+            _extract_single_item(
                 m, wav_root, phase_label, total, stats, extract_rates,
-                lock, start_time,
+                lock, start_time, drive_label=drive_label,
             )
 
     with ThreadPoolExecutor(max_workers=len(by_root)) as executor:
@@ -2268,7 +2287,7 @@ def _run_sequential_extraction(
     for m in media:
         _extract_single_item(
             m, wav_root, phase_label, total, stats, extract_rates,
-            lock, start_time,
+            lock, start_time, drive_label=None,
         )
 
     elapsed = time.time() - start_time
@@ -2290,10 +2309,9 @@ def _extract_single_item(
     extract_rates: list[float],
     lock,
     start_time: float,
+    drive_label: str | None = None,
 ) -> None:
     """Extract a single media item. Thread-safe via lock on shared stats."""
-    import threading
-
     title = m["title"]
     year = m["year"]
     media_id = m["media_id"]
@@ -2317,18 +2335,20 @@ def _extract_single_item(
         completed = stats["completed"]
         pct = completed * 100 // total
 
-        if extract_rates:
-            avg_rate = sum(extract_rates) / len(extract_rates)
-            # Rough estimate: remaining items * avg time per item.
+        # ETA based on wall-clock throughput across all threads.
+        # In parallel mode this correctly reflects combined throughput.
+        elapsed_so_far = time.time() - start_time
+        if completed > 1 and elapsed_so_far > 0:
             remaining_items = total - completed
-            avg_time = (time.time() - start_time) / completed
-            eta_s = remaining_items * avg_time
+            avg_wall_time_per_item = elapsed_so_far / completed
+            eta_s = remaining_items * avg_wall_time_per_item
             eta_time = datetime.now() + timedelta(seconds=eta_s)
             eta_str = f" {format_duration(eta_s)} remaining, ETA {eta_time.strftime('%H:%M')}"
         else:
             eta_str = ""
 
-        prefix = f"[{phase_label} {completed}/{total} {pct}%{eta_str}]"
+        drive_tag = f"[{drive_label}] " if drive_label else ""
+        prefix = f"{drive_tag}[{completed}/{total} {pct}%{eta_str}]"
 
     if cached is not None:
         log.info("%s CACHED: %s (%s)%s [%s]", prefix, title, year, ep_label, media_id)
@@ -2339,9 +2359,12 @@ def _extract_single_item(
     # Skip if we previously tried and failed.
     prior_failure = _check_failed_sentinel(wav)
     if prior_failure:
-        log.warning("%s PREVIOUSLY FAILED: %s (%s)%s [%s] -- %s",
-                    prefix, title, year, ep_label, media_id, prior_failure)
-        log.warning("  delete %s to retry", _failed_sentinel_path(wav))
+        log.warning(
+            "%s PREVIOUSLY FAILED: %s (%s)%s [%s] -- %s\n"
+            "  delete %s to retry",
+            prefix, title, year, ep_label, media_id, prior_failure,
+            _failed_sentinel_path(wav),
+        )
         with lock:
             stats["skipped"] += 1
         return
@@ -2356,32 +2379,32 @@ def _extract_single_item(
             est_str = ""
 
     media_path = Path(m["path"]) if not isinstance(m["path"], Path) else m["path"]
-    legacy = legacy_title_cache_path(
-        wav_root, title, year, media_id,
-        content_type=content_type, season=season, episode=episode,
-    )
-    # Single log call for the whole extraction header -- prevents interleaving
-    # with other threads' log lines in parallel mode.
+    title_label = f"{title} ({year}){ep_label}"
+
+    # Probe LFE before extract_one so we can include it in the start log.
+    has_lfe = _probe_lfe(media_path)
+    lfe_note = "" if has_lfe else " (no LFE -- mono downmix)"
+
+    # Single atomic log call for the whole extraction start message.
     log.info(
-        "%s Extracting: %s (%s)%s [%s] -- %.0f MB%s\n"
-        "  source: %s\n"
-        "  cache miss -- media_id=%s\n"
-        "    canonical path (not found): %s\n"
-        "    legacy path (not found):    %s",
-        prefix, title, year, ep_label, media_id, size_mb, est_str,
-        media_path, media_id, wav, legacy,
+        "%s Extracting: %s [%s] -- %.0f MB%s%s\n"
+        "  source: %s",
+        prefix, title_label, media_id, size_mb, est_str, lfe_note,
+        media_path,
     )
 
     t0 = time.time()
-    ok = extract_one(media_path, wav)
+    ok = extract_one(media_path, wav, title_label=title_label, has_lfe=has_lfe)
     elapsed = time.time() - t0
 
     if ok:
         wav_size = wav.stat().st_size
         wav_duration = wav_size / (_SAMPLE_RATE * 2)
         rate = size_mb / elapsed if elapsed > 0 else 0
-        log.info("  done in %.1fs (%.1f MB/s) -- %d bytes (%.0fs audio)",
-                 elapsed, rate, wav_size, wav_duration)
+        log.info(
+            "%s Done: %s -- %.1fs (%.1f MB/s), %d bytes (%.0fs audio)",
+            prefix, title_label, elapsed, rate, wav_size, wav_duration,
+        )
         with lock:
             stats["extracted"] += 1
             extract_rates.append(rate)

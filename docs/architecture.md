@@ -176,3 +176,53 @@ the shared BEQ directory.**
 In Docker auto-discovery mode (`BEQ_MEDIA_DIR` env var set), the local
 `extract_config.json` is rebuilt every container start from whatever is
 mounted under `/media/`, so the local config is effectively ephemeral.
+
+## Extraction pipeline
+
+The LFE extraction pipeline (`cli/extract.py`) runs in two phases:
+
+### Phase 1: Catalogue-matched extraction
+
+Extracts LFE audio from media files that match the BEQ catalogue (titles
+with known human-authored bass correction profiles). These are the
+highest-value training examples because we have ground-truth labels.
+
+### Phase 2: Uncatalogued extraction (E84 unlabelled pool)
+
+Extracts from media that has a database ID but NO BEQ catalogue entry.
+These grow the self-training pool -- the model can learn from their
+audio characteristics even without human-authored labels.
+
+**Title selection algorithm (greedy bias-corrected diversity scoring):**
+
+The BEQ catalogue has a distribution across three dimensions: audio
+format (Atmos, TrueHD, DTS-HD, DD+), era (decade), and content type
+(film/TV). Our WAV cache may over-represent some categories and
+under-represent others relative to the catalogue.
+
+The selection algorithm works as follows:
+
+1. Compute the distribution gap: for each (format, era, type) bucket,
+   what percentage of the catalogue does it represent vs what percentage
+   of our cache?
+2. Score each uncached candidate by how much it would fill the BIGGEST
+   gap -- a title in an under-represented bucket scores higher.
+3. Pick the highest-scoring candidate.
+4. Update the cache distribution as if we'd already extracted it.
+5. Re-score all remaining candidates against the UPDATED distribution.
+6. Repeat from step 2 until we've picked N titles.
+
+This greedy re-scoring is key: after picking a DD+ TV show, the DD+/TV
+gap shrinks, so the next pick targets the NEXT biggest gap. This ensures
+maximum diversity across the training set rather than filling one gap
+with many similar titles.
+
+TV shows are deduplicated: one episode per unique title ID. Different
+shows teach the model more than multiple episodes from the same show
+(same mixer, studio, codec configuration).
+
+### Parallel extraction
+
+When media roots are on separate physical drives (typical NAS layout),
+extraction runs one ffmpeg thread per drive. This uses all disks
+simultaneously for ~Nx throughput. Disable with `--no-parallel`.
