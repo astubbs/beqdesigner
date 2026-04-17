@@ -1645,15 +1645,52 @@ def select_unmatched_to_extract(
         have_ct[e.get("content_type", "film")] += 1
     have_total = sum(have_format.values())
 
+    # --- Pre-filter: exclude already-cached media ---
+    from model.wav_cache import find_cached_wav
+    try:
+        from spike._auto_beq_helpers import wav_cache_dir
+        wav_root = wav_cache_dir()
+    except Exception:
+        wav_root = None
+
+    uncached: list[dict] = []
+    n_already_cached = 0
+    for m in no_catalogue_media:
+        if wav_root is not None:
+            cached = find_cached_wav(
+                wav_root, m["title"], m["year"], m["media_id"],
+                content_type=m.get("content_type", "film"),
+                season=m.get("season"), episode=m.get("episode"),
+            )
+            if cached is not None:
+                n_already_cached += 1
+                continue
+        uncached.append(m)
+
+    # --- Deduplicate by title (show-level): one entry per unique title ---
+    # For training diversity, different shows teach more than multiple
+    # episodes of the same show (same mixer, studio, codec config).
+    by_title: dict[str, list[dict]] = {}
+    for m in uncached:
+        key = m["media_id"]  # group by show ID
+        by_title.setdefault(key, []).append(m)
+    # Pick one representative per title (first episode).
+    representatives = [episodes[0] for episodes in by_title.values()]
+
     log.info(
-        "unmatched selection: %d candidates, %d in have-distribution, "
+        "unmatched selection: %d candidates, %d already cached (skipped), "
+        "%d uncached, %d unique titles, %d in have-distribution, "
         "%d in catalogue target",
-        len(no_catalogue_media), have_total, target_total,
+        len(no_catalogue_media), n_already_cached,
+        len(uncached), len(representatives),
+        have_total, target_total,
     )
 
     # Greedy loop: score, pick best, update have distribution, repeat.
+    from model.media_utils import ProgressLogger
+    progress = ProgressLogger(min(n, len(representatives)), logger=log, min_interval_s=5)
     selected: list[dict] = []
-    remaining = list(no_catalogue_media)
+    remaining = list(representatives)
 
     for pick in range(n):
         if not remaining:
@@ -1670,9 +1707,6 @@ def select_unmatched_to_extract(
         scored.sort(key=lambda x: -x[0])
         best_score, best_idx, best_cand = scored[0]
         if best_score <= 0:
-            # No positive deficits left — distribution is already over-
-            # represented in every bucket. Fall back to "most diverse so
-            # far by content_type" (smallest have_ct wins).
             best_cand = min(
                 remaining,
                 key=lambda c: have_ct.get(c.get("content_type", "film"), 0),
@@ -1691,7 +1725,9 @@ def select_unmatched_to_extract(
 
         selected.append(best_cand)
         remaining.pop(best_idx)
+        progress.update(pick + 1, label=best_cand.get("title", ""))
 
+    progress.finish(f"selected {len(selected)} unique titles")
     return selected
 
 
