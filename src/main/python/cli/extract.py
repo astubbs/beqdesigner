@@ -1774,24 +1774,22 @@ def _prompt_unmatched_extraction(
         return n
 
     try:
-        resp = input(
-            f"Extract WAVs for some of them? [y/N] ",
-        ).strip().lower()
-        if resp not in ("y", "yes"):
-            return 0
         default_label = "all" if default_n is None else str(default_n)
         effective_default = no_catalogue_count if default_n is None else default_n
-        raw = input(
-            f"How many? (default {default_label}, max {no_catalogue_count}): ",
-        ).strip()
-        if not raw:
+        resp = input(
+            f"Extract WAVs? [y/N/number] (default {default_label}, max {no_catalogue_count}): ",
+        ).strip().lower()
+        if not resp or resp in ("y", "yes"):
             return min(effective_default, no_catalogue_count)
-        try:
-            n = int(raw)
-        except ValueError:
-            print(f"not a number ({raw!r}) — skipping unmatched extraction")
+        if resp in ("n", "no"):
             return 0
-        return max(0, min(n, no_catalogue_count))
+        # Accept a number directly (e.g. "100").
+        try:
+            n = int(resp)
+            return max(0, min(n, no_catalogue_count))
+        except ValueError:
+            print(f"not a number ({resp!r}) — skipping unmatched extraction")
+            return 0
     except (EOFError, KeyboardInterrupt):
         print()
         return 0
