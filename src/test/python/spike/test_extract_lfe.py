@@ -811,13 +811,14 @@ def test_cache_path_id_based_tv():
 
 
 def test_cache_path_id_based_imdb():
-    """IMDB IDs use the 'tt' prefix as the shard."""
+    """IMDB IDs shard on numeric digits (strip 'tt' prefix)."""
     root = Path("/cache")
     result = extract_mod_static.cache_path(
         root, "The Matrix", "1999", "imdb-tt0133093",
     )
+    # Shard on numeric part "0133093"[:2] = "01", not the "tt" prefix.
     assert result == (
-        root / "imdb" / "tt" / "tt0133093"
+        root / "imdb" / "01" / "tt0133093"
         / "The Matrix (1999) [imdb-tt0133093].lfe-1000hz.wav"
     )
 

@@ -493,15 +493,6 @@ def _resolve_relative_path(rel_path: str, roots: list[Path]) -> str | None:
     if roots:
         return str(roots[0].parent / rel_path)
 
-    # No roots — can't resolve.
-    if roots:
-        for root in roots:
-            if root.name == first_component:
-                remaining = str(rel.relative_to(first_component)) if len(rel.parts) > 1 else ""
-                if remaining and remaining != ".":
-                    return str(root / remaining)
-                return str(root)
-        return str(roots[0].parent / rel_path)
     return None
 
 
@@ -1147,8 +1138,8 @@ def _write_failed_sentinel(wav_path: Path, reason: str) -> None:
     and timestamp. Delete the sentinel (or fix the source file) to retry.
     """
     sentinel = _failed_sentinel_path(wav_path)
-    sentinel.parent.mkdir(parents=True, exist_ok=True)
     try:
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
         sentinel.write_text(json.dumps({
             "reason": reason,
             "timestamp": time.time(),
@@ -1225,6 +1216,7 @@ def extract_one(
     invalid_reason = _check_mkv_header(media_path)
     if invalid_reason is not None:
         log.warning("%sSKIP: %s\n  source: %s", prefix, invalid_reason, media_path)
+        _write_failed_sentinel(wav_path, f"invalid MKV header: {invalid_reason}")
         return False
 
     if has_lfe is None:
@@ -1792,6 +1784,9 @@ def select_unmatched_to_extract(
         # Map media_id -> list of uncached episodes not yet selected.
         extra_pool: dict[str, list[dict]] = {}
         for m in uncached:
+            # Only TV shows have multiple episodes. Films are one-per-title.
+            if m.get("content_type", "film").upper() != "TV":
+                continue
             if m["media_id"] in selected_ids:
                 # Check this specific episode isn't already selected.
                 ep_key = (m["media_id"], m.get("season"), m.get("episode"))
@@ -1809,7 +1804,7 @@ def select_unmatched_to_extract(
         extra_selected: list[dict] = []
         # Round-robin: cycle through titles, one episode per round.
         title_ids = list(extra_pool.keys())
-        while extra_selected.__len__() < remaining_budget and title_ids:
+        while len(extra_selected) < remaining_budget and title_ids:
             exhausted: list[str] = []
             for tid in title_ids:
                 if len(extra_selected) >= remaining_budget:
@@ -1849,7 +1844,6 @@ def _prompt_unmatched_extraction(
 
     Returns the chosen N, clamped to ``[0, no_catalogue_count]``.
     """
-    from model.media_utils import format_duration
     import shutil
 
     print()
@@ -1956,11 +1950,6 @@ def _prompt_unmatched_extraction(
             if est:
                 return HTML(f"<b>{est.strip()}</b>")
             return HTML(f"<b>{n} titles</b>")
-
-        class _InputCapture:
-            """Capture input as user types for toolbar updates."""
-            def __init__(self, session):
-                self._session = session
 
         session = PromptSession(bottom_toolbar=_toolbar)
 
@@ -2081,9 +2070,8 @@ def main(argv: list[str] | None = None):
     # Verify mode.
     if args.verify:
         log.info("verifying cache at %s ...", wav_root)
+        # verify_cache already walks the tree and logs counts.
         deleted = verify_cache(wav_root)
-        existing = len(list(wav_root.rglob("*.lfe-1000hz.wav")))
-        log.info("verification complete: %d valid, %d corrupt (deleted)", existing, deleted)
         return
 
     # Extraction mode.
@@ -2241,15 +2229,18 @@ def _run_extraction_phase(
     # Each root is assumed to be on a different physical drive.
     if parallel:
         by_root: dict[str, list[dict]] = {}
+        # Use configured media roots for partitioning (works on any path
+        # layout, not just /media/<drive>/ depth-3).
+        configured_roots = get_configured_media_roots()
         for m in media:
-            # Find the root: first two path components (e.g. /media/batou).
             p = Path(m["path"])
-            # Walk up to find the mount-level parent.
-            parts = p.parts
-            if len(parts) >= 3:
-                root_key = str(Path(*parts[:3]))  # e.g. /media/batou
-            else:
-                root_key = str(p.parent)
+            # Match against configured roots by longest prefix.
+            root_key = str(p.parent)
+            for root in configured_roots:
+                root_str = str(root)
+                if str(p).startswith(root_str):
+                    root_key = root_str
+                    break
             by_root.setdefault(root_key, []).append(m)
 
         n_drives = len(by_root)
@@ -2286,15 +2277,15 @@ def _run_parallel_extraction(
 
     # Shared counters (thread-safe via lock).
     lock = threading.Lock()
-    stats = {"extracted": 0, "skipped": 0, "errors": 0, "completed": 0}
-    extract_rates: list[float] = []
+    stats = {"extracted": 0, "skipped": 0, "errors": 0, "completed": 0,
+             "rate_sum": 0.0, "rate_count": 0}  # running avg, no O(N) sum
     start_time = time.time()
 
     def _extract_from_root(root_key: str, items: list[dict]) -> None:
         drive_label = Path(root_key).name  # e.g. "batou", "dmz24"
         for m in items:
             _extract_single_item(
-                m, wav_root, phase_label, total, stats, extract_rates,
+                m, wav_root, phase_label, total, stats,
                 lock, start_time, drive_label=drive_label,
             )
 
@@ -2309,6 +2300,8 @@ def _run_parallel_extraction(
                 future.result()
             except Exception as exc:
                 log.error("extraction worker for %s failed: %s", root_key, exc)
+                with lock:
+                    stats["errors"] += len(by_root[root_key])
 
     elapsed = time.time() - start_time
     return {
@@ -2330,13 +2323,13 @@ def _run_sequential_extraction(
     import threading
 
     lock = threading.Lock()  # no-op for single thread but keeps API uniform
-    stats = {"extracted": 0, "skipped": 0, "errors": 0, "completed": 0}
-    extract_rates: list[float] = []
+    stats = {"extracted": 0, "skipped": 0, "errors": 0, "completed": 0,
+             "rate_sum": 0.0, "rate_count": 0}  # running avg, no O(N) sum
     start_time = time.time()
 
     for m in media:
         _extract_single_item(
-            m, wav_root, phase_label, total, stats, extract_rates,
+            m, wav_root, phase_label, total, stats,
             lock, start_time, drive_label=None,
         )
 
@@ -2356,7 +2349,6 @@ def _extract_single_item(
     phase_label: str,
     total: int,
     stats: dict,
-    extract_rates: list[float],
     lock,
     start_time: float,
     drive_label: str | None = None,
@@ -2419,10 +2411,10 @@ def _extract_single_item(
             stats["skipped"] += 1
         return
 
-    # Estimate per-item time.
+    # Estimate per-item time from running average (O(1), not O(N) sum).
     with lock:
-        if extract_rates:
-            avg_rate = sum(extract_rates) / len(extract_rates)
+        if stats["rate_count"] > 0:
+            avg_rate = stats["rate_sum"] / stats["rate_count"]
             est_s = size_mb / avg_rate if avg_rate > 0 else 0
             est_str = f", est ~{format_duration(est_s)}"
         else:
@@ -2457,7 +2449,8 @@ def _extract_single_item(
         )
         with lock:
             stats["extracted"] += 1
-            extract_rates.append(rate)
+            stats["rate_sum"] += rate
+            stats["rate_count"] += 1
     else:
         with lock:
             stats["errors"] += 1

@@ -1190,7 +1190,19 @@ def discover_unmatched_wavs() -> list[Path]:
 
     _title_year_re = __import__("re").compile(r"^(.+?)\s*\((\d{4})\)")
 
-    wav_files = sorted(cache_root.rglob("*.lfe-1000hz.wav"))
+    # Walk bucket dirs instead of rglob (faster on NFS).
+    from model.wav_cache import WAV_SUFFIX
+    bucket_dirs = sorted(
+        e.path for e in os.scandir(cache_root)
+        if e.is_dir()
+    )
+    wav_files: list[Path] = []
+    for bucket_path in bucket_dirs:
+        for dirpath, _dirnames, filenames in os.walk(bucket_path):
+            for f in filenames:
+                if f.endswith(WAV_SUFFIX):
+                    wav_files.append(Path(dirpath) / f)
+    wav_files.sort()
     unmatched: list[Path] = []
 
     for wav in wav_files:

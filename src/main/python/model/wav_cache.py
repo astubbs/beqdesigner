@@ -71,7 +71,11 @@ def cache_path(
     ``media_id`` must be in the form ``tmdb-NNN`` / ``tvdb-NNN`` / ``imdb-ttNNN``.
     """
     id_type, id_value = _split_media_id(media_id)
-    shard = id_value[:2]
+    # Strip non-numeric prefix for sharding (IMDB IDs start with 'tt',
+    # which would put all IMDB titles in a single 'tt' shard).
+    # Pad to 2 chars for single-digit IDs (tmdb-1 -> shard '01').
+    numeric_part = id_value.lstrip("abcdefghijklmnopqrstuvwxyz") or id_value
+    shard = numeric_part[:2].zfill(2)
     id_dir = wav_root / id_type / shard / id_value
 
     if content_type.upper() == "TV" and season is not None and episode is not None:

@@ -122,6 +122,9 @@ def main():
     }, indent=2) + "\n")
 
     # Summary line for quick glance.
+    # Count unique TV shows from catalogue matches.
+    tv_shows = {e["catalogue_entry"].get("title", "") for e in pairs
+                if e["catalogue_entry"].get("content_type") == "TV"}
     print(f"Training-ready: {len(pairs)} WAVs / {len(titles)} titles "
           f"({matched_movies} movies + {matched_tv} TV eps from {len(tv_shows)} shows)")
 
