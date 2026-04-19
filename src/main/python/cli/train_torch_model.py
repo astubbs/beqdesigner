@@ -26,10 +26,8 @@ import sys
 import time
 from pathlib import Path
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-5s %(name)s - %(message)s",
-)
+# NOTE: logging.basicConfig is called inside main(), not at module level.
+# Module-level basicConfig adds handlers in ProcessPoolExecutor children.
 log = logging.getLogger("train_torch_model")
 
 
@@ -49,6 +47,12 @@ def main(argv: list[str] | None = None):
     parser.add_argument("--lr-warm", type=float, default=1e-3)
     parser.add_argument("--lr-acoustic", type=float, default=5e-4)
     args = parser.parse_args(argv)
+
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)-5s %(name)s - %(message)s",
+        )
 
     from model.auto_beq import DEFAULT_GRID
     from model.auto_beq_catalogue import _fetch_or_cache

@@ -42,10 +42,9 @@ import sys
 import time
 from pathlib import Path
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-5s %(name)s - %(message)s",
-)
+# NOTE: logging.basicConfig is called inside main(), not at module level.
+# Module-level basicConfig would add handlers in every ProcessPoolExecutor
+# child that imports this module, causing log spam.
 log = logging.getLogger("train_production_model")
 
 
@@ -101,6 +100,14 @@ def main(argv: list[str] | None = None):
              "Default: 2. Only used when --self-train is set.",
     )
     args = parser.parse_args(argv)
+
+    # Configure logging only when called as main entry point, not when
+    # imported as a module by ProcessPoolExecutor children.
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)-5s %(name)s - %(message)s",
+        )
 
     # Late imports so --help is fast.
     from model.auto_beq import DEFAULT_GRID
