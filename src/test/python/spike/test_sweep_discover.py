@@ -444,8 +444,12 @@ def test_load_config_missing_returns_none(tmp_path):
     assert sd.load_config(tmp_path / "does_not_exist.json") is None
 
 
-def test_save_library_roots_persists_immediately(tmp_path):
+def test_save_library_roots_persists_immediately(tmp_path, monkeypatch):
     """Library roots are saved before scanning, so Ctrl-C doesn't lose them."""
+    # Redirect extract_config.json to tmp_path so we don't touch real config.
+    extract_cfg = tmp_path / "extract_config.json"
+    monkeypatch.setattr(sd, "save_extract_config",
+                        lambda roots: extract_cfg)
     config_path = tmp_path / "sweep.json"
     sd._save_library_roots([Path("/vol/movies"), Path("/vol/tv")], output=config_path)
     loaded = sd.load_config(config_path)
@@ -453,8 +457,19 @@ def test_save_library_roots_persists_immediately(tmp_path):
     assert loaded["library_roots"] == ["/vol/movies", "/vol/tv"]
 
 
-def test_save_library_roots_merges_into_existing(tmp_path):
+def test_save_library_roots_calls_save_extract_config(tmp_path, monkeypatch):
+    """_save_library_roots delegates to save_extract_config for the canonical store."""
+    saved_roots = []
+    monkeypatch.setattr(sd, "save_extract_config",
+                        lambda roots: saved_roots.extend(roots))
+    config_path = tmp_path / "sweep.json"
+    sd._save_library_roots([Path("/vol/movies"), Path("/vol/tv")], output=config_path)
+    assert saved_roots == [Path("/vol/movies"), Path("/vol/tv")]
+
+
+def test_save_library_roots_merges_into_existing(tmp_path, monkeypatch):
     """Saving roots preserves other config fields (films, test_limit, etc.)."""
+    monkeypatch.setattr(sd, "save_extract_config", lambda roots: None)
     config_path = tmp_path / "sweep.json"
     config_path.write_text(json.dumps({
         "schema_version": 1,
@@ -492,6 +507,39 @@ def test_resolve_library_roots_expands_user(monkeypatch):
     args = sd._parse_args([])
     roots = sd._resolve_library_roots(args)
     assert roots == [Path.home() / "media"]
+
+
+def test_resolve_library_roots_from_extract_config(monkeypatch):
+    """Falls back to get_configured_media_roots() when no CLI/env is set."""
+    monkeypatch.delenv("AUTO_BEQ_LIBRARY_ROOTS", raising=False)
+    monkeypatch.setattr(sd, "get_configured_media_roots",
+                        lambda: [Path("/configured/movies"), Path("/configured/tv")])
+    # Simulate user pressing Enter to accept defaults.
+    monkeypatch.setattr("builtins.input", lambda _: "")
+    args = sd._parse_args([])
+    roots = sd._resolve_library_roots(args)
+    assert roots == [Path("/configured/movies"), Path("/configured/tv")]
+
+
+def test_resolve_library_roots_migrates_from_sweep_config(monkeypatch, tmp_path):
+    """Old library_roots in sweep config are migrated to extract_config.json."""
+    monkeypatch.delenv("AUTO_BEQ_LIBRARY_ROOTS", raising=False)
+    monkeypatch.setattr(sd, "get_configured_media_roots", lambda: [])
+    migrated = []
+    monkeypatch.setattr(sd, "save_extract_config",
+                        lambda roots: migrated.extend(roots))
+    # Write old-style sweep config with library_roots.
+    sweep_cfg = tmp_path / "sweep.json"
+    sweep_cfg.write_text(json.dumps({
+        "library_roots": ["/old/movies"],
+        "films": [],
+    }))
+    monkeypatch.setattr(sd, "load_config", lambda path=None: json.loads(sweep_cfg.read_text()))
+    monkeypatch.setattr("builtins.input", lambda _: "")
+    args = sd._parse_args([])
+    roots = sd._resolve_library_roots(args)
+    assert roots == [Path("/old/movies")]
+    assert migrated == [Path("/old/movies")]
 
 
 def test_split_paths_strips_around_commas_preserves_internal_spaces():

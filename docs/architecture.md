@@ -154,7 +154,7 @@ machines, CLI preferences are per-user). Resolved by `beq_config_dir()`.
 | Key | Purpose |
 |---|---|
 | `shared_beq_dir` | Where the shared BEQ directory is mounted on this machine (used by `beq_shared_dir()` if `BEQ_SHARED_DIR` env var not set) |
-| `library_roots` | Media library roots used by the sweep tool (parallel to `extract_config.json` -- to be unified) |
+| ~~`library_roots`~~ | *Removed* - media roots are now stored in `extract_config.json` only. Old values are auto-migrated on first use. |
 | `ollama_hosts` | Ollama LLM backend URLs (advisor mode) |
 | `cli_author` | Default author name on generated profiles |
 | `cli_output_dir` | Where to write generated profiles |

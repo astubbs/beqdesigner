@@ -1190,19 +1190,8 @@ def discover_unmatched_wavs() -> list[Path]:
 
     _title_year_re = __import__("re").compile(r"^(.+?)\s*\((\d{4})\)")
 
-    # Walk bucket dirs instead of rglob (faster on NFS).
-    from model.wav_cache import WAV_SUFFIX
-    bucket_dirs = sorted(
-        e.path for e in os.scandir(cache_root)
-        if e.is_dir()
-    )
-    wav_files: list[Path] = []
-    for bucket_path in bucket_dirs:
-        for dirpath, _dirnames, filenames in os.walk(bucket_path):
-            for f in filenames:
-                if f.endswith(WAV_SUFFIX):
-                    wav_files.append(Path(dirpath) / f)
-    wav_files.sort()
+    from model.wav_cache import iter_cached_wavs
+    wav_files = iter_cached_wavs(cache_root)
     unmatched: list[Path] = []
 
     for wav in wav_files:
@@ -1331,23 +1320,9 @@ def discover_wav_catalogue_pairs() -> list[dict]:
 
     _title_year_re = __import__("re").compile(r"^(.+?)\s*\((\d{4})\)")
 
-    # Walk bucket dirs instead of rglob (much faster on NFS).
-    from model.media_utils import ProgressLogger
-    from model.wav_cache import WAV_SUFFIX
-    bucket_dirs = sorted(
-        e.path for e in os.scandir(cache_root)
-        if e.is_dir()
-    )
-    progress = ProgressLogger(len(bucket_dirs), logger=log, min_interval_s=5)
-    wav_files: list[Path] = []
-    for i, bucket_path in enumerate(bucket_dirs):
-        for dirpath, _dirnames, filenames in os.walk(bucket_path):
-            for f in filenames:
-                if f.endswith(WAV_SUFFIX):
-                    wav_files.append(Path(dirpath) / f)
-        progress.update(i + 1, label=os.path.basename(bucket_path))
-    wav_files.sort()
-    log.info("found %d WAV files in %d bucket dirs", len(wav_files), len(bucket_dirs))
+    from model.wav_cache import iter_cached_wavs
+    wav_files = iter_cached_wavs(cache_root)
+    log.info("found %d WAV files in cache", len(wav_files))
     pairs = []
 
     for wav in wav_files:

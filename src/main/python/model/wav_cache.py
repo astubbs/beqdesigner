@@ -33,11 +33,53 @@ Stdlib-only -- safe to import from CLI scripts and headless Docker.
 
 from __future__ import annotations
 
+import logging
+import os
 import unicodedata
 from pathlib import Path
 
+log = logging.getLogger(__name__)
+
 # Suffix used by all extracted LFE WAV files.
 WAV_SUFFIX = ".lfe-1000hz.wav"
+
+
+# ---------------------------------------------------------------------------
+# Cache walking
+# ---------------------------------------------------------------------------
+
+
+def iter_cached_wavs(cache_root: Path) -> list[Path]:
+    """Return all WAV files in the cache, scanning bucket directories.
+
+    Uses os.scandir + os.walk (not rglob) for NFS safety. Works with
+    both the canonical ID-based layout and the legacy title-bucket
+    layout since both use top-level bucket directories.
+
+    Parameters
+    ----------
+    cache_root : Path
+        Root of the WAV cache (e.g. ``beq_shared_dir() / "wav-cache"``).
+
+    Returns
+    -------
+    list[Path]
+        Sorted list of WAV file paths ending in ``WAV_SUFFIX``.
+    """
+    if not cache_root.exists():
+        return []
+
+    bucket_dirs = sorted(
+        e.path for e in os.scandir(cache_root) if e.is_dir()
+    )
+    wav_files: list[Path] = []
+    for bucket_path in bucket_dirs:
+        for dirpath, _dirnames, filenames in os.walk(bucket_path):
+            for f in filenames:
+                if f.endswith(WAV_SUFFIX):
+                    wav_files.append(Path(dirpath) / f)
+    wav_files.sort()
+    return wav_files
 
 
 # ---------------------------------------------------------------------------

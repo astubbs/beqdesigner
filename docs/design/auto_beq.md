@@ -1,105 +1,162 @@
-# Auto-BEQ — Automated Filter Suggestion
+# Auto-BEQ - Automated Filter Suggestion
 
 **Companion docs:**
-- [`auto_beq_plan.md`](auto_beq_plan.md) — current iteration's implementation plan (LLM-assisted Advisor)
-- [`auto_beq_experiments.md`](auto_beq_experiments.md) — append-only log of experiments tried, results, lessons
+- [`auto_beq_experiments.md`](auto_beq_experiments.md) - append-only log of experiments tried, results, lessons
+- [`auto_beq_plan.md`](auto_beq_plan.md) - original advisor design plan (historical context)
+- [FAQ and Glossary](../faq.md) - terminology, developer commands, key numbers
+- [LFE Extractor](../lfe_extractor.md) - Docker-based extraction for NAS deployment
 
-**Status:** spike, not shipped. Tests green on 5 synthetic + 2
-real-media fixtures (Edge of Tomorrow and Mad Max: Fury Road). The
-N-filter iterative fitter reproduces real catalogue entries'
-response curves within 0.52 dB mean / 1.40 dB max across 5-80 Hz.
-This answers the vision brief's go/no-go question (can scipy.optimize
-match human expert output?) as **YES**.
-
-The spike does NOT yet solve the harder problem of inferring a
-catalogue-style correction target from a measured LFE curve - that
-is supervised learning or expert heuristic work beyond the spike's
-scope. The real-media tests verify the extraction/measurement
-pipeline is real and working, then feed the catalogue curve directly
-to the fitter as the target. See section 4 for the scoping.
-
-**Audience:** developers working on the magic-wand initiative. This document
-will be split into user-facing docs (feature overview) and implementation
-docs (optimizer internals) once the feature graduates from spike to
-production.
+**Audience:** a competent Python developer who has never touched machine
+learning, digital signal processing, or audio engineering. All domain
+terms are defined on first use and in the [glossary](../faq.md#glossary).
 
 ---
 
-> **Note:** Parts of this document are outdated (it still says "spike,
-> not shipped"). The system has evolved significantly. See
-> [FAQ and Glossary](../faq.md) for current terminology and
-> [the experiment log](auto_beq_experiments.md) for the latest results.
+## 1. What Auto-BEQ does
 
-## Evaluation modes
+Movies are often mastered with rolled-off bass - the low-frequency
+content is intentionally reduced compared to the original mix. A BEQ
+(Bass EQ) profile adds correction filters to restore that lost bass.
+The [BEQ catalogue](https://beqcatalogue.readthedocs.io/) is a
+community-maintained database of hand-crafted correction profiles for
+thousands of titles.
 
-The system has two evaluation modes for measuring model quality:
+Auto-BEQ generates these correction profiles automatically. Given a
+media file (MKV, WAV), it extracts the LFE (Low Frequency Effects)
+channel, analyses the frequency response, and produces a set of IIR
+(Infinite Impulse Response) filters that correct the bass rolloff.
 
-- **Reassess** (`dev reassess`) - trains each experiment approach from
-  scratch on an 80/20 held-out split and compares them. Measures
-  generalisation. Use during research.
-- **Evaluate** (`dev evaluate`) - loads the saved production model and
-  runs it on all catalogue-matched titles. Measures real-world
-  performance. Use for quality assurance.
+The system is in production with CLI commands, Docker deployment, and
+a trained machine learning model.
 
-See the [FAQ](../faq.md#dev-reassess-vs-dev-evaluate) for detailed
-guidance on when to use each.
+### Current state
 
-## 1. Overview
+- **Production model:** E82 - an XGBoost gradient-boosted tree model
+  trained on 50:1 weighted hybrid data (real audio + synthetic). Achieves
+  ~2.8 dB mean error against hand-crafted catalogue entries.
+- **Current champion:** E85 - a differentiable DSP approach that trains
+  a neural network to directly output filter parameters, optimised with
+  an acoustic loss function. Achieves ~2.3 dB mean error. Not yet the
+  production default because it requires PyTorch.
+- **WAV cache:** ~1000+ extracted LFE files used for training and
+  evaluation.
+- **Catalogue coverage:** 14,785+ entries in the BEQ catalogue (as of
+  April 2026).
 
-Extend BEQDesigner with automated IIR filter suggestion. Goal: a user loads
-raw audio content (LFE track, direct media file), presses a button, and gets
-a filter chain proposal populated into the existing filter slots. They
-review, tweak from a head start, and send to their DSP.
+### CLI commands
 
-Long-term this powers:
+| Command | Purpose |
+|---|---|
+| `bin/beq-designer profile` | Generate a BEQ correction profile for a media file |
+| `bin/beq-designer extract` | Extract LFE audio from media files into the WAV cache |
+| `dev reassess` | Train each experiment from scratch on 80/20 split, compare generalisation |
+| `dev evaluate` | Run the saved production model on all titles, measure real-world performance |
+| `dev train` | Train the production XGBoost model (E82) |
+| `dev train-torch` | Train the differentiable DSP model (E85) |
+| `dev benchmark` | Compare multiple advisors side-by-side on the same library |
+| `dev test-advisor` | Test a single advisor on one title interactively |
 
-1. A **magic-wand button** in the GUI signal-analysis view (Tier 1 of the
-   vision).
-2. A **headless CLI** that batch-processes a folder of media files into
-   per-episode / per-movie BEQ profiles (Tier 1).
-3. A fully automated **Home Assistant** workflow that preprocesses a NAS
-   library into sidecar `.beq` files and loads them at play time via ezBEQ
-   (Tier 3).
+See the [FAQ](../faq.md#developer-commands) for detailed guidance on
+when to use `dev reassess` vs `dev evaluate`.
 
-None of those UIs exist yet. This spike answers the one prerequisite
-question: **can `scipy.optimize` produce filter parameters that match
-human-expert BEQ catalogue entries within tolerance?**
+### Deployment
+
+The LFE extraction pipeline ships as a Docker image for NAS deployment.
+This lets users extract LFE audio from their full media library on the
+server where the files live, without installing Python, scipy, or GUI
+dependencies. See [`lfe_extractor.md`](../lfe_extractor.md) for setup.
 
 ---
 
 ## 2. System architecture
 
+The pipeline has five stages: extract, analyse, enrich, advise, fit.
+
 ```mermaid
 flowchart LR
     A[Media file<br/>.mkv / .wav] -->|ffmpeg extract<br/>pan=c{LFE}, ar=1000| B[mono WAV @ 1 kHz]
     B -->|read_wav_data<br/>soundfile| C[numpy samples]
-    C -->|Signal + avg_spectrum<br/>scipy.welch| D[magnitude curve<br/>dB vs Hz]
-    C -->|load_and_smooth_chunked<br/>STFT peak per chunk → P90| D2[chunked-percentile curve<br/>dB vs Hz]
-    D -->|interp + anchor normalise| E[target curve on log grid]
-    D2 -->|interp + anchor normalise| E
-    E -->|propose_filters| F[filter chain<br/>list of dicts]
-    F -->|CompleteFilter.get_sos| G[DSP / ezBEQ]
+    C -->|blend-a0.7-P90<br/>Welch + chunked STFT| D[magnitude curve<br/>dB vs Hz]
+    D -->|feature extraction<br/>102-dim vector| E[CurveFeatures +<br/>MediaMetadata]
+    E -->|Advisor| F[filter parameters<br/>freq, gain, Q per filter]
+    F -->|scipy.optimize<br/>refinement| G[filter chain<br/>list of dicts]
+    G -->|CompleteFilter.get_sos| H[DSP / ezBEQ]
 
-    subgraph spike[Spike scope]
-    E
-    F
-    end
-
-    subgraph reused[Pre-existing code]
+    subgraph extraction[Audio extraction]
+    A
     B
     C
+    end
+
+    subgraph analysis[Analysis + prediction]
     D
+    E
+    F
     G
     end
 ```
 
-The only genuinely new component is `propose_filters`. Everything else is
-either existing BEQDesigner code (`model.signal`, `model.iir`,
-`model.catalogue`) or a thin ffmpeg invocation.
+### Stage 1 - Extract
+
+`ffmpeg` extracts the LFE channel from a media file and resamples it
+to 1000 Hz mono WAV. The result is cached in the WAV cache
+(`{shared_dir}/wav-cache/tmdb/{shard}/{id}/...`) so subsequent runs
+skip extraction. See [`lfe_extractor.md`](../lfe_extractor.md) for the
+Docker deployment path.
+
+### Stage 2 - Analyse
+
+The WAV is analysed to produce a frequency-domain magnitude curve. Two
+methods are blended (the `blend-a0.7-P90` strategy from experiment E18):
+
+- **Welch average** (`Signal.avg_spectrum()`) - splits the audio into
+  overlapping windows, computes the FFT (Fast Fourier Transform - an
+  algorithm that converts audio from time-domain to frequency-domain)
+  of each, and averages. Good for long content but biased toward loud
+  scenes.
+- **Chunked STFT percentile** (`load_and_smooth_chunked()`) - splits
+  audio into fixed-length chunks, computes the STFT (Short-Time Fourier
+  Transform) peak per chunk, and takes the 90th percentile across
+  chunks. More robust for short content with sparse bass.
+
+The blended curve is interpolated to a logarithmic frequency grid,
+normalised to an 80 Hz anchor point, and smoothed to 1/6-octave
+resolution.
+
+### Stage 3 - Enrich
+
+Audio features (102 dimensions - spectral statistics, rolloff
+characteristics, band energies) are extracted from the magnitude curve
+and combined with metadata from TMDb (The Movie Database - genre, year,
+runtime, content rating) to form the input feature vector for the
+advisor.
+
+### Stage 4 - Advise
+
+An advisor takes the feature vector and produces filter parameters. The
+system uses the strategy pattern - different advisors implement the same
+interface but use different approaches.
+
+| Advisor | How it works | Notes |
+|---|---|---|
+| `TrainedModelAdvisor` | XGBoost model predicting all filter params at once | **Production default** (E82) |
+| `MeasurementAdvisor` | Heuristic rules based on audio frequency analysis | No ML dependency |
+| `OllamaAdvisor` | Asks a local LLM about the film's likely bass profile | Requires Ollama |
+| `TopologyAdvisor` | Classifies rolloff shape and applies a template | No ML dependency |
+| `SlopeExtensionAdvisor` | Extends the measured rolloff slope | No ML dependency |
+
+Select an advisor with `AUTO_BEQ_ADVISOR` env var or `--advisor` CLI flag.
+
+### Stage 5 - Fit
+
+The advisor's filter parameters are refined using `scipy.optimize` to
+minimise the difference between the proposed filter chain's response
+and the target correction curve. This stage uses the same N-filter
+iterative fitter described in section 3 below.
 
 ---
 
-## 3. Algorithm
+## 3. The N-filter iterative fitter (optimizer internals)
 
 `model.auto_beq.propose_filters(target_curve_db, freqs_hz, fs, band)`
 
@@ -110,7 +167,7 @@ the curve to 1/6-octave before feeding it in (see Stage 0 below).
 
 **Pipeline:**
 
-### Stage 0 — 1/6-octave smoothing (caller's responsibility)
+### Stage 0 - 1/6-octave smoothing (caller's responsibility)
 
 Raw magnitude spectra contain narrow resonances and dither artefacts
 that a broad IIR filter cannot (and should not) chase. Real-media
@@ -121,11 +178,12 @@ catalogue-generated curves are already smooth by construction.
 
 Smoothing is a log-frequency Gaussian kernel: for each bin, a Gaussian
 weighted over `log2(freqs)` with `sigma = octaves/2.355`. 1/6-octave is
-the SPL-measurement convention.
+the SPL (Sound Pressure Level) measurement convention.
 
-### Stage 1 — One LowShelf (bidirectional)
+### Stage 1 - One LowShelf (bidirectional)
 
-`scipy.optimize.minimize` with `method="L-BFGS-B"`:
+`scipy.optimize.minimize` with `method="L-BFGS-B"` (a quasi-Newton
+optimiser that handles bounds on parameters):
 
 | Param | Seed | Bounds |
 |---|---|---|
@@ -136,7 +194,11 @@ the SPL-measurement convention.
 The gain bound is **bidirectional** - the shelf can lift or cut the
 low end. This captures broad trends in the target.
 
-### Stage 2 — Iterative residual PEQs
+### Stage 2 - Iterative residual PEQs
+
+PEQ = Parametric Equalizer - a filter that boosts or cuts a specific
+frequency band, with adjustable centre frequency, bandwidth (Q), and
+gain.
 
 Loop, adding one PEQ per iteration until either `max_filters` (default
 6) is reached or the in-band max residual drops below `stop_max_err_db`
@@ -147,9 +209,9 @@ Loop, adding one PEQ per iteration until either `max_filters` (default
 3. Find the worst-residual frequency (`argmax(|err|)` in band); use it
    as the PEQ seed frequency, with gain = `-err` at that bin.
 4. Fit the PEQ from **three Q seeds** (0.7, 1.5, 3.0) and keep the
-   best. Bounds: freq ∈ band, Q ∈ [0.3, 4.0], gain ∈ [-30, +30].
-5. If the new PEQ reduces in-band RMS error by less than 0.05 dB, stop
-   (the optimizer has nothing useful to add).
+   best. Bounds: freq in band, Q in [0.3, 4.0], gain in [-30, +30].
+5. If the new PEQ reduces in-band RMS (Root Mean Square) error by less
+   than 0.05 dB, stop (the optimizer has nothing useful to add).
 6. Append the PEQ and continue.
 
 Three Q seeds matter: the L-BFGS-B optimizer is local, and a single
@@ -157,7 +219,7 @@ seed can get stuck in a shallow minimum when the target has multiple
 features nearby. Trying 0.7/1.5/3.0 covers "broad", "medium", and
 "narrow" shapes.
 
-### Stage 3 — Return
+### Stage 3 - Return
 
 List of dicts matching the `CatalogueEntry.filters` schema:
 `{"type": "LowShelf"|"PeakingEQ"|"HighShelf", "freq": float, "q": float, "gain": float}`
@@ -172,130 +234,84 @@ combination of filters works. It is NOT a "BEQ-aware" algorithm: the
 filters it proposes are not guaranteed to look like what a human BEQ
 expert would choose. The output can include high-gain shelves
 (+29 dB on Mad Max), negative-gain shelves, notches, and arbitrary
-PEQ chains. See "Real-media findings" and "Known limitations".
+PEQ chains.
 
 ---
 
-## 4. Validation methodology
+## 4. Evaluation modes
 
-### The catalogue-as-ground-truth idea
+The system has two evaluation modes for measuring model quality:
 
-The BEQ catalogue (`beqcatalogue.readthedocs.io/database.json`, 14785
-entries as of April 2026) contains filter chains produced by human experts
-for thousands of titles. Each chain implicitly defines a target "correction
-curve" `G(f)` — the dB response the filters impose.
+- **Reassess** (`dev reassess`) - trains each experiment approach from
+  scratch on an 80/20 held-out split and compares them. Measures
+  generalisation. Use during research.
+- **Evaluate** (`dev evaluate`) - loads the saved production model and
+  runs it on all catalogue-matched titles. Measures real-world
+  performance. Use for quality assurance.
 
-If we negate that curve, we get `-G(f)`, which is what a perfectly
-catalogued release would measure as raw rolloff on its LFE track before
-correction. Feeding `-G(f)` back into `propose_filters` should return a
-filter chain whose response closely approximates `G(f)` — i.e. we should
-reconstruct the original correction.
+See the [FAQ](../faq.md#dev-reassess-vs-dev-evaluate) for detailed
+guidance on when to use each.
 
-This is the **synthetic roundtrip** test. It isolates the optimizer from
-real-world confounds (room noise, rip quality, multi-channel bass
-management) and answers: does the optimization math work?
-
-### Algorithm-quality thresholds (per vision doc)
+### Quality thresholds
 
 For each title, compute `err = target + proposed_response` across the
-scoring band:
+scoring band (5-80 Hz):
 
 | Metric | PASS threshold | MARGINAL threshold |
 |---|---|---|
-| `mean(|err|)` | < 2.0 dB | < 3.0 dB |
-| `max(|err|)` | < 5.0 dB | < 7.5 dB |
+| `mean(\|err\|)` | < 2.0 dB | < 3.0 dB |
+| `max(\|err\|)` | < 5.0 dB | < 7.5 dB |
 
-Topology match (same filter types as catalogue) is a **secondary** metric.
-A proposed chain with different topology but equivalent in-band response is
-acceptable — bass-frequency IIR filters have well-known equivalencies
-(different `freq`/`Q`/`gain` triplets can produce near-identical in-band
-curves).
+Topology match (same filter types as catalogue) is a **secondary**
+metric. A proposed chain with different topology but equivalent in-band
+response is acceptable - bass-frequency IIR filters have well-known
+equivalencies (different freq/Q/gain triplets can produce near-identical
+in-band curves).
 
-### Synthetic results (April 2026, band 5-80 Hz, N-filter fitter)
+### Champion tracking
 
-| Title | # filters proposed | Mean err | Max err | Grade |
-|---|---|---|---|---|
-| Battle: Los Angeles (1-filter catalogue) | 1 | 0.09 dB | 0.18 dB | PASS |
-| Captain America: TWS (1-filter catalogue) | 1 | 0.13 dB | 0.27 dB | PASS |
-| Run Hide Fight (1-filter catalogue) | 1 | 0.02 dB | 0.06 dB | PASS |
-
-The N-filter fitter still produces single-filter output on these
-easy cases because one LowShelf already matches the target within
-`stop_max_err_db=0.5`. For deep catalogue entries the same fitter
-produces 6-filter chains (see real-media results).
-
-### Real-media results (April 2026, band 5-80 Hz)
-
-Run via the media manifest at
-`~/.config/beqdesigner/auto_beq_media.json`. Each fixture exercises
-the full pipeline (extract → smooth → fit) and grades the fitter's
-output against the catalogue entry's response curve.
-
-| Title | Proposed filters | Mean err | Max err | Grade |
-|---|---|---|---|---|
-| Edge of Tomorrow (5-filter catalogue, ~+28 dB @ 10 Hz) | 6 | 0.52 dB | 1.40 dB | PASS |
-| Mad Max: Fury Road (5-filter catalogue, ~+15 dB @ 10 Hz) | 5 | 0.25 dB | 1.02 dB | PASS |
-
-The proposed leading filters resemble the catalogue entries'
-topology. EoT's catalogue cascades four `LowShelf @ 23 Hz Q=0.9
-+6.9 dB` shelves (summed gain +27.6 dB); the fitter proposes one
-`LowShelf @ 23 Hz Q=1.15 +28.42 dB` - same frequency, summed gain,
-near-matching Q. Mad Max's mixed cascade distils to `LowShelf @ 17 Hz
-Q=0.68 +13.66 dB` plus four residual PEQs, matching the catalogue's
-total shape.
-
-### What this test exercises
-
-1. **Extraction pipeline**: `ffmpeg pan=c0=LFE` on a real Blu-ray/UHD
-   LFE track, cached next to the source. Confirms the app can consume
-   real media without GUI bootstrapping.
-2. **Measurement pipeline**: `Signal.avg_spectrum()` (Welch average)
-   interpolated to a log grid, normalised to the 80 Hz anchor, and
-   smoothed to 1/6-octave. An alternative chunked-percentile path
-   (`load_and_smooth_chunked()`) splits audio into fixed-length chunks,
-   computes STFT peak per chunk, and takes the 90th percentile across
-   chunks — more robust for short content with sparse bass (E18).
-3. **Dynamic-range sanity check**: the measured curve must have
-   ≥5 dB of in-band range, catching "extracted silence" or
-   "wrong channel" bugs.
-4. **Fitter capability**: `propose_filters` is given the
-   catalogue entry's response curve as target and must reproduce it
-   with ≤6 IIR filters to <2 dB mean / <5 dB max. This is the vision
-   brief's go/no-go question.
-
-### What this test does NOT exercise
-
-The fitter is fed the **catalogue curve** as target, not the
-measured curve. The gap between measured and catalogue is logged
-informationally (Mad Max: 9.37 dB, EoT: 7.82 dB mean in 20-80 Hz) -
-this represents the difference between "what the content has" and
-"what the expert prescribed to add". Bridging this gap (turning a
-measured curve into a catalogue-shaped correction target) is a
-harder problem out of scope for the spike: it requires either a
-supervised mapping trained on catalogue/content pairs, or an
-expert-encoded heuristic that decides how aggressively to extend
-bass per title. Neither is implemented.
+Each `dev reassess` run records the best-performing experiment in
+`{shared_dir}/champion_history.json`. See the
+[FAQ](../faq.md#champion-tracking) for details.
 
 ---
 
-## 5. Known limitations
+## 5. Experiment history
 
-### The big one: measured → catalogue-shaped target is unsolved
-The fitter reproduces any smooth in-band curve well. Tests feed it
-the catalogue curve directly, so it passes. In a real magic-wand
-scenario we only have the MEASURED content curve and need to INFER
-what catalogue-shaped correction to target. There is no supervised
-mapping or heuristic for this yet. Two plausible paths for a follow-up
-iteration:
-- **Supervised**: train a small model that maps measured-curve
-  features to correction-curve parameters, using catalogue/content
-  pairs as training data.
-- **Heuristic**: detect the natural rolloff slope in the measured
-  curve, extend it by a tunable "aggressiveness" factor (so the user
-  can pick "mild / medium / aggressive" rather than the algorithm
-  guessing).
+The system has evolved through 85+ experiments across several research
+families. The full details are in the
+[experiment log](auto_beq_experiments.md). Here is a summary of the
+major phases:
 
-### Other limitations
+| Phase | Experiments | Approach | Outcome |
+|---|---|---|---|
+| Fitter validation | E1-E6 | scipy.optimize iterative fitter | Proven: fitter reproduces catalogue curves within 0.52 dB mean |
+| LLM advisors | E7-E13 | Ollama llama3.1:8b for gain estimation | Dead end: small LLMs too weak for numeric calibration |
+| Measurement heuristics | E14-E17 | Deficit + slope extension | 41% non-FAIL ceiling; topology classifier adopted |
+| Spectrum extraction | E18-E22 | Chunked STFT, blended methods | `blend-a0.7-P90` adopted as default extraction |
+| Initial ML | E25-E40 | XGBoost, late fusion, metadata encoding | 2.45 dB on 220 titles |
+| Feature augmentation | E41-E52 (F) | Synthetic augmentation, clustering | F1 synthetic augmentation was breakthrough (-0.73 dB) |
+| Hyperparameter tuning | E53-E59 (G) | Alpha sweep, sigma sweep, ensembles | Per-author alpha hits oracle ceiling |
+| Multi-author | E60-E67 (H) | Response averaging, marginalisation | Dead end: multi-author disagreement is signal, not noise |
+| Author selection | E68-E70 (I) | Metadata classifier for author routing | I1b soft-blend adopted at 2.37 dB |
+| Scale-up validation | E71-E75 | 932-WAV corpus re-validation | Rankings preserved; +0.3-0.5 dB honest measurement |
+| Real-audio regime | E77-E82 | 50:1 weighted hybrid training | **Production model: ~2.0 dB** |
+| Differentiable DSP | E85 | Neural network with acoustic loss | **Champion: ~2.3 dB** (reassess), improves with more data |
+
+### Key architectural lesson
+
+Early experiments (E1-E40) tried to bridge the gap between a measured
+LFE curve and a catalogue-shaped correction using heuristics and LLM
+prompts. The breakthrough came from reframing the problem as supervised
+learning: train a model on (audio features, catalogue filters) pairs
+extracted from real media. The model learns the implicit mapping from
+"what the content sounds like" to "what correction a human expert would
+apply" without needing to encode that knowledge as rules.
+
+---
+
+## 6. Known limitations
+
 - **No topology preference.** The fitter minimises response error
   only. Output chains can contain narrow notches, high-gain shelves,
   and oscillating PEQs because the target curve drives them there.
@@ -309,84 +325,30 @@ iteration:
   catalogue entries could need more.
 - **Media file assumption.** Requires a local file to analyse; no
   streaming-only content support.
-- **Single extraction.** Welch averages 100+ minutes into one curve,
-  so loud scenes dominate. Catalogue experts often work from
-  specific reference scenes instead. E18 adds a chunked-percentile
-  alternative (`load_and_smooth_chunked`) that mitigates this by
-  taking STFT peaks per chunk and aggregating via 90th percentile.
-
----
-
-## 6. Expansion path
-
-### Next iteration: infer the correction target from measured content
-
-The fitter is proven. The open question is how to construct its
-target from a measured curve alone.
-
-Quickest useful step: **build a heuristic that ingests the measured
-curve and outputs a target-correction curve**, then have the user
-tune "aggressiveness" (how deep to extend). This gets us to a
-shippable magic-wand button that produces reasonable starting points
-the user can review.
-
-Once that's in place, the catalogue becomes a validation corpus: for
-each title, check how close the heuristic's proposal lands relative
-to the catalogue entry. The numbers we get will tell us whether a
-single heuristic is enough or we need per-genre / per-era tuning.
-
-### Then: add test coverage
-
-1. Identify titles in the catalogue: inspect
-   `src/test/resources/auto_beq/database.json`, or filter the full
-   catalogue
-   (`https://raw.githubusercontent.com/3ll3d00d/beqcatalogue/master/docs/database.json`).
-2. Add the title + filter-count tuple to the snapshot.
-3. Add an entry to `FIXTURES` in `test_auto_beq.py` with an expected
-   grade.
-4. Run `pytest src/test/python/spike/test_auto_beq.py -v`.
-
-### Then: graduate the spike to a production feature
-
-The three-tier roadmap from the vision brief:
-
-1. **Magic wand button** - wire `propose_filters` to a QPushButton in
-   the signal-analysis view.
-2. **Unified CLI** (`scripts/beq.py`) - interactive menu + subcommands
-   for profile generation, LFE extraction, cache management, and sweep
-   analysis. Includes batch processing of directories. *(done)*
-3. **ezBEQ send** - HTTP POST of the filter chain to ezBEQ's `/api/`
-   endpoint.
-
-### Metrics we'll track as the spike grows
-
-- **PASS-grade rate across the catalogue** - target ≥80% per the
-  vision doc.
-- **Distribution of `mean_abs_err_db`** - where does the long tail live?
-- **Failure-mode taxonomy** - which content types fail, and why.
-- **Wall-clock per title** - currently ~10 ms per synthetic roundtrip,
-  ~70 s for a full feature-length LFE extraction (cached on first run).
+- **E85 requires PyTorch.** The differentiable DSP champion (E85) needs
+  PyTorch, which is a heavy dependency. It is not the production default
+  for this reason. E82 (XGBoost) runs with lighter dependencies.
 
 ---
 
 ## 7. Future features
 
-- **Pre-extract audio for uncatalogued media.** The library discovery
-  config records all media files (matched + unmatched). Currently
-  audio extraction only happens on-demand when a test or the magic
-  wand requests it. Optional background pre-extraction for unmatched
-  media would make later profile construction instant instead of
-  waiting 30-120s per title for ffmpeg. Low priority — extraction is
-  cached after first run anyway.
-- **AnthropicAdvisor** — API-key-based advisor using Claude for the
-  gain-multiplier question (narrower than E8-E13's full-tier
-  classification).
-- **TMDB metadata lookup** — auto-fetch genre/director/year from
-  TMDB to augment advisor context.
-- **Topology-hint-driven fitter** — advisor returns a preferred
+- **Magic-wand button** - wire `propose_filters` to a QPushButton in
+  the GUI signal-analysis view (Tier 1 of the original vision).
+- **ezBEQ send** - HTTP POST of the filter chain to ezBEQ's `/api/`
+  endpoint for direct DSP control.
+- **AnthropicAdvisor** - API-key-based advisor using Claude for the
+  gain-multiplier question.
+- **TMDB metadata lookup** - auto-fetch genre/director/year from
+  TMDb to augment advisor context.
+- **Topology-hint-driven fitter** - advisor returns a preferred
   filter topology (cascade vs shelf+PEQ) and the fitter respects it.
-- **On-disk advisor response caching** — avoid re-running LLM for
+- **On-disk advisor response caching** - avoid re-running LLM for
   the same title+features.
+- **Pre-extract audio for uncatalogued media.** The library discovery
+  config records all media files (matched + unmatched). Optional
+  background pre-extraction for unmatched media would make later profile
+  construction instant instead of waiting 30-120s per title for ffmpeg.
 
 ---
 
@@ -410,7 +372,7 @@ The three-tier roadmap from the vision brief:
 
 | Path | Role | In unified CLI? |
 |---|---|---|
-| `scripts/beq.py` | **Unified CLI** — single entry point, interactive menu + subcommands | Entry point |
+| `scripts/beq.py` | **Unified CLI** - single entry point, interactive menu + subcommands | Entry point |
 | `scripts/cli_common.py` | Shared CLI utilities (filterable_select, config, banner) | Library |
 | `scripts/beq_profile_cli.py` | Profile generation CLI (menus, progress, directory browser) | `beq.py profile` |
 | `scripts/generate_beq_profile.py` | End-to-end profile generation pipeline | Called by beq_profile_cli |
@@ -440,7 +402,7 @@ The three-tier roadmap from the vision brief:
 
 | Path | Role |
 |---|---|
-| `src/test/python/spike/test_auto_beq.py` | Primary deliverable — parametrised integration test |
+| `src/test/python/spike/test_auto_beq.py` | Primary deliverable - parametrised integration test |
 | `src/test/python/spike/test_beq_profile_cli.py` | CLI integration tests (25 tests) |
 | `src/test/python/conftest.py` | `catalogue_snapshot` session fixture |
 | `src/test/resources/auto_beq/database.json` | Committed catalogue snapshot (~55 KB) |

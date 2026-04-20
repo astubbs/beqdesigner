@@ -35,7 +35,7 @@ The `bin/beq-designer reassess` pipeline (which runs `experiments/run_tier1_comp
 - Changing the actual training algorithms or experiment configurations
 - Auto-retraining (only auto-*suggesting*; the user triggers training)
 - Vendoring the Whisper encoder (separate task)
-- Unifying library_roots and media_roots config (separate task)
+- ~~Unifying library_roots and media_roots config~~ (done - media roots now stored in extract_config.json only)
 - Full CLI/UI menu redesign (but see "Future: CLI and UI menu consistency" note below)
 
 ## Requirements Trace

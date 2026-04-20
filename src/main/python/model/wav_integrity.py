@@ -140,23 +140,10 @@ def verify_cache(cache_root: Path) -> tuple[list[Path], list[Path]]:
     Returns (valid_files, corrupt_files). Corrupt files can be deleted
     to trigger re-extraction.
     """
-    import os as _os
     from model.media_utils import ProgressLogger
-    from model.wav_cache import WAV_SUFFIX
+    from model.wav_cache import iter_cached_wavs
 
-    # Walk bucket dirs instead of rglob (faster on NFS).
-    bucket_dirs = sorted(
-        e.path for e in _os.scandir(cache_root)
-        if e.is_dir()
-    )
-    progress = ProgressLogger(len(bucket_dirs), logger=log, min_interval_s=5)
-    wav_files: list[Path] = []
-    for i, bucket_path in enumerate(bucket_dirs):
-        for dirpath, _dirnames, filenames in _os.walk(bucket_path):
-            for f in filenames:
-                if f.endswith(WAV_SUFFIX):
-                    wav_files.append(Path(dirpath) / f)
-        progress.update(i + 1, label=_os.path.basename(bucket_path))
+    wav_files = iter_cached_wavs(cache_root)
 
     valid = []
     corrupt = []

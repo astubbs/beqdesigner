@@ -3,7 +3,7 @@
 
 Runs E82 (baseline), E83 (Whisper foundation features), E84 (self-training),
 and E85 (differentiable DSP) on the identical 80/20 stratified split of the
-full 1279-WAV cache, producing a single definitive leaderboard.
+full WAV cache, producing a single definitive leaderboard.
 
 Usage:
     BEQ_WAV_CACHE=/Volumes/jetspeed/beqdesigner/wav-cache \
@@ -87,6 +87,15 @@ def main():
 
     pairs = discover_wav_catalogue_pairs_cached()
     all_real = _extract_features_parallel(pairs, DEFAULT_GRID, _FS, strategy=STRATEGY_BLENDED_07)
+
+    unique_titles = set(p["catalogue_entry"].get("title", "") for p, _ in all_real)
+    log.info("WAV-catalogue pairs: %d total, %d unique titles", len(all_real), len(unique_titles))
+    log.info(
+        "One episode per title is used (deduplicated) - training on multiple "
+        "episodes of the same show would let the model memorise title-specific "
+        "patterns instead of learning general audio correction rules"
+    )
+
     if len(all_real) < 200:
         log.error("only %d pairs — need ≥200", len(all_real))
         sys.exit(1)
@@ -107,6 +116,11 @@ def main():
         stratify=severity if len(set(severity)) > 1 else None,
     )
     log.info("split: %d train / %d test (stratified by rolloff severity)", len(train_idx), len(test_idx))
+    log.info(
+        "  80%% of WAVs are used for training, 20%% are held out for testing. "
+        "Stratified by severity so both sets have the same ratio of "
+        "heavy/moderate/gentle rolloff titles."
+    )
 
     # Pre-build common structures.
     cfg_base = AudioFeatureConfig()
@@ -332,7 +346,7 @@ def main():
     # --- 6. Report ---
     print()
     print("=" * 80)
-    print("  TIER 1 UNIFIED COMPARISON — 1279-WAV cache (full extraction)")
+    print(f"  TIER 1 UNIFIED COMPARISON - {len(all_real)}-WAV cache (full extraction)")
     print(f"  Split: {len(train_idx)} train / {len(test_idx)} test (stratified, random_state=42)")
     print("=" * 80)
     print()

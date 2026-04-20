@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from spike._auto_beq_helpers import beq_config_dir
+from cli.extract import get_configured_media_roots, save_extract_config
 
 log = logging.getLogger("auto_beq_sweep")
 
@@ -626,10 +627,15 @@ def load_catalogue_by_digest(
 
 
 def _save_library_roots(library_roots: list[Path], output: Path | None = None) -> None:
-    """Persist library roots to config immediately (survives Ctrl-C during scan).
+    """Persist library roots to the unified extract config.
 
-    Merges into existing config if present, otherwise creates a minimal stub.
+    Also saves to the sweep config (``output``) for backward compat with
+    the sweep JSON schema (``library_roots`` field in the sweep file).
+
+    The canonical store is ``extract_config.json`` via ``save_extract_config()``.
     """
+    save_extract_config(library_roots)
+    # Also persist into the sweep config so write_config() picks them up.
     path = output or _default_config_path()
     existing = load_config(path) or {}
     existing["library_roots"] = [str(r) for r in library_roots]
@@ -642,25 +648,50 @@ def _save_library_roots(library_roots: list[Path], output: Path | None = None) -
 # ---------------------------------------------------------------------------
 
 def _resolve_library_roots(args: argparse.Namespace) -> list[Path]:
-    """Resolve library roots from (in order) CLI flags, env var, previous config, prompt."""
+    """Resolve library roots from (in order) CLI flags, env var, extract config, prompt.
+
+    Resolution order:
+    1. ``--library`` CLI flags
+    2. ``AUTO_BEQ_LIBRARY_ROOTS`` env var
+    3. ``get_configured_media_roots()`` from ``extract_config.json``
+       (which itself checks ``BEQ_MEDIA_DIR`` env var first)
+    4. Interactive prompt
+    """
     if args.library:
         return _split_paths(",".join(args.library))
     env = os.environ.get("AUTO_BEQ_LIBRARY_ROOTS")
     if env:
         return _split_paths(env)
 
-    # Check if a previous run saved library roots in the config.
-    existing = load_config()
-    cached_roots = existing.get("library_roots", []) if existing else []
-    if cached_roots:
-        cached_display = ", ".join(cached_roots)
+    # Check the unified media roots config (extract_config.json).
+    configured = get_configured_media_roots()
+    if configured:
+        cached_display = ", ".join(str(r) for r in configured)
         print(f"Previous library roots: {cached_display}")
         raw = input("Library path(s) [Enter to reuse, or new comma-separated paths]: ").strip()
         if not raw:
-            return [Path(p).expanduser() for p in cached_roots]
+            return configured
         return _split_paths(raw)
 
-    # No previous config, no env var — prompt.
+    # One-time migration: if old sweep config has library_roots but
+    # extract_config.json has empty, copy them over.
+    existing = load_config()
+    old_roots = existing.get("library_roots", []) if existing else []
+    if old_roots:
+        migrated = [Path(p).expanduser() for p in old_roots]
+        save_extract_config(migrated)
+        log.info(
+            "migrated %d library root(s) from sweep config to extract_config.json",
+            len(migrated),
+        )
+        cached_display = ", ".join(old_roots)
+        print(f"Migrated library roots from sweep config: {cached_display}")
+        raw = input("Library path(s) [Enter to reuse, or new comma-separated paths]: ").strip()
+        if not raw:
+            return migrated
+        return _split_paths(raw)
+
+    # No previous config, no env var - prompt.
     raw = input("Library path(s), comma-separated: ").strip()
     if not raw:
         raise SystemExit("no library root provided")

@@ -44,31 +44,24 @@ _MAX_TITLES = 50
 pytestmark = pytest.mark.experiment
 
 
-def _load_settings() -> dict:
-    cfg = Path.home() / ".config" / "beqdesigner" / "settings.json"
-    if cfg.exists():
-        return json.loads(cfg.read_text())
-    return {}
-
-
 def _discover_and_sort() -> list[dict]:
     """Discover catalogue matches across all library roots, sorted by file size.
 
     Returns list of dicts with keys: path, title, year, catalogue_entry, size_bytes.
     Deduplicated by title (first/smallest file per title kept).
     """
-    settings = _load_settings()
-    roots = settings.get("library_roots", [])
+    from cli.extract import get_configured_media_roots
+    from model.auto_beq_catalogue import _fetch_or_cache
+
+    roots = get_configured_media_roots()
     if not roots:
         return []
 
-    from model.auto_beq_catalogue import _fetch_or_cache
     catalogue = _fetch_or_cache()
 
     # Inventory all roots.
     all_files = []
-    for root_str in roots:
-        root = Path(root_str)
+    for root in roots:
         if not root.exists():
             log.info("skipping unmounted root: %s", root)
             continue

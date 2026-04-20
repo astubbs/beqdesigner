@@ -43,25 +43,11 @@ def main(argv: list[str] | None = None):
     print(f"WAV cache: {cache}")
     print()
 
-    # Raw WAV counts -- walk bucket dirs with progress instead of rglob.
-    import os as _os
-    from model.media_utils import ProgressLogger
-    from model.wav_cache import WAV_SUFFIX
+    from model.wav_cache import iter_cached_wavs
 
     log = logging.getLogger("cache_status")
     log.info("scanning WAV cache at %s ...", cache)
-    bucket_dirs = sorted(
-        e.path for e in _os.scandir(cache)
-        if e.is_dir()
-    )
-    progress = ProgressLogger(len(bucket_dirs), logger=log, min_interval_s=5)
-    all_wavs: list[Path] = []
-    for i, bucket_path in enumerate(bucket_dirs):
-        for dirpath, _dirnames, filenames in _os.walk(bucket_path):
-            for f in filenames:
-                if f.endswith(WAV_SUFFIX):
-                    all_wavs.append(Path(dirpath) / f)
-        progress.update(i + 1, label=_os.path.basename(bucket_path))
+    all_wavs = iter_cached_wavs(cache)
 
     print(f"Raw WAV files:        {len(all_wavs)}")
     print()
