@@ -365,7 +365,7 @@ class TestDispatch:
         expected = {
             "profile", "extract", "cache-status", "verify", "nn-report",
             "sweep-discover", "sweep-run", "sweep-report", "config",
-            "dev-train", "dev-train-torch",
+            "dev-train", "dev-train-torch", "dev-reassess",
             "report-acquisitions", "report-cache-bias", "report-author-patterns",
         }
         for val in selectable_values:

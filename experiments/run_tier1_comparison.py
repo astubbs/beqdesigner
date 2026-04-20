@@ -31,6 +31,7 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 
 from model.auto_beq import DEFAULT_GRID
+from model.media_utils import ProgressLogger
 from model.auto_beq_advisor import extract_foundation_embeddings_parallel
 from model.auto_beq_catalogue import _fetch_or_cache
 from model.auto_beq_metadata import enrich_media_metadata, fetch_metadata_batch, load_cache
@@ -62,7 +63,16 @@ def main():
     # --- 1. Load + split ---
     log.info("=" * 70)
     log.info("  TIER 1 UNIFIED COMPARISON")
-    log.info("  All experiments on the same 80/20 stratified split")
+    log.info("")
+    log.info("  Trains and evaluates each experiment technique (E82-E85) on")
+    log.info("  the SAME data split so results are directly comparable.")
+    log.info("")
+    log.info("  80/20 stratified split means:")
+    log.info("    - 80%% of WAVs are used for training, 20%% held out for testing")
+    log.info("    - 'Stratified' = the split preserves the ratio of rolloff")
+    log.info("      severity (heavy/moderate/gentle) in both sets, so neither")
+    log.info("      set is biased toward easy or hard titles")
+    log.info("    - Same random seed (42) every run for reproducibility")
     log.info("=" * 70)
 
     pairs = discover_wav_catalogue_pairs_cached()
@@ -172,12 +182,15 @@ def main():
         embed_cache_dir = Path(".pytest_cache/foundation-embeddings/whisper-tiny")
 
     train_samples_whisper = []
-    for entry, features in train_samples:
+    log.info("extracting Whisper embeddings for %d train samples...", len(train_samples))
+    whisper_train_progress = ProgressLogger(len(train_samples), logger=log, min_interval_s=5)
+    for idx, (entry, features) in enumerate(train_samples):
         pair_for_entry = next(
             (p for p, _ in all_real if p["catalogue_entry"] is entry), None,
         )
         if pair_for_entry is None:
             train_samples_whisper.append((entry, features))
+            whisper_train_progress.update(idx + 1, label=entry.get("title", ""))
             continue
         wav_path = pair_for_entry["wav_path"]
         try:
@@ -187,6 +200,8 @@ def main():
             train_samples_whisper.append((entry, features_with))
         except Exception:
             train_samples_whisper.append((entry, features))
+        whisper_train_progress.update(idx + 1, label=entry.get("title", ""))
+    whisper_train_progress.finish("train embeddings complete")
 
     t0 = time.time()
     e83_model, _ = train_production_weighted_hybrid(
@@ -197,11 +212,14 @@ def main():
     t_train_e83 = time.time() - t0
 
     # Test set with Whisper embeddings.
+    log.info("extracting Whisper embeddings for %d test samples...", len(test_idx))
+    whisper_test_progress = ProgressLogger(len(test_idx), logger=log, min_interval_s=5)
     X_test_whisper_list = []
-    for i in test_idx:
+    for prog_idx, i in enumerate(test_idx):
         pair, features = all_real[i]
         entry = pair["catalogue_entry"]
         if not entry.get("filters"):
+            whisper_test_progress.update(prog_idx + 1)
             continue
         wav_path = pair["wav_path"]
         try:
@@ -211,6 +229,8 @@ def main():
             features_with = features
         metadata = enrich_media_metadata(entry, tmdb_cache)
         X_test_whisper_list.append(build_feature_vector(features_with, metadata, config=cfg_whisper))
+        whisper_test_progress.update(prog_idx + 1, label=entry.get("title", ""))
+    whisper_test_progress.finish("test embeddings complete")
     X_test_whisper = np.array(X_test_whisper_list, dtype=np.float32)
 
     e83_mean, e83_max, e83_auth, _ = _eval(e83_model, X_test_whisper, entries_test, "E83 Whisper-tiny")
@@ -220,8 +240,10 @@ def main():
     log.info("")
     log.info("--- E84 self-training (11 unmatched WAVs) ---")
     unmatched_wavs = discover_unmatched_wavs_cached()
+    log.info("extracting features for %d unmatched WAVs...", len(unmatched_wavs))
+    unmatched_progress = ProgressLogger(len(unmatched_wavs), logger=log, min_interval_s=5)
     unmatched_pairs = []
-    for wav_path in unmatched_wavs:
+    for idx, wav_path in enumerate(unmatched_wavs):
         try:
             features = cached_extract_features_with_strategy(
                 wav_path, DEFAULT_GRID, _FS, strategy=STRATEGY_BLENDED_07,
@@ -229,6 +251,8 @@ def main():
             unmatched_pairs.append((wav_path, features))
         except Exception:
             pass
+        unmatched_progress.update(idx + 1, label=wav_path.stem if hasattr(wav_path, 'stem') else str(wav_path)[-30:])
+    unmatched_progress.finish(f"extracted {len(unmatched_pairs)} unmatched features")
     t0 = time.time()
     e84_model, e84_meta = train_e84_self_trained(
         real_samples=train_samples, synth_entries=synth_entries,

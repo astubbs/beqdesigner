@@ -92,7 +92,9 @@ test runs miss. Do not commit if any test fails.
   elapsed, rate, and x/y counts. Do a small amount of upfront work
   to discover the total (y) so progress bars can be meaningful. Never
   leave the user staring at a blank screen wondering if something is
-  happening.
+  happening. Use `ProgressLogger` from `model/media_utils.py` (see
+  shared infrastructure section) - it handles time-throttling, ETA,
+  and first-update-always-fires.
 
 ### UI/CLI layer separation
 
