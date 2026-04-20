@@ -17,63 +17,32 @@ Usage::
 """
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from cli.report_base import (
+    classify_era,
+    classify_format,
+    create_report_argparser,
+    dist_counts,
+    dist_pct,
+    run_report,
+)
+
 log = logging.getLogger("nn_acquisition_recommender")
-
-
-def _classify_format(audio_types) -> str:
-    j = " ".join(audio_types or []).lower()
-    if "atmos" in j:
-        return "atmos"
-    if "truehd" in j:
-        return "truehd"
-    if "dts-hd" in j:
-        return "dts-hd"
-    if "dd+" in j:
-        return "dd+"
-    return "other"
-
-
-def _classify_era(year) -> str:
-    try:
-        y = int(year)
-    except (ValueError, TypeError):
-        return "unknown"
-    if y < 1990:
-        return "pre1990"
-    if y < 2010:
-        return "1990s-2000s"
-    if y < 2020:
-        return "2010s"
-    return "2020s"
 
 
 def _key_fns():
     return {
         "author": lambda e: str(e.get("author", "unknown")).strip().lower(),
-        "format": lambda e: _classify_format(e.get("audioTypes", [])),
-        "era": lambda e: _classify_era(e.get("year")),
+        "format": lambda e: classify_format(e.get("audioTypes", [])),
+        "era": lambda e: classify_era(e.get("year")),
         "content_type": lambda e: e.get("content_type", "film"),
         "source": lambda e: e.get("source", "unknown"),
     }
-
-
-def _dist_pct(entries, key_fn) -> dict[str, float]:
-    c = Counter(key_fn(e) for e in entries)
-    total = sum(c.values())
-    if total == 0:
-        return {}
-    return {k: 100 * v / total for k, v in c.items()}
-
-
-def _dist_counts(entries, key_fn) -> Counter:
-    return Counter(key_fn(e) for e in entries)
 
 
 def _format_rank(audio_types) -> int:
@@ -263,7 +232,7 @@ def select_acquisitions(
 
     # Build target distribution counts (catalogue per dimension).
     key_fns = _key_fns()
-    target_counts = {dim: _dist_counts(trainable, fn) for dim, fn in key_fns.items()}
+    target_counts = {dim: dist_counts(trainable, fn) for dim, fn in key_fns.items()}
     target_total = len(trainable)
 
     # Per-author cap = max(2, factor * catalogue_share * n).
@@ -281,7 +250,7 @@ def select_acquisitions(
         print(f"per-author caps (top 5): {log_caps}", file=sys.stderr)
 
     # Initial have distribution.
-    have_counts = {dim: _dist_counts(have_entries, fn) for dim, fn in key_fns.items()}
+    have_counts = {dim: dist_counts(have_entries, fn) for dim, fn in key_fns.items()}
     have_total = len(have_entries)
 
     # Greedy selection loop.
@@ -406,7 +375,7 @@ def generate_report(n: int, output=None, inventory_path: Path | None = None) -> 
         title = e.get("title", "?")
         year = e.get("year", "?")
         author = e.get("author", "?")
-        fmt = _classify_format(e.get("audioTypes", []))
+        fmt = classify_format(e.get("audioTypes", []))
         src = e.get("source", "?")
         score = s["score"]
         # Mark multi-author titles (training bonus).
@@ -429,7 +398,7 @@ def generate_report(n: int, output=None, inventory_path: Path | None = None) -> 
         pr()
         for s in items:
             e = s["entry"]
-            fmt = _classify_format(e.get("audioTypes", []))
+            fmt = classify_format(e.get("audioTypes", []))
             pr(f"- **{e.get('title', '?')}** ({e.get('year', '?')}) — "
                f"{fmt}, {e.get('source', '?')}")
         pr()
@@ -441,7 +410,7 @@ def generate_report(n: int, output=None, inventory_path: Path | None = None) -> 
     pr()
     by_fmt = defaultdict(list)
     for s in selected:
-        f = _classify_format(s["entry"].get("audioTypes", []))
+        f = classify_format(s["entry"].get("audioTypes", []))
         by_fmt[f].append(s)
     for fmt, items in sorted(by_fmt.items(), key=lambda kv: -len(kv[1])):
         pr(f"### {fmt} ({len(items)})")
@@ -475,9 +444,9 @@ def generate_report(n: int, output=None, inventory_path: Path | None = None) -> 
 
     key_fns = _key_fns()
     for dim, fn in key_fns.items():
-        cat_dist = _dist_pct(trainable, fn)
-        now_dist = _dist_pct(have_entries_now, fn)
-        after_dist = _dist_pct(have_entries_after, fn)
+        cat_dist = dist_pct(trainable, fn)
+        now_dist = dist_pct(have_entries_now, fn)
+        after_dist = dist_pct(have_entries_after, fn)
         pr(f"### {dim}")
         pr()
         pr("| Bucket | Catalogue % | Now % | After % | Bias before | Bias after |")
@@ -519,21 +488,25 @@ def generate_report(n: int, output=None, inventory_path: Path | None = None) -> 
 
 
 def main(argv: list[str] | None = None):
-    parser = argparse.ArgumentParser(description="WAV acquisition recommender")
-    parser.add_argument("-n", "--count", type=int, default=50,
-                        help="Number of titles to recommend (default 50)")
-    parser.add_argument("-o", "--output", type=Path, default=None)
-    parser.add_argument("--inventory", type=Path, default=None,
-                        help="Path to media_inventory.json (default: "
-                             "{beq-dir}/media_inventory.json)")
+    parser = create_report_argparser(
+        "WAV acquisition recommender",
+        extra_args=[
+            (("-n", "--count"), {
+                "type": int, "default": 50,
+                "help": "Number of titles to recommend (default 50)",
+            }),
+            (("--inventory",), {
+                "type": Path, "default": None,
+                "help": "Path to media_inventory.json (default: "
+                        "{beq-dir}/media_inventory.json)",
+            }),
+        ],
+    )
     args = parser.parse_args(argv)
-
-    if args.output:
-        with args.output.open("w") as f:
-            generate_report(args.count, output=f, inventory_path=args.inventory)
-        print(f"Report written to {args.output}")
-    else:
-        generate_report(args.count, inventory_path=args.inventory)
+    run_report(
+        generate_report, args,
+        extra_kwargs={"n": args.count, "inventory_path": args.inventory},
+    )
 
 
 if __name__ == "__main__":

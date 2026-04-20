@@ -20,49 +20,21 @@ Usage::
 """
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
+from cli.report_base import (
+    classify_era,
+    classify_format,
+    create_report_argparser,
+    dist_pct,
+    run_report,
+)
+
 log = logging.getLogger("nn_cache_bias_report")
-
-
-def _classify_format(audio_types) -> str:
-    j = " ".join(audio_types or []).lower()
-    if "atmos" in j:
-        return "atmos"
-    if "truehd" in j:
-        return "truehd"
-    if "dts-hd" in j:
-        return "dts-hd"
-    if "dd+" in j:
-        return "dd+"
-    return "other"
-
-
-def _classify_era(year) -> str:
-    try:
-        y = int(year)
-    except (ValueError, TypeError):
-        return "unknown"
-    if y < 1990:
-        return "pre1990"
-    if y < 2010:
-        return "1990s-2000s"
-    if y < 2020:
-        return "2010s"
-    return "2020s"
-
-
-def _dist(entries, key_fn) -> dict[str, float]:
-    c = Counter(key_fn(e) for e in entries)
-    total = sum(c.values())
-    if total == 0:
-        return {}
-    return {k: 100 * v / total for k, v in c.items()}
 
 
 def _bias_table(
@@ -87,7 +59,7 @@ def _bias_table(
     pr()
 
 
-def _load_inventory(inventory_path: Path | None) -> dict | None:
+def _load_inventory(inventory_path: Path | None = None) -> dict | None:
     """Load media_inventory.json if present.
 
     **Fail-fast semantics**: if the caller explicitly passes an
@@ -164,14 +136,14 @@ def generate_report(output=None, inventory_path: Path | None = None) -> None:
 
     dims = [
         ("Author", lambda e: str(e.get("author", "unknown")).strip().lower()),
-        ("Audio format", lambda e: _classify_format(e.get("audioTypes", []))),
-        ("Era", lambda e: _classify_era(e.get("year"))),
+        ("Audio format", lambda e: classify_format(e.get("audioTypes", []))),
+        ("Era", lambda e: classify_era(e.get("year"))),
         ("Content type", lambda e: e.get("content_type", "film")),
         ("Source", lambda e: e.get("source", "unknown")),
     ]
     for name, key_fn in dims:
-        cat_dist = _dist(trainable, key_fn)
-        have_dist = _dist(have_entries, key_fn)
+        cat_dist = dist_pct(trainable, key_fn)
+        have_dist = dist_pct(have_entries, key_fn)
         cat_counts = Counter(key_fn(e) for e in trainable)
         _bias_table(pr, name, cat_dist, have_dist, cat_counts)
 
@@ -205,8 +177,8 @@ def generate_report(output=None, inventory_path: Path | None = None) -> None:
     pr("|---|---|---:|---:|---:|")
     rows = []
     for name, key_fn in dims:
-        cat_dist = _dist(trainable, key_fn)
-        have_dist = _dist(have_entries, key_fn)
+        cat_dist = dist_pct(trainable, key_fn)
+        have_dist = dist_pct(have_entries, key_fn)
         for k in set(cat_dist) | set(have_dist):
             bias = have_dist.get(k, 0) - cat_dist.get(k, 0)
             rows.append((abs(bias), name, k, cat_dist.get(k, 0),
@@ -252,19 +224,18 @@ def generate_report(output=None, inventory_path: Path | None = None) -> None:
 
 
 def main(argv: list[str] | None = None):
-    parser = argparse.ArgumentParser(description="WAV cache bias report")
-    parser.add_argument("--output", "-o", type=Path, default=None)
-    parser.add_argument("--inventory", type=Path, default=None,
-                        help="Path to media_inventory.json (default: "
-                             "~/Downloads/beqdesigner/media_inventory.json)")
+    parser = create_report_argparser(
+        "WAV cache bias report",
+        extra_args=[
+            (("--inventory",), {
+                "type": Path, "default": None,
+                "help": "Path to media_inventory.json (default: "
+                        "~/Downloads/beqdesigner/media_inventory.json)",
+            }),
+        ],
+    )
     args = parser.parse_args(argv)
-
-    if args.output:
-        with args.output.open("w") as f:
-            generate_report(output=f, inventory_path=args.inventory)
-        print(f"Report written to {args.output}")
-    else:
-        generate_report(inventory_path=args.inventory)
+    run_report(generate_report, args, extra_kwargs={"inventory_path": args.inventory})
 
 
 if __name__ == "__main__":

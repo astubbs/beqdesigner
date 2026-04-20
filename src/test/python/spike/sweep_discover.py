@@ -364,7 +364,7 @@ class DiscoveryResult:
 
 
 # Moved to model.media_utils — import for backward compat.
-from model.media_utils import find_media_dirs as _find_media_dirs  # noqa: E402
+from model.media_utils import find_media_dirs  # noqa: E402
 
 
 def inventory_root(library_root: Path) -> list[Path]:
@@ -374,7 +374,7 @@ def inventory_root(library_root: Path) -> list[Path]:
     filesystem walk + file counting.
     """
     log.info("root %s: walking filesystem...", library_root)
-    media_dirs = _find_media_dirs(library_root)
+    media_dirs = find_media_dirs(library_root)
     n_dirs = len(media_dirs) or 1
     print(f"  root {library_root}: {n_dirs} media directories found")
 

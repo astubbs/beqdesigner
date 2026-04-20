@@ -20,30 +20,18 @@ Usage::
 """
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+
+from cli.report_base import classify_format, create_report_argparser, run_report
 
 # Top authors to analyse (≥1% of catalogue).
 TARGET_AUTHORS = [
     "mobe1969", "aron7awol", "mikejl", "kaelaria",
     "remixmark", "t1g8rsfan", "halcyon888",
 ]
-
-
-def _classify_format(audio_types: list) -> str:
-    joined = " ".join(audio_types).lower()
-    if "atmos" in joined:
-        return "atmos"
-    if "truehd" in joined:
-        return "truehd"
-    if "dts-hd" in joined:
-        return "dts-hd"
-    if "dd+" in joined:
-        return "dd+"
-    return "other"
 
 
 def _classify_era(year) -> str:
@@ -86,7 +74,7 @@ def generate_report(catalogue_path: Path, output=None) -> None:
     fmt_by_author: dict[str, Counter] = defaultdict(Counter)
     for e in cat:
         a = e.get("author", "unknown").strip().lower()
-        fmt_by_author[a][_classify_format(e.get("audioTypes", []))] += 1
+        fmt_by_author[a][classify_format(e.get("audioTypes", []))] += 1
 
     pr("## Audio format distribution per author")
     pr()
@@ -178,25 +166,25 @@ def generate_report(catalogue_path: Path, output=None) -> None:
 
 
 def main(argv: list[str] | None = None):
-    parser = argparse.ArgumentParser(description="Author pattern analysis")
-    parser.add_argument(
-        "--catalogue",
-        type=Path,
-        default=Path.home() / ".config/beqdesigner/catalogue_cache.json",
+    parser = create_report_argparser(
+        "Author pattern analysis",
+        extra_args=[
+            (("--catalogue",), {
+                "type": Path,
+                "default": Path.home() / ".config/beqdesigner/catalogue_cache.json",
+            }),
+        ],
     )
-    parser.add_argument("--output", "-o", type=Path, default=None)
     args = parser.parse_args(argv)
 
     if not args.catalogue.exists():
         print(f"Catalogue not found: {args.catalogue}")
         sys.exit(1)
 
-    if args.output:
-        with args.output.open("w") as f:
-            generate_report(args.catalogue, output=f)
-        print(f"Report written to {args.output}")
-    else:
-        generate_report(args.catalogue)
+    run_report(
+        generate_report, args,
+        extra_kwargs={"catalogue_path": args.catalogue},
+    )
 
 
 if __name__ == "__main__":

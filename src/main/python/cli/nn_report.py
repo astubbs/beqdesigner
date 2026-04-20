@@ -16,10 +16,11 @@ Usage:
 
 from __future__ import annotations
 
-import argparse
 import sys
 import time
 from pathlib import Path
+
+from cli.report_base import create_report_argparser, run_report
 
 # Allow running from repo root.
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -239,21 +240,11 @@ def generate_report(output=None):
 
 
 def main(argv: list[str] | None = None):
-    parser = argparse.ArgumentParser(
-        description="Generate comparison report: NN-predicted vs hand-coded BEQ filters.",
-    )
-    parser.add_argument(
-        "--output", "-o", type=Path, default=None,
-        help="Output file (markdown). Defaults to stdout.",
+    parser = create_report_argparser(
+        "Generate comparison report: NN-predicted vs hand-coded BEQ filters.",
     )
     args = parser.parse_args(argv)
-
-    if args.output:
-        with args.output.open("w") as f:
-            generate_report(output=f)
-        print(f"Report written to {args.output}")
-    else:
-        generate_report()
+    run_report(generate_report, args)
 
 
 if __name__ == "__main__":

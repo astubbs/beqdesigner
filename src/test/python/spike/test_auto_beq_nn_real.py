@@ -12,15 +12,13 @@ from __future__ import annotations
 
 import logging
 import time
-from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 
-from model.auto_beq import DEFAULT_GRID, compute_match_metrics, evaluate_filter_chain, smooth_fractional_octave
-from model.auto_beq_advisor import MediaMetadata, extract_curve_features
+from model.auto_beq import DEFAULT_GRID, compute_match_metrics, evaluate_filter_chain
 from model.auto_beq_metadata import enrich_media_metadata, fetch_metadata_batch, load_cache
 from model.auto_beq_nn import (
     N_FEATURES,
@@ -41,6 +39,14 @@ from spike._auto_beq_helpers import (
     cached_extract_features_with_strategy,
     discover_wav_catalogue_pairs_cached,
     extract_features_with_strategy,
+    synthetic_features,
+)
+from spike.conftest_nn import (
+    build_held_out_training_set,
+    build_real_validation_features,
+    build_synthetic_validation_features,
+    compute_mean_loss,
+    extract_real_audio_features,
 )
 
 log = logging.getLogger("auto_beq_nn_real")
@@ -156,14 +162,8 @@ def _print_per_title_breakdown(Y_pred: np.ndarray, val_entries: list[dict], mode
     print(f"\n  Filter count: {over} over, {under} under, {match} match")
 
 
-def _extract_real_audio_features(wav_path: Path, freqs_hz: np.ndarray, fs: int):
-    """Load WAV → Welch spectrum → smooth → extract_curve_features."""
-    return extract_features_with_strategy(wav_path, freqs_hz, fs, strategy=STRATEGY_WELCH)
-
-
-def _extract_real_audio_features_chunked(wav_path: Path, freqs_hz: np.ndarray, fs: int):
-    """Load WAV → blended (Welch + chunked P90) → extract_curve_features."""
-    return extract_features_with_strategy(wav_path, freqs_hz, fs, strategy=STRATEGY_BLENDED_07)
+# Real-audio feature extraction uses shared extract_real_audio_features from conftest_nn.
+_extract_real_audio_features = extract_real_audio_features
 
 
 def _extract_one_wav(args: tuple) -> tuple:
@@ -257,17 +257,9 @@ def _extract_features_parallel(
     return out
 
 
-# ---------------------------------------------------------------------------
-# Synthetic feature extraction (for non-WAV catalogue entries)
-# ---------------------------------------------------------------------------
-
-
-def _synthetic_features(entry: dict, freqs_hz: np.ndarray):
-    correction = evaluate_filter_chain(entry["filters"], freqs_hz, fs=_DEFAULT_FS)
-    rolloff = -correction
-    anchor_idx = int(np.argmin(np.abs(freqs_hz - 80.0)))
-    rolloff_norm = rolloff - rolloff[anchor_idx]
-    return extract_curve_features(rolloff_norm, freqs_hz)
+# synthetic_features() is imported from spike._auto_beq_helpers.
+# Local alias for backward compatibility with call sites using the old name.
+_synthetic_features = synthetic_features
 
 
 # ---------------------------------------------------------------------------
@@ -288,66 +280,25 @@ def test_train_full_catalogue_validate_real_audio(tmp_path):
     files. The gap between synthetic and real performance tells us how
     much the "perfect inverse" assumption costs.
     """
-    from model.auto_beq_catalogue import _fetch_or_cache
-
     log.info("=== E18 real-audio validation ===")
 
-    # --- 1. Load and deduplicate full catalogue ---
-    catalogue = _fetch_or_cache()
-    log.info("full catalogue: %d entries", len(catalogue))
-
-    deduped = deduplicate_by_title(catalogue)
-    deduped = [e for e in deduped if e.get("filters")]
-    log.info("after dedup + filter: %d unique titles with filters", len(deduped))
-
-    # --- 2. Fetch TMDb metadata (cached, no artificial throttle) ---
+    # --- 1-2. Fetch TMDb metadata ---
     tmdb_cache = load_cache()
-    tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
+    # Fetch metadata for real-audio titles (catalogue entries already cached).
+    tmdb_cache = fetch_metadata_batch(
+        [p["catalogue_entry"] for p in _PAIRS], cache=tmdb_cache,
+    )
 
-    # --- 3. Build full synthetic training dataset ---
-    log.info("building synthetic training features for %d titles...", len(deduped))
-    X_all, Y_all, entries_all = [], [], []
-    for e in deduped:
-        features = _synthetic_features(e, DEFAULT_GRID)
-        metadata = enrich_media_metadata(e, tmdb_cache)
-        X_all.append(build_feature_vector(features, metadata))
-        Y_all.append(catalogue_entry_to_labels(e))
-        entries_all.append(e)
-
-    X_all = np.array(X_all, dtype=np.float32)
-    Y_all = np.array(Y_all, dtype=np.float32)
-    log.info("training dataset: X=%s Y=%s", X_all.shape, Y_all.shape)
-
-    # --- 4. Build real-audio validation set ---
+    # --- 3-4. Build training + validation sets using shared helpers ---
     real_tmdb_ids = {p["tmdb_id"] for p in _PAIRS}
     log.info("real-audio validation titles: %d", len(_PAIRS))
     for p in _PAIRS:
         log.info("  %s (tmdb=%s)", p["catalogue_entry"]["title"], p["tmdb_id"])
 
-    # Remove real-audio titles from training set (honest held-out).
-    train_mask = np.array([
-        str(e.get("theMovieDB", "")).strip() not in real_tmdb_ids
-        for e in entries_all
-    ])
-    X_train = X_all[train_mask]
-    Y_train = Y_all[train_mask]
-    log.info("training set (excluding real-audio titles): %d", len(X_train))
-
-    # Build real-audio validation features.
-    X_val, Y_val, val_entries = [], [], []
-    for p in _PAIRS:
-        entry = p["catalogue_entry"]
-        wav_path = p["wav_path"]
-        log.info("extracting real audio features: %s", wav_path.name[:80])
-        features = _extract_real_audio_features(wav_path, DEFAULT_GRID, _DEFAULT_FS)
-        metadata = enrich_media_metadata(entry, tmdb_cache)
-        X_val.append(build_feature_vector(features, metadata))
-        Y_val.append(catalogue_entry_to_labels(entry))
-        val_entries.append(entry)
-
-    X_val = np.array(X_val, dtype=np.float32)
-    Y_val = np.array(Y_val, dtype=np.float32)
-    log.info("validation set (real audio): %d", len(X_val))
+    X_train, Y_train, _ = build_held_out_training_set(tmdb_cache, real_tmdb_ids)
+    X_val, Y_val, val_entries = build_real_validation_features(
+        _PAIRS, tmdb_cache, DEFAULT_GRID, _DEFAULT_FS,
+    )
 
     # --- 5. Train ---
     log.info("training XGBoost on %d synthetic entries...", len(X_train))
@@ -393,20 +344,8 @@ def test_train_full_catalogue_validate_real_audio(tmp_path):
 
     # --- 8. Compare: same titles with synthetic features ---
     print(f"\n=== Same titles with SYNTHETIC features (sanity check) ===")
-    X_synth_val = []
-    for entry in val_entries:
-        features = _synthetic_features(entry, DEFAULT_GRID)
-        metadata = enrich_media_metadata(entry, tmdb_cache)
-        X_synth_val.append(build_feature_vector(features, metadata))
-    X_synth_val = np.array(X_synth_val, dtype=np.float32)
-    Y_synth_pred = model.predict(X_synth_val)
-
-    synth_total_loss = 0.0
-    for i, entry in enumerate(val_entries):
-        pred_filters = labels_to_filters(Y_synth_pred[i])
-        loss = downstream_loss(pred_filters, entry["filters"], DEFAULT_GRID)
-        synth_total_loss += loss
-    synth_mean = synth_total_loss / len(val_entries) if val_entries else 0
+    X_synth_val = build_synthetic_validation_features(val_entries, tmdb_cache)
+    synth_mean = compute_mean_loss(model, X_synth_val, val_entries)
     print(f"  Mean downstream loss (synthetic): {synth_mean:.2f} dB")
     print(f"  Mean downstream loss (real audio): {mean_loss:.2f} dB")
     print(f"  Gap (real - synthetic):            {mean_loss - synth_mean:.2f} dB")
@@ -446,56 +385,22 @@ def test_ablation_audio_vs_metadata(tmp_path):
     (studio, year, format) is a stronger signal than the measured curve
     for predicting BEQ filter parameters.
     """
-    from model.auto_beq_catalogue import _fetch_or_cache
     from model.auto_beq_nn import N_AUDIO_FEATURES
 
     log.info("=== E18e ablation: audio vs metadata ===")
 
-    # --- Reuse data pipeline from main test ---
-    catalogue = _fetch_or_cache()
-    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
-
+    # --- Build training + validation sets using shared helpers ---
     tmdb_cache = load_cache()
-    tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
+    tmdb_cache = fetch_metadata_batch(
+        [p["catalogue_entry"] for p in _PAIRS], cache=tmdb_cache,
+    )
 
-    X_all, Y_all, entries_all = [], [], []
-    for e in deduped:
-        features = _synthetic_features(e, DEFAULT_GRID)
-        metadata = enrich_media_metadata(e, tmdb_cache)
-        X_all.append(build_feature_vector(features, metadata))
-        Y_all.append(catalogue_entry_to_labels(e))
-        entries_all.append(e)
-    X_all = np.array(X_all, dtype=np.float32)
-    Y_all = np.array(Y_all, dtype=np.float32)
-
-    # Hold out real-audio titles.
     real_tmdb_ids = {p["tmdb_id"] for p in _PAIRS}
-    train_mask = np.array([
-        str(e.get("theMovieDB", "")).strip() not in real_tmdb_ids
-        for e in entries_all
-    ])
-    X_train = X_all[train_mask]
-    Y_train = Y_all[train_mask]
-
-    # Real-audio validation features.
-    X_val_real, Y_val, val_entries = [], [], []
-    for p in _PAIRS:
-        entry = p["catalogue_entry"]
-        features = _extract_real_audio_features(p["wav_path"], DEFAULT_GRID, _DEFAULT_FS)
-        metadata = enrich_media_metadata(entry, tmdb_cache)
-        X_val_real.append(build_feature_vector(features, metadata))
-        Y_val.append(catalogue_entry_to_labels(entry))
-        val_entries.append(entry)
-    X_val_real = np.array(X_val_real, dtype=np.float32)
-    Y_val = np.array(Y_val, dtype=np.float32)
-
-    # Synthetic validation features (same titles).
-    X_val_synth = []
-    for entry in val_entries:
-        features = _synthetic_features(entry, DEFAULT_GRID)
-        metadata = enrich_media_metadata(entry, tmdb_cache)
-        X_val_synth.append(build_feature_vector(features, metadata))
-    X_val_synth = np.array(X_val_synth, dtype=np.float32)
+    X_train, Y_train, _ = build_held_out_training_set(tmdb_cache, real_tmdb_ids)
+    X_val_real, Y_val, val_entries = build_real_validation_features(
+        _PAIRS, tmdb_cache, DEFAULT_GRID, _DEFAULT_FS,
+    )
+    X_val_synth = build_synthetic_validation_features(val_entries, tmdb_cache)
 
     # --- Create feature masks ---
     n = N_AUDIO_FEATURES  # 9
@@ -508,14 +413,6 @@ def test_ablation_audio_vs_metadata(tmp_path):
         X_masked = X.copy()
         X_masked[:, ~mask] = 0.0
         return X_masked
-
-    def _eval_model(model, X_val, val_entries, label):
-        Y_pred = model.predict(X_val)
-        total = 0.0
-        for i, entry in enumerate(val_entries):
-            pred_filters = labels_to_filters(Y_pred[i])
-            total += downstream_loss(pred_filters, entry["filters"], DEFAULT_GRID)
-        return total / len(val_entries)
 
     variants = [
         ("audio-only", audio_mask),
@@ -538,8 +435,8 @@ def test_ablation_audio_vs_metadata(tmp_path):
 
         model = train_xgboost(X_tr, Y_train)
 
-        real_loss = _eval_model(model, X_vr, val_entries, name)
-        synth_loss = _eval_model(model, X_vs, val_entries, name)
+        real_loss = compute_mean_loss(model, X_vr, val_entries)
+        synth_loss = compute_mean_loss(model, X_vs, val_entries)
         gap = real_loss - synth_loss
         print(f"  {name:25s} {real_loss:10.2f} dB {synth_loss:10.2f} dB {gap:+6.2f} dB")
 
@@ -559,57 +456,22 @@ def test_late_fusion_vs_early(tmp_path):
 
     Permanent regression test for continuous assessment.
     """
-    from model.auto_beq_catalogue import _fetch_or_cache
     from model.auto_beq_nn import LateFusionAdvisor
 
     log.info("=== E22 late fusion vs E18 early fusion ===")
 
-    catalogue = _fetch_or_cache()
-    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
-
+    # --- Build training + validation sets using shared helpers ---
     tmdb_cache = load_cache()
-    tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
+    tmdb_cache = fetch_metadata_batch(
+        [p["catalogue_entry"] for p in _PAIRS], cache=tmdb_cache,
+    )
 
-    X_all, Y_all, entries_all = [], [], []
-    for e in deduped:
-        features = _synthetic_features(e, DEFAULT_GRID)
-        metadata = enrich_media_metadata(e, tmdb_cache)
-        X_all.append(build_feature_vector(features, metadata))
-        Y_all.append(catalogue_entry_to_labels(e))
-        entries_all.append(e)
-    X_all = np.array(X_all, dtype=np.float32)
-    Y_all = np.array(Y_all, dtype=np.float32)
-
-    # Hold out real-audio titles.
     real_tmdb_ids = {p["tmdb_id"] for p in _PAIRS}
-    train_mask = np.array([
-        str(e.get("theMovieDB", "")).strip() not in real_tmdb_ids
-        for e in entries_all
-    ])
-    X_train = X_all[train_mask]
-    Y_train = Y_all[train_mask]
-
-    # Build real-audio + synthetic validation features.
-    X_val_real, X_val_synth, Y_val, val_entries = [], [], [], []
-    for p in _PAIRS:
-        entry = p["catalogue_entry"]
-        real_feats = _extract_real_audio_features(p["wav_path"], DEFAULT_GRID, _DEFAULT_FS)
-        synth_feats = _synthetic_features(entry, DEFAULT_GRID)
-        metadata = enrich_media_metadata(entry, tmdb_cache)
-        X_val_real.append(build_feature_vector(real_feats, metadata))
-        X_val_synth.append(build_feature_vector(synth_feats, metadata))
-        Y_val.append(catalogue_entry_to_labels(entry))
-        val_entries.append(entry)
-    X_val_real = np.array(X_val_real, dtype=np.float32)
-    X_val_synth = np.array(X_val_synth, dtype=np.float32)
-    Y_val = np.array(Y_val, dtype=np.float32)
-
-    def _mean_loss(model, X_val):
-        Y_pred = model.predict(X_val)
-        total = 0.0
-        for i, entry in enumerate(val_entries):
-            total += downstream_loss(labels_to_filters(Y_pred[i]), entry["filters"], DEFAULT_GRID)
-        return total / len(val_entries)
+    X_train, Y_train, _ = build_held_out_training_set(tmdb_cache, real_tmdb_ids)
+    X_val_real, Y_val, val_entries = build_real_validation_features(
+        _PAIRS, tmdb_cache, DEFAULT_GRID, _DEFAULT_FS,
+    )
+    X_val_synth = build_synthetic_validation_features(val_entries, tmdb_cache)
 
     # Train E18 early fusion (baseline).
     log.info("training E18 early fusion...")
@@ -630,18 +492,18 @@ def test_late_fusion_vs_early(tmp_path):
     print(f"  {'Strategy':30s} {'Real audio':>12s} {'Synthetic':>12s} {'Gap':>8s}")
     print(f"  {'-'*65}")
 
-    early_real = _mean_loss(model_early, X_val_real)
-    early_synth = _mean_loss(model_early, X_val_synth)
+    early_real = compute_mean_loss(model_early, X_val_real, val_entries)
+    early_synth = compute_mean_loss(model_early, X_val_synth, val_entries)
     print(f"  {'E18 early fusion':30s} {early_real:10.2f} dB {early_synth:10.2f} dB {early_real - early_synth:+6.2f} dB")
 
     for alpha in alphas:
         m = late_models[alpha]
-        real = _mean_loss(m, X_val_real)
-        synth = _mean_loss(m, X_val_synth)
+        real = compute_mean_loss(m, X_val_real, val_entries)
+        synth = compute_mean_loss(m, X_val_synth, val_entries)
         print(f"  {f'E22 late fusion (α={alpha:.1f})':30s} {real:10.2f} dB {synth:10.2f} dB {real - synth:+6.2f} dB")
 
     # Save best late fusion model for advisor integration test.
-    best_alpha = min(alphas, key=lambda a: _mean_loss(late_models[a], X_val_real))
+    best_alpha = min(alphas, key=lambda a: compute_mean_loss(late_models[a], X_val_real, val_entries))
     best_model = late_models[best_alpha]
     model_path = str(tmp_path / "e22_late_fusion.joblib")
     save_model(best_model, model_path)
@@ -676,57 +538,22 @@ def test_cnn_dual_branch(tmp_path):
     except ImportError:
         pytest.skip("PyTorch not available")
 
-    from model.auto_beq_catalogue import _fetch_or_cache
     from model.auto_beq_nn import N_AUDIO_FEATURES
 
     log.info("=== E23 CNN dual-branch ===")
 
-    catalogue = _fetch_or_cache()
-    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
-
+    # --- Build training + validation sets using shared helpers ---
     tmdb_cache = load_cache()
-    tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
+    tmdb_cache = fetch_metadata_batch(
+        [p["catalogue_entry"] for p in _PAIRS], cache=tmdb_cache,
+    )
 
-    X_all, Y_all, entries_all = [], [], []
-    for e in deduped:
-        features = _synthetic_features(e, DEFAULT_GRID)
-        metadata = enrich_media_metadata(e, tmdb_cache)
-        X_all.append(build_feature_vector(features, metadata))
-        Y_all.append(catalogue_entry_to_labels(e))
-        entries_all.append(e)
-    X_all = np.array(X_all, dtype=np.float32)
-    Y_all = np.array(Y_all, dtype=np.float32)
-
-    # Hold out real-audio titles.
     real_tmdb_ids = {p["tmdb_id"] for p in _PAIRS}
-    train_mask = np.array([
-        str(e.get("theMovieDB", "")).strip() not in real_tmdb_ids
-        for e in entries_all
-    ])
-    X_train = X_all[train_mask]
-    Y_train = Y_all[train_mask]
-
-    # Build validation features.
-    X_val_real, X_val_synth, Y_val, val_entries = [], [], [], []
-    for p in _PAIRS:
-        entry = p["catalogue_entry"]
-        real_feats = _extract_real_audio_features(p["wav_path"], DEFAULT_GRID, _DEFAULT_FS)
-        synth_feats = _synthetic_features(entry, DEFAULT_GRID)
-        metadata = enrich_media_metadata(entry, tmdb_cache)
-        X_val_real.append(build_feature_vector(real_feats, metadata))
-        X_val_synth.append(build_feature_vector(synth_feats, metadata))
-        Y_val.append(catalogue_entry_to_labels(entry))
-        val_entries.append(entry)
-    X_val_real = np.array(X_val_real, dtype=np.float32)
-    X_val_synth = np.array(X_val_synth, dtype=np.float32)
-    Y_val = np.array(Y_val, dtype=np.float32)
-
-    def _mean_loss(predictor, X_val):
-        Y_pred = predictor.predict(X_val)
-        total = 0.0
-        for i, entry in enumerate(val_entries):
-            total += downstream_loss(labels_to_filters(Y_pred[i]), entry["filters"], DEFAULT_GRID)
-        return total / len(val_entries)
+    X_train, Y_train, _ = build_held_out_training_set(tmdb_cache, real_tmdb_ids)
+    X_val_real, Y_val, val_entries = build_real_validation_features(
+        _PAIRS, tmdb_cache, DEFAULT_GRID, _DEFAULT_FS,
+    )
+    X_val_synth = build_synthetic_validation_features(val_entries, tmdb_cache)
 
     # Train CNN only — don't mix torch and XGBoost in the same test
     # to avoid segfaults from library conflicts on macOS.
@@ -737,8 +564,8 @@ def test_cnn_dual_branch(tmp_path):
     )
     cnn_predictor = CNNPredictor(cnn_model)
 
-    cnn_real = _mean_loss(cnn_predictor, X_val_real)
-    cnn_synth = _mean_loss(cnn_predictor, X_val_synth)
+    cnn_real = compute_mean_loss(cnn_predictor, X_val_real, val_entries)
+    cnn_synth = compute_mean_loss(cnn_predictor, X_val_synth, val_entries)
 
     # Print results with E18/E22 baselines from previous runs for reference.
     print(f"\n{'='*70}")

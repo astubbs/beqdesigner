@@ -55,19 +55,15 @@ def main(argv: list[str] | None = None):
         )
 
     from model.auto_beq import DEFAULT_GRID
-    from model.auto_beq_catalogue import _fetch_or_cache
-    from model.auto_beq_metadata import enrich_media_metadata, fetch_metadata_batch, load_cache
+    from model.auto_beq_metadata import enrich_media_metadata
     from model.auto_beq_nn import (
-        AudioFeatureConfig, build_feature_vector, deduplicate_by_title,
-        load_model, train_production_weighted_hybrid,
+        AudioFeatureConfig, build_feature_vector,
+        train_production_weighted_hybrid,
     )
     from model.auto_beq_torch import (
         E85TrainingConfig, save_torch_predictor, train_e85_differentiable_dsp,
     )
-    from spike._auto_beq_helpers import (
-        STRATEGY_BLENDED_07, beq_shared_dir, discover_wav_catalogue_pairs_cached,
-    )
-    from spike.test_auto_beq_nn_real import _extract_features_parallel
+    from spike._auto_beq_helpers import beq_shared_dir, prepare_training_data
 
     target_dir = beq_shared_dir()
     output_path = args.output or (target_dir / "e85_torch_filter.pt")
@@ -75,38 +71,23 @@ def main(argv: list[str] | None = None):
     log.info("BEQ working directory: %s", target_dir)
     log.info("model output path:     %s", output_path)
 
-    # --- Discover + extract ---
-    pairs = discover_wav_catalogue_pairs_cached()
-    if not pairs:
-        log.error("no catalogue-matched WAVs found")
-        sys.exit(1)
-    log.info("discovered %d catalogue-matched WAVs", len(pairs))
-
-    all_real = _extract_features_parallel(
-        pairs, DEFAULT_GRID, 1000, strategy=STRATEGY_BLENDED_07,
-    )
-    log.info("extracted %d real audio features", len(all_real))
-
-    catalogue = _fetch_or_cache()
-    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
-    tmdb_cache = load_cache()
-    tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
+    # --- Discover + extract + catalogue + metadata ---
+    data = prepare_training_data(min_pairs=1)
+    all_real = data["all_real"]
+    deduped = data["deduped"]
+    tmdb_cache = data["tmdb_cache"]
+    real_samples = data["real_samples"]
 
     cfg = AudioFeatureConfig()
 
-    # Build full training set (no hold-out — production uses ALL data).
-    real_samples = []
+    # Build full training set (no hold-out - production uses ALL data).
+    import numpy as np
     X_train_list, entries_train = [], []
-    for pair, features in all_real:
-        entry = pair.get("catalogue_entry")
-        if not entry or not entry.get("filters"):
-            continue
-        real_samples.append((entry, features))
+    for entry, features in real_samples:
         metadata = enrich_media_metadata(entry, tmdb_cache)
         X_train_list.append(build_feature_vector(features, metadata, config=cfg))
         entries_train.append(entry)
 
-    import numpy as np
     X_train = np.array(X_train_list, dtype=np.float32)
     log.info("training set: %d real samples, %d features", len(X_train), X_train.shape[1])
 

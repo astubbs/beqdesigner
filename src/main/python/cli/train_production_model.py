@@ -112,11 +112,8 @@ def main(argv: list[str] | None = None):
     # Late imports so --help is fast.
     from model.auto_beq import DEFAULT_GRID
     from model.auto_beq_advisor import extract_foundation_embedding
-    from model.auto_beq_catalogue import _fetch_or_cache
-    from model.auto_beq_metadata import fetch_metadata_batch, load_cache
     from model.auto_beq_nn import (
         AudioFeatureConfig,
-        deduplicate_by_title,
         save_model,
         train_e84_self_trained,
         train_production_weighted_hybrid,
@@ -127,9 +124,8 @@ def main(argv: list[str] | None = None):
         beq_shared_dir,
         cached_extract_features_with_strategy,
         discover_unmatched_wavs_cached,
-        discover_wav_catalogue_pairs_cached,
+        prepare_training_data,
     )
-    from spike.test_auto_beq_nn_real import _extract_features_parallel
 
     strategy = STRATEGY_BLENDED_07 if args.extraction_strategy == "blend_07" else STRATEGY_WELCH
     feature_config = AudioFeatureConfig(foundation_model=args.foundation_model)
@@ -157,33 +153,12 @@ def main(argv: list[str] | None = None):
             args.pseudo_weight, args.confidence_threshold_db, args.self_train_iterations,
         )
 
-    # --- Discover WAV cache + catalogue ---
-    pairs = discover_wav_catalogue_pairs_cached()
-    if not pairs:
-        log.error(
-            "no catalogue-matched WAVs found in cache.  Run "
-            "bin/beq-designer extract first to populate the WAV cache.",
-        )
-        sys.exit(1)
-    log.info("discovered %d catalogue-matched WAVs", len(pairs))
-
-    catalogue = _fetch_or_cache()
-    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
-    log.info("catalogue (deduped, with filters): %d entries", len(deduped))
-
-    tmdb_cache = load_cache()
-    tmdb_cache = fetch_metadata_batch(deduped, cache=tmdb_cache)
-
-    # --- Extract real features in parallel ---
-    t_extract_start = time.time()
-    all_real = _extract_features_parallel(
-        pairs, DEFAULT_GRID, 1000, strategy=strategy,
-    )
-    t_extract = time.time() - t_extract_start
-    log.info(
-        "extracted %d real audio features in %.1fs (%.1f WAVs/s)",
-        len(all_real), t_extract, len(all_real) / t_extract if t_extract > 0 else 0,
-    )
+    # --- Discover WAV cache + catalogue + extract features ---
+    data = prepare_training_data(strategy=strategy, min_pairs=1)
+    all_real = data["all_real"]
+    deduped = data["deduped"]
+    tmdb_cache = data["tmdb_cache"]
+    t_extract = data["extract_time_s"]
 
     # Build real_samples list: (catalogue_entry, features) tuples.
     # E83: also attach a foundation model embedding to each CurveFeatures.

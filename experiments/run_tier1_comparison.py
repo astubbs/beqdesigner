@@ -32,17 +32,14 @@ if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s - %(message)s")
 
 import numpy as np
-from sklearn.model_selection import train_test_split
 
 from model.auto_beq import DEFAULT_GRID
 from model.media_utils import ProgressLogger
 from model.auto_beq_advisor import extract_foundation_embeddings_parallel
-from model.auto_beq_catalogue import _fetch_or_cache
-from model.auto_beq_metadata import enrich_media_metadata, fetch_metadata_batch, load_cache
+from model.auto_beq_metadata import enrich_media_metadata
 from model.auto_beq_nn import (
     AudioFeatureConfig,
     build_feature_vector,
-    deduplicate_by_title,
     downstream_loss,
     labels_to_filters,
     pseudo_label_unmatched,
@@ -55,9 +52,8 @@ from spike._auto_beq_helpers import (
     beq_shared_dir,
     cached_extract_features_with_strategy,
     discover_unmatched_wavs_cached,
-    discover_wav_catalogue_pairs_cached,
+    prepare_training_data,
 )
-from spike.test_auto_beq_nn_real import _extract_features_parallel
 
 _FS = 1000
 
@@ -85,8 +81,19 @@ def main():
     log.info("    - Same random seed (42) every run for reproducibility")
     log.info("=" * 70)
 
-    pairs = discover_wav_catalogue_pairs_cached()
-    all_real = _extract_features_parallel(pairs, DEFAULT_GRID, _FS, strategy=STRATEGY_BLENDED_07)
+    data = prepare_training_data(
+        split=True, build_feature_vectors=True, min_pairs=200,
+    )
+    all_real = data["all_real"]
+    tmdb_cache = data["tmdb_cache"]
+    train_idx = data["train_idx"]
+    test_idx = data["test_idx"]
+    train_samples = data["train_samples"]
+    synth_entries = data["synth_entries"]
+    entries_test = data["entries_test"]
+    entries_train = data["entries_train"]
+    X_test_base = data["X_test"]
+    X_train_base = data["X_train"]
 
     unique_titles = set(p["catalogue_entry"].get("title", "") for p, _ in all_real)
     log.info("WAV-catalogue pairs: %d total, %d unique titles", len(all_real), len(unique_titles))
@@ -95,27 +102,6 @@ def main():
         "episodes of the same show would let the model memorise title-specific "
         "patterns instead of learning general audio correction rules"
     )
-
-    if len(all_real) < 200:
-        log.error("only %d pairs — need ≥200", len(all_real))
-        sys.exit(1)
-
-    tmdb_cache = load_cache()
-    tmdb_cache = fetch_metadata_batch([p["catalogue_entry"] for p, _ in all_real], cache=tmdb_cache)
-
-    real_entries = [p["catalogue_entry"] for p, _ in all_real]
-    severity = [
-        "heavy" if sum(abs(float(f.get("gain", 0))) for f in e.get("filters", [])) >= 20
-        else "moderate" if sum(abs(float(f.get("gain", 0))) for f in e.get("filters", [])) >= 10
-        else "gentle"
-        for e in real_entries
-    ]
-    indices = np.arange(len(all_real))
-    train_idx, test_idx = train_test_split(
-        indices, test_size=0.2, random_state=42,
-        stratify=severity if len(set(severity)) > 1 else None,
-    )
-    log.info("split: %d train / %d test (stratified by rolloff severity)", len(train_idx), len(test_idx))
     log.info(
         "  80%% of WAVs are used for training, 20%% are held out for testing. "
         "Stratified by severity so both sets have the same ratio of "
@@ -125,40 +111,6 @@ def main():
     # Pre-build common structures.
     cfg_base = AudioFeatureConfig()
     cfg_whisper = AudioFeatureConfig(foundation_model="whisper-tiny")
-
-    train_samples = [(all_real[i][0]["catalogue_entry"], all_real[i][1]) for i in train_idx]
-    catalogue = _fetch_or_cache()
-    deduped = [e for e in deduplicate_by_title(catalogue) if e.get("filters")]
-    train_tmdb = {str(e.get("theMovieDB", "")).strip() for e, _ in train_samples}
-    test_tmdb = {str(e.get("theMovieDB", "")).strip() for e in [real_entries[i] for i in test_idx]}
-    synth_entries = [
-        e for e in deduped
-        if str(e.get("theMovieDB", "")).strip() not in train_tmdb | test_tmdb
-    ]
-
-    # Test set feature vectors (base config).
-    X_test_base_list, entries_test = [], []
-    for i in test_idx:
-        pair, features = all_real[i]
-        entry = pair["catalogue_entry"]
-        if not entry.get("filters"):
-            continue
-        metadata = enrich_media_metadata(entry, tmdb_cache)
-        X_test_base_list.append(build_feature_vector(features, metadata, config=cfg_base))
-        entries_test.append(entry)
-    X_test_base = np.array(X_test_base_list, dtype=np.float32)
-
-    # Train set feature vectors (base config) for E85.
-    X_train_base_list, entries_train = [], []
-    for i in train_idx:
-        pair, features = all_real[i]
-        entry = pair["catalogue_entry"]
-        if not entry.get("filters"):
-            continue
-        metadata = enrich_media_metadata(entry, tmdb_cache)
-        X_train_base_list.append(build_feature_vector(features, metadata, config=cfg_base))
-        entries_train.append(entry)
-    X_train_base = np.array(X_train_base_list, dtype=np.float32)
 
     def _eval(model_or_predictor, X_test, entries, label, is_torch=False):
         """Evaluate and return (mean, max, per_author, elapsed)."""

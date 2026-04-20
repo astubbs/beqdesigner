@@ -12,11 +12,12 @@ Usage::
 """
 from __future__ import annotations
 
-import argparse
 import csv
 import sys
 from collections import defaultdict
 from pathlib import Path
+
+from cli.report_base import create_report_argparser, run_report
 
 
 def _load_csv(path: Path) -> list[dict]:
@@ -127,13 +128,16 @@ def generate_report(csv_path: Path, output=None) -> None:
 
 
 def main(argv: list[str] | None = None):
-    parser = argparse.ArgumentParser(description="F-experiment comparison report")
-    parser.add_argument(
-        "--csv", type=Path,
-        default=Path(".pytest_cache/auto_beq_f_experiments.csv"),
-        help="Path to CSV from test_f_experiment_comparison",
+    parser = create_report_argparser(
+        "F-experiment comparison report",
+        extra_args=[
+            (("--csv",), {
+                "type": Path,
+                "default": Path(".pytest_cache/auto_beq_f_experiments.csv"),
+                "help": "Path to CSV from test_f_experiment_comparison",
+            }),
+        ],
     )
-    parser.add_argument("--output", "-o", type=Path, default=None)
     args = parser.parse_args(argv)
 
     if not args.csv.exists():
@@ -141,12 +145,7 @@ def main(argv: list[str] | None = None):
         print("Run test_f_experiment_comparison first.")
         sys.exit(1)
 
-    if args.output:
-        with args.output.open("w") as f:
-            generate_report(args.csv, output=f)
-        print(f"Report written to {args.output}")
-    else:
-        generate_report(args.csv)
+    run_report(generate_report, args, extra_kwargs={"csv_path": args.csv})
 
 
 if __name__ == "__main__":

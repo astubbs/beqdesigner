@@ -136,7 +136,7 @@ def _evaluate_pipeline(
     """Run the full evaluation pipeline. Returns structured results dict."""
     import numpy as np
     from model.auto_beq import DEFAULT_GRID
-    from model.auto_beq_metadata import enrich_media_metadata, fetch_metadata_batch, load_cache
+    from model.auto_beq_metadata import enrich_media_metadata
     from model.auto_beq_nn import (
         AudioFeatureConfig,
         build_feature_vector,
@@ -144,11 +144,7 @@ def _evaluate_pipeline(
         labels_to_filters,
     )
     from model.media_utils import ProgressLogger
-    from spike._auto_beq_helpers import (
-        STRATEGY_BLENDED_07,
-        discover_wav_catalogue_pairs_cached,
-    )
-    from spike.test_auto_beq_nn_real import _extract_features_parallel
+    from spike._auto_beq_helpers import prepare_training_data
 
     t_global = time.time()
 
@@ -167,31 +163,13 @@ def _evaluate_pipeline(
     e85_predictor = _load_e85_predictor(shared_dir)
     has_e85 = e85_predictor is not None
 
-    # --- Stage 2: Discover pairs ---
-    log.info("Discovering WAV-catalogue pairs...")
-    pairs = discover_wav_catalogue_pairs_cached()
-    if not pairs:
-        raise RuntimeError(
-            "No catalogue-matched WAV pairs found.\n"
-            "Run: bin/beq-designer extract --media-root /path/to/media"
-        )
-    log.info("Discovered %d WAV-catalogue pairs", len(pairs))
-
-    # --- Stage 3: Extract features ---
-    log.info("Extracting audio features...")
-    all_real = _extract_features_parallel(
-        pairs, DEFAULT_GRID, _FS, strategy=STRATEGY_BLENDED_07,
-    )
-    log.info("Extracted features for %d titles", len(all_real))
+    # --- Stage 2+3: Discover pairs + extract features + load metadata ---
+    data = prepare_training_data(fetch_catalogue=False, min_pairs=1)
+    all_real = data["all_real"]
+    tmdb_cache = data["tmdb_cache"]
 
     if not all_real:
         raise RuntimeError("Feature extraction produced zero results")
-
-    # Load TMDB metadata.
-    tmdb_cache = load_cache()
-    tmdb_cache = fetch_metadata_batch(
-        [p["catalogue_entry"] for p, _ in all_real], cache=tmdb_cache,
-    )
 
     # --- Stage 5 (before scoring): Reconstruct split ---
     train_indices, test_indices = _reconstruct_split(all_real)

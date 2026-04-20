@@ -344,3 +344,131 @@ class TestDiscoveryCache:
         for _ in range(3):
             discover_wav_catalogue_pairs_cached()
         assert call_count["n"] == 3, "disabled cache should always walk"
+
+
+# ---------------------------------------------------------------------------
+# prepare_training_data shared function
+# ---------------------------------------------------------------------------
+
+
+class TestPrepareTrainingData:
+    """Unit tests for the shared ``prepare_training_data()`` function.
+
+    Uses monkeypatching to avoid touching real WAV caches or network.
+    """
+
+    def _make_fake_pair(self, title: str, has_filters: bool = True):
+        """Build a minimal catalogue pair dict for testing."""
+        filters = [{"gain": 5.0}] if has_filters else []
+        entry = {
+            "title": title,
+            "author": "test",
+            "theMovieDB": f"tmdb-{title}",
+            "filters": filters,
+        }
+        return {"catalogue_entry": entry, "wav_path": Path(f"/fake/{title}.wav")}
+
+    def _patch_dependencies(self, monkeypatch, pairs, features_value="fake_features"):
+        """Patch out I/O-heavy dependencies with fakes."""
+        from spike import _auto_beq_helpers as h
+
+        monkeypatch.setattr(
+            h, "discover_wav_catalogue_pairs_cached", lambda: pairs,
+        )
+
+        # Mock _extract_features_parallel to return (pair, features) tuples.
+        import spike.test_auto_beq_nn_real as nn_real
+        monkeypatch.setattr(
+            nn_real, "_extract_features_parallel",
+            lambda pairs, grid, fs, strategy=None: [
+                (p, features_value) for p in pairs
+            ],
+        )
+
+        # Mock TMDb cache loading.
+        import model.auto_beq_metadata as meta_mod
+        monkeypatch.setattr(meta_mod, "load_cache", lambda: {})
+        monkeypatch.setattr(
+            meta_mod, "fetch_metadata_batch",
+            lambda entries, cache=None: cache or {},
+        )
+
+    def test_basic_returns_expected_keys(self, monkeypatch):
+        """Basic call returns pairs, all_real, tmdb_cache, real_samples."""
+        pairs = [self._make_fake_pair(f"Movie{i}") for i in range(10)]
+        self._patch_dependencies(monkeypatch, pairs)
+
+        from spike._auto_beq_helpers import prepare_training_data
+        result = prepare_training_data(fetch_catalogue=False)
+
+        assert "pairs" in result
+        assert "all_real" in result
+        assert "tmdb_cache" in result
+        assert "real_samples" in result
+        assert len(result["pairs"]) == 10
+        assert len(result["all_real"]) == 10
+        assert len(result["real_samples"]) == 10
+
+    def test_filters_entries_without_filters(self, monkeypatch):
+        """Entries without filters are excluded from real_samples."""
+        pairs = [
+            self._make_fake_pair("WithFilters", has_filters=True),
+            self._make_fake_pair("NoFilters", has_filters=False),
+        ]
+        self._patch_dependencies(monkeypatch, pairs)
+
+        from spike._auto_beq_helpers import prepare_training_data
+        result = prepare_training_data(fetch_catalogue=False)
+
+        assert len(result["all_real"]) == 2
+        assert len(result["real_samples"]) == 1
+        assert result["real_samples"][0][0]["title"] == "WithFilters"
+
+    def test_raises_on_empty_cache(self, monkeypatch):
+        """Empty WAV cache raises RuntimeError."""
+        self._patch_dependencies(monkeypatch, pairs=[])
+
+        from spike._auto_beq_helpers import prepare_training_data
+        with pytest.raises(RuntimeError, match="No catalogue-matched WAVs"):
+            prepare_training_data()
+
+    def test_min_pairs_enforced(self, monkeypatch):
+        """min_pairs threshold raises when not met."""
+        pairs = [self._make_fake_pair(f"M{i}") for i in range(5)]
+        self._patch_dependencies(monkeypatch, pairs)
+
+        from spike._auto_beq_helpers import prepare_training_data
+        with pytest.raises(RuntimeError, match="need >= 10"):
+            prepare_training_data(min_pairs=10)
+
+    def test_split_produces_train_test_indices(self, monkeypatch):
+        """split=True adds train_idx, test_idx, train_samples, entries_test."""
+        pairs = [self._make_fake_pair(f"M{i}") for i in range(50)]
+        self._patch_dependencies(monkeypatch, pairs)
+
+        # Mock catalogue fetching for synth_entries.
+        import model.auto_beq_catalogue as cat_mod
+        monkeypatch.setattr(cat_mod, "_fetch_or_cache", lambda: [])
+        import model.auto_beq_nn as nn_mod
+        monkeypatch.setattr(nn_mod, "deduplicate_by_title", lambda x: x)
+
+        from spike._auto_beq_helpers import prepare_training_data
+        result = prepare_training_data(split=True)
+
+        assert "train_idx" in result
+        assert "test_idx" in result
+        assert "train_samples" in result
+        assert "entries_test" in result
+        assert "synth_entries" in result
+        # Default 80/20 split.
+        total = len(result["train_idx"]) + len(result["test_idx"])
+        assert total == 50
+
+    def test_build_feature_vectors_requires_split(self, monkeypatch):
+        """build_feature_vectors=True without split=True raises ValueError."""
+        pairs = [self._make_fake_pair("M0")]
+        self._patch_dependencies(monkeypatch, pairs)
+
+        from spike._auto_beq_helpers import prepare_training_data
+        with pytest.raises(ValueError, match="requires split=True"):
+            prepare_training_data(build_feature_vectors=True, split=False)
