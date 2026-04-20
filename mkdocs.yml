@@ -10,7 +10,11 @@ markdown_extensions:
       permalink: true
   - admonition
   - pymdownx.arithmatex
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
 extra:
   disqus: beqdesigner
 nav:
@@ -38,10 +42,13 @@ nav:
         - 'Merge BEQ': ui/merge_beq.md
         - 'Manage HTP-1 Filters': ui/manage_htp1.md
         - 'Manage JRiver MC Filters': ui/manage_mc.md
+      - 'LFE Extractor (Docker, NAS/server)': lfe_extractor.md
       - 'Preferences': ui/preferences.md
   - Workflow:
       - 'A Worked Example': workflow/beq.md
       - 'Remuxing': workflow/remux.md
       - 'Simulating Bass Management': workflow/bass_management.md
+  - Architecture: architecture.md
+  - FAQ and Glossary: faq.md
 extra_javascript:
   - 'https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.0/MathJax.js?config=TeX-MML-AM_CHTML'

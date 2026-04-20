@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Generate author pattern analysis report from the BEQ catalogue.
+
+For each major author, computes the distribution of:
+- Audio format (Atmos vs others)
+- Era (pre-1990, 1990s-2000s, 2010s, 2020s)
+- Content type (film vs TV)
+- Top studios
+- Genres
+
+This is a sanity check for the I-series author classifier — if patterns
+are flat (every author looks the same), the classifier has no signal to
+learn from. If they vary substantially, the I-series can predict author
+from metadata reliably.
+
+Usage::
+
+    bin/beq-designer author-pattern-report
+    bin/beq-designer author-pattern-report -o docs/author_patterns.md
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+# Top authors to analyse (≥1% of catalogue).
+TARGET_AUTHORS = [
+    "mobe1969", "aron7awol", "mikejl", "kaelaria",
+    "remixmark", "t1g8rsfan", "halcyon888",
+]
+
+
+def _classify_format(audio_types: list) -> str:
+    joined = " ".join(audio_types).lower()
+    if "atmos" in joined:
+        return "atmos"
+    if "truehd" in joined:
+        return "truehd"
+    if "dts-hd" in joined:
+        return "dts-hd"
+    if "dd+" in joined:
+        return "dd+"
+    return "other"
+
+
+def _classify_era(year) -> str:
+    try:
+        y = int(year)
+    except (ValueError, TypeError):
+        return "unknown"
+    if y < 1990:
+        return "pre-1990"
+    if y < 2010:
+        return "1990s-2000s"
+    if y < 2020:
+        return "2010s"
+    return "2020s"
+
+
+def generate_report(catalogue_path: Path, output=None) -> None:
+    pr = lambda s="": print(s, file=output or sys.stdout)
+
+    cat = json.loads(catalogue_path.read_text())
+    pr("# Author Pattern Analysis")
+    pr()
+    pr(f"**Source**: `{catalogue_path}`  |  **Total entries**: {len(cat):,}")
+    pr()
+    pr("Used by I-series experiments to validate that authors specialize "
+       "in different content types — meaningful signal for the meta-classifier.")
+    pr()
+
+    # Author frequency
+    authors = Counter(e.get("author", "unknown").strip().lower() for e in cat)
+    pr("## Author share of catalogue")
+    pr()
+    pr("| Author | Entries | % of catalogue |")
+    pr("|---|---:|---:|")
+    for a, n in authors.most_common(10):
+        pr(f"| {a} | {n:,} | {100*n/len(cat):.1f}% |")
+    pr()
+
+    # Audio format
+    fmt_by_author: dict[str, Counter] = defaultdict(Counter)
+    for e in cat:
+        a = e.get("author", "unknown").strip().lower()
+        fmt_by_author[a][_classify_format(e.get("audioTypes", []))] += 1
+
+    pr("## Audio format distribution per author")
+    pr()
+    pr("| Author | Atmos | TrueHD | DTS-HD | DD+ | Other |")
+    pr("|---|---:|---:|---:|---:|---:|")
+    for a in TARGET_AUTHORS:
+        if a not in fmt_by_author:
+            continue
+        c = fmt_by_author[a]
+        total = sum(c.values())
+        pr(f"| {a} | "
+           f"{100*c.get('atmos',0)/total:.0f}% | "
+           f"{100*c.get('truehd',0)/total:.0f}% | "
+           f"{100*c.get('dts-hd',0)/total:.0f}% | "
+           f"{100*c.get('dd+',0)/total:.0f}% | "
+           f"{100*c.get('other',0)/total:.0f}% |")
+    pr()
+
+    # Era distribution
+    era_by_author: dict[str, Counter] = defaultdict(Counter)
+    for e in cat:
+        a = e.get("author", "unknown").strip().lower()
+        era_by_author[a][_classify_era(e.get("year"))] += 1
+
+    pr("## Era distribution per author")
+    pr()
+    pr("| Author | pre-1990 | 1990s-2000s | 2010s | 2020s |")
+    pr("|---|---:|---:|---:|---:|")
+    for a in TARGET_AUTHORS:
+        if a not in era_by_author:
+            continue
+        c = era_by_author[a]
+        total = sum(c.values())
+        pr(f"| {a} | "
+           f"{100*c.get('pre-1990',0)/total:.0f}% | "
+           f"{100*c.get('1990s-2000s',0)/total:.0f}% | "
+           f"{100*c.get('2010s',0)/total:.0f}% | "
+           f"{100*c.get('2020s',0)/total:.0f}% |")
+    pr()
+
+    # Content type
+    ct_by_author: dict[str, Counter] = defaultdict(Counter)
+    for e in cat:
+        a = e.get("author", "unknown").strip().lower()
+        ct_by_author[a][e.get("content_type", "film")] += 1
+
+    pr("## Content type distribution per author")
+    pr()
+    pr("| Author | Film | TV |")
+    pr("|---|---:|---:|")
+    for a in TARGET_AUTHORS:
+        if a not in ct_by_author:
+            continue
+        c = ct_by_author[a]
+        total = sum(c.values())
+        pr(f"| {a} | "
+           f"{100*c.get('film',0)/total:.0f}% | "
+           f"{100*c.get('TV',0)/total:.0f}% |")
+    pr()
+
+    # Multi-author title coverage
+    by_title: dict[str, set] = defaultdict(set)
+    for e in cat:
+        if e.get("filters"):
+            title = str(e.get("title", "")).lower().strip()
+            author = e.get("author", "").strip().lower()
+            by_title[title].add(author)
+
+    multi = sum(1 for v in by_title.values() if len(v) >= 2)
+    single = sum(1 for v in by_title.values() if len(v) == 1)
+    n_authors_dist = Counter(len(v) for v in by_title.values())
+
+    pr("## Multi-author title coverage")
+    pr()
+    pr(f"- Single-author titles: **{single:,}**")
+    pr(f"- Multi-author titles: **{multi:,}** "
+       f"({100*multi/(single+multi):.0f}% of unique titles)")
+    pr()
+    pr("Distribution of authors per title:")
+    pr()
+    pr("| # Authors | # Titles |")
+    pr("|---:|---:|")
+    for n, count in sorted(n_authors_dist.items()):
+        pr(f"| {n} | {count:,} |")
+    pr()
+
+    pr("---")
+    pr("Generated by `bin/beq-designer author-pattern-report`")
+
+
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(description="Author pattern analysis")
+    parser.add_argument(
+        "--catalogue",
+        type=Path,
+        default=Path.home() / ".config/beqdesigner/catalogue_cache.json",
+    )
+    parser.add_argument("--output", "-o", type=Path, default=None)
+    args = parser.parse_args(argv)
+
+    if not args.catalogue.exists():
+        print(f"Catalogue not found: {args.catalogue}")
+        sys.exit(1)
+
+    if args.output:
+        with args.output.open("w") as f:
+            generate_report(args.catalogue, output=f)
+        print(f"Report written to {args.output}")
+    else:
+        generate_report(args.catalogue)
+
+
+if __name__ == "__main__":
+    main()
