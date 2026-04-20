@@ -423,22 +423,42 @@ are on the import path automatically.
 
 ### Three test groups (pytest markers)
 
-The spike suite is segregated by pytest markers. **CI runs only the
-default group**; the other two are opt-in.
+Tests live in `src/test/python/auto_beq/` (auto-BEQ tests) and
+`src/test/python/model/` (core model tests). Three tiers controlled
+by pytest markers:
 
-| Command | Marker filter | Runtime | When to use |
+| Tier | Command | Runtime | Prerequisites |
 |---|---|---|---|
-| `poetry run pytest -m "not integration and not experiment"` | default | ~1 min | Every iteration, CI, pre-commit. Hermetic - no media scans, no network, no model retraining. |
-| `poetry run pytest -m integration` | integration | minutes | Verifying code that touches real external resources (media files, TMDb API, Ollama hosts, library sweep config). Tests skip if their resources aren't configured locally. |
-| `poetry run pytest -m experiment` | experiment | **minutes to hours** | Reproducing or iterating on F/G/H/I experiment batches, real-audio training (E77/E82), chunked-strategy comparison. Not for CI. |
+| **Default** | `poetry run pytest -m "not integration and not experiment"` | ~1 min | Python 3.13, poetry. Nothing else. |
+| **Integration** | `poetry run pytest -m integration` | minutes | ffmpeg, ffprobe, Ollama (optional), TMDb API, real media files |
+| **Experiment** | `poetry run pytest -m experiment` | minutes-hours | Populated WAV cache (500+ matched WAVs), production model |
 
-**Note:** torch tests (`test_auto_beq_torch.py`) should run in a
-separate pytest invocation to avoid a segfault caused by torch + PyQt6
-in the same process on macOS (MPS conflict):
+**Default tier** should always pass with zero skips on any machine.
+If a test needs external resources, it MUST use an `integration` or
+`experiment` marker - never a runtime skip in the default tier.
+
+**Note:** torch tests (`test_auto_beq_torch.py`) run in a separate
+pytest invocation to avoid MPS segfault on macOS:
 ```bash
-poetry run pytest --ignore=src/test/python/spike/test_auto_beq_torch.py -m "not integration and not experiment"
-poetry run pytest src/test/python/spike/test_auto_beq_torch.py
+poetry run pytest --ignore=src/test/python/auto_beq/test_auto_beq_torch.py -m "not integration and not experiment"
+poetry run pytest src/test/python/auto_beq/test_auto_beq_torch.py
 ```
+Or use `scripts/run-tests.sh` which handles the two-pass split.
+
+### Integration test setup
+
+To run integration tests:
+1. Install ffmpeg and ffprobe (`brew install ffmpeg`)
+2. (Optional) Start Ollama with `llama3.2:latest`
+3. Set `AUTO_BEQ_TEST_MEDIA_FILE` to a real MKV with LFE audio
+4. Run `poetry run pytest -m integration`
+
+### Experiment test setup
+
+To run experiment tests:
+1. Extract 500+ WAVs to the WAV cache (`bin/beq-designer extract`)
+2. Train the production model (`bin/beq-designer dev train`)
+3. Run `poetry run pytest -m experiment`
 
 ### Marker rules
 
@@ -461,16 +481,16 @@ Markers are registered in `pyproject.toml` under `[tool.pytest.ini_options]`. Ad
 poetry run pytest -m "not integration and not experiment"
 
 # Specific test file
-poetry run pytest src/test/python/spike/test_auto_beq.py -v
+poetry run pytest src/test/python/auto_beq/test_auto_beq.py -v
 
 # Single test
-poetry run pytest 'src/test/python/spike/test_auto_beq.py::test_synthetic_roundtrip' -v
+poetry run pytest 'src/test/python/auto_beq/test_auto_beq.py::test_synthetic_roundtrip' -v
 
 # Integration tests (opt-in, needs real media/TMDb/Ollama)
 poetry run pytest -m integration
 
 # Experiment tests (opt-in, minutes to hours)
-poetry run pytest -m experiment src/test/python/spike/test_auto_beq_nn_experiments.py
+poetry run pytest -m experiment src/test/python/auto_beq/test_auto_beq_nn_experiments.py
 ```
 
 

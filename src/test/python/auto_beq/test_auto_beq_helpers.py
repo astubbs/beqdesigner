@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -117,19 +118,18 @@ class TestExtractLfeWavCachePath:
     reason="ffmpeg/ffprobe not on PATH",
 )
 class TestExtractLfeWavReal:
-    """Integration test: actually extract LFE from a real media file."""
+    """Integration test: actually extract LFE from a real media file.
 
-    EOT_PATH = Path(
-        "/Users/astubbs/Downloads/movies/"
-        "Edge.of.Tomorrow.2014.UHD.2160p.UHDRip.x265.HDR.DTS-HD.MA.7.1-DTOne.mkv"
-    )
+    Set AUTO_BEQ_TEST_MEDIA_FILE to the path of any MKV with an LFE
+    channel (e.g. a DTS-HD MA 7.1 rip). The test is skipped if the
+    env var is not set or the file doesn't exist.
+    """
+
+    EOT_PATH = Path(os.environ.get("AUTO_BEQ_TEST_MEDIA_FILE", "/nonexistent"))
 
     @pytest.mark.skipif(
-        not Path(
-            "/Users/astubbs/Downloads/movies/"
-            "Edge.of.Tomorrow.2014.UHD.2160p.UHDRip.x265.HDR.DTS-HD.MA.7.1-DTOne.mkv"
-        ).exists(),
-        reason="EoT media file not available",
+        not Path(os.environ.get("AUTO_BEQ_TEST_MEDIA_FILE", "/nonexistent")).exists(),
+        reason="AUTO_BEQ_TEST_MEDIA_FILE not set or file not found",
     )
     def test_real_extraction_to_cache_dir(self):
         """Extract EoT LFE to the configured cache dir and verify

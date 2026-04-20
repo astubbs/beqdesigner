@@ -20,6 +20,9 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pytest
+
+pytestmark = pytest.mark.integration
+
 from model.auto_beq_advisor import (
     CurveFeatures,
     MediaMetadata,
