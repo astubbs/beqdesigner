@@ -127,6 +127,10 @@ def _build_tools_menu() -> list[tuple[str, object]]:
          "  prediction accuracy.", "sweep-run"),
         ("Experiment results\n"
          "  Compare results from different experiment runs.", "sweep-report"),
+        ("Reassess all techniques\n"
+         "  Run E82/E83/E84/E85 on the current WAV cache and produce a\n"
+         "  leaderboard. Shows which technique is champion with the\n"
+         "  latest training data.", "dev-reassess"),
 
         ("REPORTS — data about your cache and the BEQ catalogue", None),
 
@@ -214,6 +218,7 @@ def _dispatch(action: str, config: CliConfig, verbose: bool) -> None:
         "config": lambda: config_cmd(),
         "dev-train": lambda: dev_train(),
         "dev-train-torch": lambda: dev_train_torch(),
+        "dev-reassess": lambda: dev_reassess(),
         "report-acquisitions": lambda: report_acquisitions(count=50, output=None),
         "report-cache-bias": lambda: report_cache_bias(output=None),
         "report-author-patterns": lambda: report_author_patterns(output=None),
@@ -541,6 +546,27 @@ def dev_train_torch() -> None:
     """Train the differentiable-DSP model (E85+)."""
     from cli.train_torch_model import main as train_main
     train_main([])
+
+
+@dev_app.command(name="reassess")
+def dev_reassess() -> None:
+    """Run all experiment paradigms (E82/E83/E84/E85) on the current WAV cache.
+
+    Produces a leaderboard showing which technique is champion with the
+    latest training data. Uses the same 80/20 stratified split across
+    all experiments for a fair comparison.
+    """
+    import sys as _sys
+    # Find repo root via git.
+    import subprocess as _sp
+    _repo_root = Path(_sp.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True,
+    ).stdout.strip())
+    experiments_dir = _repo_root / "experiments"
+    _sys.path.insert(0, str(experiments_dir))
+    from run_tier1_comparison import main as tier1_main
+    tier1_main()
 
 
 # ---------------------------------------------------------------------------
