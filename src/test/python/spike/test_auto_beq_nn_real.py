@@ -19,13 +19,6 @@ import numpy as np
 import pytest
 
 
-def _suppress_worker_logging():
-    """ProcessPoolExecutor initializer: silence logging in worker processes."""
-    import logging as _logging
-    _logging.disable(_logging.CRITICAL)
-    # Also remove any handlers that were set up during module import.
-    for handler in _logging.getLogger().handlers[:]:
-        _logging.getLogger().removeHandler(handler)
 from model.auto_beq import DEFAULT_GRID, compute_match_metrics, evaluate_filter_chain, smooth_fractional_octave
 from model.auto_beq_advisor import MediaMetadata, extract_curve_features
 from model.auto_beq_metadata import enrich_media_metadata, fetch_metadata_batch, load_cache
