@@ -1,7 +1,7 @@
 ---
 title: "refactor: Cleanup - config unification, DRY walk, WAV counts, stale docs"
 type: refactor
-status: active
+status: complete
 date: 2026-04-20
 ---
 

@@ -1,6 +1,6 @@
 ---
 title: Reassess/Training Pipeline UX Improvements
-status: active
+status: complete
 created: 2026-04-20
 scope: standard
 ---
