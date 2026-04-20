@@ -1,5 +1,8 @@
 # Claude Code config (local only -- repo owner prefers AGENTS.md)
 CLAUDE.md
+
+# Compound Engineering local config (per-machine preferences)
+.compound-engineering/*.local.yaml
 .claude/settings.local.json
 
 # Generated at build time
