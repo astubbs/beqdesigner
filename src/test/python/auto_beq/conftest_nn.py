@@ -24,7 +24,7 @@ from model.auto_beq_nn import (
     downstream_loss,
     labels_to_filters,
 )
-from spike._auto_beq_helpers import (
+from auto_beq._auto_beq_helpers import (
     STRATEGY_WELCH,
     extract_features_with_strategy,
     synthetic_features,

@@ -26,16 +26,16 @@ from model.auto_beq_nn import (
     train_xgboost,
 )
 
-from spike._auto_beq_helpers import (
+from auto_beq._auto_beq_helpers import (
     extract_lfe_wav,
 )
-from spike.conftest_nn import (
+from auto_beq.conftest_nn import (
     build_held_out_training_set,
     build_synthetic_validation_features,
     compute_mean_loss,
     extract_real_audio_features,
 )
-from spike.sweep_discover import inventory_root, match_media_files
+from auto_beq.sweep_discover import inventory_root, match_media_files
 
 log = logging.getLogger("auto_beq_nn_extract")
 
@@ -119,7 +119,7 @@ def test_extract_and_validate(tmp_path):
     3. Train on full synthetic catalogue (excluding validation titles)
     4. Validate: E25 early fusion, E27 late fusion, ablation
     """
-    from spike._auto_beq_helpers import have_tool
+    from auto_beq._auto_beq_helpers import have_tool
 
     if not have_tool("ffmpeg"):
         pytest.skip("ffmpeg not on PATH")
@@ -150,7 +150,7 @@ def test_extract_and_validate(tmp_path):
 
     from model.auto_beq_metadata import enrich_media_metadata
     from model.auto_beq_nn import build_feature_vector, catalogue_entry_to_labels
-    from spike._auto_beq_helpers import synthetic_features
+    from auto_beq._auto_beq_helpers import synthetic_features
 
     X_val_real, X_val_synth, Y_val, val_entries = [], [], [], []
     for t in extracted:

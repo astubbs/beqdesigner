@@ -385,7 +385,7 @@ def sweep_discover(
     if library:
         for lib in library:
             argv.extend(["--library", str(lib)])
-    from spike.sweep_discover import main as discover_main
+    from cli.sweep_discover import main as discover_main
     discover_main(argv if argv else None)
 
 
@@ -395,7 +395,7 @@ def sweep_run(
     parallel: bool = typer.Option(False, "--parallel", help="Run in parallel across Ollama hosts."),
 ) -> None:
     """Run auto-BEQ pipeline on discovered media."""
-    test_module = "src/test/python/spike/test_auto_beq_library_sweep.py"
+    test_module = "src/test/python/auto_beq/test_auto_beq_library_sweep.py"
     test_func = "test_library_sweep_parallel" if parallel else "test_library_sweep"
     env = {
         **os.environ,
@@ -445,7 +445,7 @@ def dev_test(
     Torch tests run in a separate pytest invocation to avoid a segfault
     caused by torch + PyQt6 in the same process on macOS (MPS conflict).
     """
-    test_selector = file or "src/test/python/spike/"
+    test_selector = file or "src/test/python/auto_beq/"
     env = {**os.environ, "AUTO_BEQ_ADVISOR": advisor}
     base_cmd = ["poetry", "run", "pytest", "-v"]
     if verbose:
@@ -463,11 +463,11 @@ def dev_test(
 
     # Pass 1: all tests except torch (avoids Qt + torch segfault).
     console.print("[bold]Pass 1:[/bold] Running tests (excluding torch)...")
-    cmd1 = base_cmd + [test_selector, "--ignore=src/test/python/spike/test_auto_beq_torch.py"] + marker_args
+    cmd1 = base_cmd + [test_selector, "--ignore=src/test/python/auto_beq/test_auto_beq_torch.py"] + marker_args
     r1 = subprocess.run(cmd1, env=env, cwd=str(REPO_ROOT))
 
     # Pass 2: torch tests only (separate process, no Qt loaded).
-    torch_test = "src/test/python/spike/test_auto_beq_torch.py"
+    torch_test = "src/test/python/auto_beq/test_auto_beq_torch.py"
     if not file or "torch" in (file or ""):
         console.print("\n[bold]Pass 2:[/bold] Running torch tests (separate process)...")
         cmd2 = base_cmd + [torch_test]
@@ -537,7 +537,7 @@ def dev_benchmark(
     for adv in advisors:
         _check_ollama_if_needed(adv)
         console.rule(f"[bold]Advisor: {adv}[/bold]")
-        test_module = "src/test/python/spike/test_auto_beq_library_sweep.py"
+        test_module = "src/test/python/auto_beq/test_auto_beq_library_sweep.py"
         env = {
             **os.environ,
             "AUTO_BEQ_ADVISOR": adv,

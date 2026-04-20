@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from spike import sweep_discover as sd
+from cli import sweep_discover as sd
 
 _FIXTURE_ROOT = (
     Path(__file__).resolve().parents[2]

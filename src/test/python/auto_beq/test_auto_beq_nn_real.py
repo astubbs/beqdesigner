@@ -33,7 +33,7 @@ from model.auto_beq_nn import (
     train_xgboost_reweighted,
 )
 
-from spike._auto_beq_helpers import (
+from auto_beq._auto_beq_helpers import (
     STRATEGY_BLENDED_07,
     STRATEGY_WELCH,
     cached_extract_features_with_strategy,
@@ -41,7 +41,7 @@ from spike._auto_beq_helpers import (
     extract_features_with_strategy,
     synthetic_features,
 )
-from spike.conftest_nn import (
+from auto_beq.conftest_nn import (
     build_held_out_training_set,
     build_real_validation_features,
     build_synthetic_validation_features,
@@ -201,7 +201,7 @@ def _extract_features_parallel(
     Logs progress at each 10% decile + final count so long runs over
     the NAS cache have visible heartbeat.
     """
-    from spike._auto_beq_helpers import STRATEGY_WELCH
+    from auto_beq._auto_beq_helpers import STRATEGY_WELCH
     if strategy is None:
         strategy = STRATEGY_WELCH
 
@@ -257,7 +257,7 @@ def _extract_features_parallel(
     return out
 
 
-# synthetic_features() is imported from spike._auto_beq_helpers.
+# synthetic_features() is imported from auto_beq._auto_beq_helpers.
 # Local alias for backward compatibility with call sites using the old name.
 _synthetic_features = synthetic_features
 
@@ -1821,7 +1821,7 @@ def test_e84_self_trained(tmp_path, caplog):
         train_production_weighted_hybrid,
     )
     from sklearn.model_selection import train_test_split
-    from spike._auto_beq_helpers import (
+    from auto_beq._auto_beq_helpers import (
         cached_extract_features_with_strategy,
         discover_unmatched_wavs_cached,
     )

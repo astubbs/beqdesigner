@@ -126,7 +126,7 @@ def prepare_training_data(
     from model.auto_beq import DEFAULT_GRID
     from model.auto_beq_metadata import fetch_metadata_batch, load_cache
     from model.wav_discovery import discover_wav_catalogue_pairs_cached
-    from spike.test_auto_beq_nn_real import _extract_features_parallel
+    from auto_beq.test_auto_beq_nn_real import _extract_features_parallel
 
     if strategy is None:
         strategy = STRATEGY_BLENDED_07

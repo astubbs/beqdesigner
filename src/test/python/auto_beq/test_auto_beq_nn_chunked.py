@@ -28,7 +28,7 @@ from model.auto_beq_nn import (
     train_xgboost,
 )
 
-from spike._auto_beq_helpers import (
+from auto_beq._auto_beq_helpers import (
     STRATEGY_BLENDED_03,
     STRATEGY_BLENDED_07,
     STRATEGY_CHUNKED_P90,

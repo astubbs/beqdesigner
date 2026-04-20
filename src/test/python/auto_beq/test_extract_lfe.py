@@ -1198,7 +1198,7 @@ def test_extract_config_uses_local_config_dir(tmp_path, monkeypatch):
 
 def test_beq_dir_resolves_from_BEQ_SHARED_DIR(tmp_path, monkeypatch):
     """BEQ_SHARED_DIR env var is the primary resolution source."""
-    from spike import _auto_beq_helpers as helpers
+    import model.wav_discovery as helpers
     target = tmp_path / "shared"
     target.mkdir()
     monkeypatch.setenv("BEQ_SHARED_DIR", str(target))
@@ -1209,7 +1209,7 @@ def test_beq_dir_resolves_from_BEQ_SHARED_DIR(tmp_path, monkeypatch):
 
 def test_beq_dir_resolves_from_shared_beq_dir_setting(tmp_path, monkeypatch):
     """shared_beq_dir in settings.json is the secondary resolution source."""
-    from spike import _auto_beq_helpers as helpers
+    import model.wav_discovery as helpers
     monkeypatch.delenv("BEQ_SHARED_DIR", raising=False)
     monkeypatch.delenv("BEQ_DIR", raising=False)
 
@@ -1233,7 +1233,7 @@ def test_beq_dir_resolves_from_shared_beq_dir_setting(tmp_path, monkeypatch):
 
 def test_beq_dir_errors_when_not_configured(tmp_path, monkeypatch):
     """beq_shared_dir() raises RuntimeError when nothing is configured."""
-    from spike import _auto_beq_helpers as helpers
+    import model.wav_discovery as helpers
     monkeypatch.delenv("BEQ_SHARED_DIR", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "fakehome")
 
@@ -1252,7 +1252,7 @@ class TestWavCacheDirResolution:
 
     def test_derives_from_beq_beq_shared_dir(self, tmp_path, monkeypatch):
         """When BEQ_SHARED_DIR is set, wav_cache_dir returns {shared}/wav-cache."""
-        from spike import _auto_beq_helpers as helpers
+        import model.wav_discovery as helpers
         monkeypatch.setenv("BEQ_SHARED_DIR", str(tmp_path))
         monkeypatch.delenv("BEQ_WAV_CACHE", raising=False)
         monkeypatch.delenv("BEQ_DIR", raising=False)
@@ -1264,7 +1264,7 @@ class TestWavCacheDirResolution:
 
     def test_explicit_wav_cache_takes_precedence(self, tmp_path, monkeypatch):
         """BEQ_WAV_CACHE overrides BEQ_SHARED_DIR derivation."""
-        from spike import _auto_beq_helpers as helpers
+        import model.wav_discovery as helpers
         explicit = tmp_path / "my-custom-cache"
         explicit.mkdir()
         monkeypatch.setenv("BEQ_WAV_CACHE", str(explicit))
@@ -1275,7 +1275,7 @@ class TestWavCacheDirResolution:
 
     def test_errors_when_nothing_configured(self, tmp_path, monkeypatch):
         """Raises RuntimeError when no config can resolve."""
-        from spike import _auto_beq_helpers as helpers
+        import model.wav_discovery as helpers
         monkeypatch.delenv("BEQ_SHARED_DIR", raising=False)
         monkeypatch.delenv("BEQ_WAV_CACHE", raising=False)
         monkeypatch.delenv("BEQ_DIR", raising=False)
@@ -1289,7 +1289,7 @@ class TestCheckProductionModel:
     """check_production_model() in shared helpers, no Qt import."""
 
     def test_finds_joblib_model(self, tmp_path, monkeypatch):
-        from spike import _auto_beq_helpers as helpers
+        import model.wav_discovery as helpers
         monkeypatch.setenv("BEQ_SHARED_DIR", str(tmp_path))
         monkeypatch.delenv("AUTO_BEQ_MODEL_PATH", raising=False)
         monkeypatch.delenv("AUTO_BEQ_ADVISOR", raising=False)
@@ -1298,7 +1298,7 @@ class TestCheckProductionModel:
         assert helpers.check_production_model() is True
 
     def test_missing_model(self, tmp_path, monkeypatch):
-        from spike import _auto_beq_helpers as helpers
+        import model.wav_discovery as helpers
         monkeypatch.setenv("BEQ_SHARED_DIR", str(tmp_path))
         monkeypatch.delenv("AUTO_BEQ_MODEL_PATH", raising=False)
         monkeypatch.delenv("AUTO_BEQ_ADVISOR", raising=False)

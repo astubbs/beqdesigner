@@ -381,7 +381,7 @@ class TestPrepareTrainingData:
         )
 
         # Mock _extract_features_parallel to return (pair, features) tuples.
-        import spike.test_auto_beq_nn_real as nn_real
+        import auto_beq.test_auto_beq_nn_real as nn_real
         monkeypatch.setattr(
             nn_real, "_extract_features_parallel",
             lambda pairs, grid, fs, strategy=None: [

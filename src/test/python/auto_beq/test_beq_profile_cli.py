@@ -440,7 +440,7 @@ class TestDispatch:
                 "cache-status": "cli.cache_status.main",
                 "verify": "cli.verify_cache.main",
                 "nn-report": "cli.nn_report.main",
-                "sweep-discover": "spike.sweep_discover.main",
+                "sweep-discover": "cli.sweep_discover.main",
                 "report-acquisitions": "cli.nn_acquisition_recommender.main",
                 "report-cache-bias": "cli.nn_cache_bias_report.main",
                 "report-author-patterns": "cli.nn_author_pattern_report.main",
@@ -717,7 +717,7 @@ class TestExtractLfeWav:
         _cache_tmp = Path(_tf.mkdtemp(prefix="beq_cache_"))
         monkeypatch.setattr("model.wav_discovery.audio_cache_dir", lambda: _cache_tmp)
 
-        from spike._auto_beq_helpers import extract_lfe_wav
+        from auto_beq._auto_beq_helpers import extract_lfe_wav
 
         # Create a minimal valid WAV to use as input.
         import struct

@@ -405,7 +405,7 @@ def test_augment_audio_features_metadata_untouched():
 
 def test_extract_chunk_stats_shapes():
     """extract_chunk_stats returns (stddev, ceiling_frac) each shape (n_bins,)."""
-    from spike._auto_beq_helpers import extract_chunk_stats
+    from auto_beq._auto_beq_helpers import extract_chunk_stats
     from model.auto_beq_nn import OPTION_A_BINS_HZ
 
     n_chunks, n_freqs = 50, 100
@@ -425,7 +425,7 @@ def test_extract_chunk_stats_shapes():
 
 def test_extract_chunk_stats_constant_data():
     """Constant chunks → stddev=0, ceiling_frac=1."""
-    from spike._auto_beq_helpers import extract_chunk_stats
+    from auto_beq._auto_beq_helpers import extract_chunk_stats
     from model.auto_beq_nn import OPTION_A_BINS_HZ
 
     freqs = np.linspace(5, 200, 100)

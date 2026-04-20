@@ -36,7 +36,7 @@ from model.auto_beq import (
 )
 from model.auto_beq_advisor import MediaMetadata, get_advisor
 
-from spike._auto_beq_helpers import (
+from auto_beq._auto_beq_helpers import (
     _extract_lfe_wav,
     _have_tool,
     _strategy_from_env,
@@ -45,7 +45,7 @@ from spike._auto_beq_helpers import (
     load_and_smooth_chunked,
     load_measured,
 )
-from spike.sweep_discover import bucket_rating, load_catalogue_by_digest, load_config
+from auto_beq.sweep_discover import bucket_rating, load_catalogue_by_digest, load_config
 
 log = logging.getLogger("auto_beq_sweep")
 

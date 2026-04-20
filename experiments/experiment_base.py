@@ -72,7 +72,7 @@ def load_experiment_data(
         AudioFeatureConfig,
         train_production_weighted_hybrid,
     )
-    from spike._auto_beq_helpers import prepare_training_data
+    from auto_beq._auto_beq_helpers import prepare_training_data
 
     data = prepare_training_data(
         split=True,

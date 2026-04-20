@@ -32,7 +32,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from spike._auto_beq_helpers import beq_config_dir
+from model.wav_discovery import beq_config_dir
 from cli.extract import get_configured_media_roots, save_extract_config
 
 log = logging.getLogger("auto_beq_sweep")

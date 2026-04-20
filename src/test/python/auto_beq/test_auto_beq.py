@@ -52,7 +52,7 @@ from model.auto_beq import (
 )
 from model.auto_beq_advisor import MediaMetadata, get_advisor
 
-from spike._auto_beq_helpers import (
+from auto_beq._auto_beq_helpers import (
     _extract_lfe_wav,
     _have_tool,
     _probe_audio_stream,
@@ -391,7 +391,7 @@ def test_chunked_percentile_roundtrip(catalogue_snapshot, caplog, manifest_entry
     Each run logs a delta vs the whole-film curve at 20 Hz so results
     can be compared directly with the E17d baseline.
     """
-    from spike._auto_beq_helpers import load_and_smooth, load_and_smooth_chunked
+    from auto_beq._auto_beq_helpers import load_and_smooth, load_and_smooth_chunked
 
     caplog.set_level(logging.INFO, logger="auto_beq_spike")
 
