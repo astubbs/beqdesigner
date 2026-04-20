@@ -76,7 +76,7 @@ def maybe_plot(freqs, target, proposed_resp, ground_truth_resp, title):
     plt.show()
 
 
-def main():
+def main(argv: list[str] | None = None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--entry-title", required=True, help="title in the catalogue snapshot")
     p.add_argument("--filter-count", type=int, default=None,

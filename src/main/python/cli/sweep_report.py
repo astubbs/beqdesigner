@@ -383,13 +383,13 @@ def write_unified_csv(results: list[ExperimentResult], path: Path) -> None:
     print(f"\nUnified CSV written to: {path}")
 
 
-def main():
+def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description="Auto-BEQ experiment comparison report")
     parser.add_argument("--dir", type=Path, default=Path(".pytest_cache"),
                         help="Directory containing experiment CSV files")
     parser.add_argument("--csv", type=Path, default=None,
                         help="Also write unified CSV to this path")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     results = load_all_results(args.dir)
     if not results:

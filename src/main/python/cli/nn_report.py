@@ -238,7 +238,7 @@ def generate_report(output=None):
             pr()
 
 
-def main():
+def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(
         description="Generate comparison report: NN-predicted vs hand-coded BEQ filters.",
     )
@@ -246,7 +246,7 @@ def main():
         "--output", "-o", type=Path, default=None,
         help="Output file (markdown). Defaults to stdout.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.output:
         with args.output.open("w") as f:

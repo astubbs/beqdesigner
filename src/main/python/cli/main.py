@@ -239,7 +239,8 @@ def _render_markdown_report(report_main_func, argv=None) -> None:
     with contextlib.redirect_stdout(buf):
         sig = inspect.signature(report_main_func)
         if sig.parameters:
-            report_main_func(argv)
+            # Pass [] (not None) so nested argparse doesn't read sys.argv.
+            report_main_func(argv if argv is not None else [])
         else:
             report_main_func()
 

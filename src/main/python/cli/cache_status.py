@@ -28,12 +28,12 @@ logging.basicConfig(level=logging.WARNING)  # suppress noisy logs
 from spike._auto_beq_helpers import discover_wav_catalogue_pairs, wav_cache_dir
 
 
-def main():
+def main(argv: list[str] | None = None):
     import argparse
     parser = argparse.ArgumentParser(description="Summarise WAV cache training set status.")
     parser.add_argument("cache_dir", nargs="?", type=Path, default=None,
                         help="WAV cache directory. Defaults to BEQ_WAV_CACHE env var or settings.json.")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.cache_dir:
         # Override the env var so discover_wav_catalogue_pairs() uses it too.
