@@ -12,6 +12,14 @@ import os
 import sys
 from pathlib import Path
 
+# Disable MPS (Metal Performance Shaders) before ANY library imports.
+# On macOS with Apple Silicon, Metal auto-initializes when xgboost,
+# torch, or scipy load their C extensions. If Qt has already claimed
+# the Metal device (which happens when PyQt6 is imported), the second
+# initialization crashes with SIGSEGV. Setting this env var before any
+# imports prevents Metal from allocating GPU memory entirely.
+os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
+
 _ROOT = Path(__file__).resolve().parents[1]
 
 # Re-exec under poetry if we're not already in the venv.
