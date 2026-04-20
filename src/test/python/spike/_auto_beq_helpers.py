@@ -1384,8 +1384,14 @@ def discover_wav_catalogue_pairs() -> list[dict]:
             "media_id": f"{id_type}-{id_value}",
         })
 
-    log.info("discovered %d WAV-catalogue pairs from %d WAV files in %s",
-             len(pairs), len(wav_files), cache_root)
+    unique_titles = {p["catalogue_entry"].get("title", "") for p in pairs}
+    unique_ids = {p["media_id"] for p in pairs}
+    log.info(
+        "discovered %d WAV-catalogue pairs (%d unique titles, %d total media files) "
+        "from %d WAV files in %s",
+        len(pairs), len(unique_titles), len(unique_ids),
+        len(wav_files), cache_root,
+    )
     return pairs
 
 
