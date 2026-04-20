@@ -136,8 +136,8 @@ def _load_library_inventory(
     if inventory_path is None:
         # Default location: next to the WAV cache in the BEQ working dir.
         try:
-            from spike._auto_beq_helpers import beq_dir
-            _beq = beq_dir()
+            from spike._auto_beq_helpers import beq_shared_dir
+            _beq = beq_shared_dir()
         except Exception:
             _beq = Path.home() / "Downloads" / "beqdesigner"
         inventory_path = _beq / "media_inventory.json"

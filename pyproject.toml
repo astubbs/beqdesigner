@@ -80,6 +80,7 @@ ignore = [
 ]
 
 [tool.pytest.ini_options]
+pythonpath = ["src/main/python", "src/test/python"]
 # Test classification: tests are unit by default. Opt-in groups live behind
 # markers so CI and `run-spike-tests.sh` can skip them without scanning real
 # media libraries, hitting external APIs, or retraining models from scratch.

@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None):
     from spike._auto_beq_helpers import (
         STRATEGY_BLENDED_07,
         STRATEGY_WELCH,
-        beq_dir,
+        beq_shared_dir,
         cached_extract_features_with_strategy,
         discover_unmatched_wavs_cached,
         discover_wav_catalogue_pairs_cached,
@@ -140,7 +140,7 @@ def main(argv: list[str] | None = None):
         )
 
     # --- Resolve paths ---
-    target_dir = beq_dir()
+    target_dir = beq_shared_dir()
     if args.self_train:
         # E84: keep the E82 production model untouched, write a parallel
         # file so both can be A/B compared.

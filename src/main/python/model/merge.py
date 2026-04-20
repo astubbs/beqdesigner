@@ -504,13 +504,13 @@ class XmlProcessor(QRunnable):
     Completes the batch conversion of config files in a separate thread.
     '''
 
-    def __init__(self, beq_dir, catalogue: List[CatalogueEntry], user_source_dir, output_dir,
+    def __init__(self, beq_shared_dir, catalogue: List[CatalogueEntry], user_source_dir, output_dir,
                  config_file, dsp_type, failure_handler, success_handler, complete_handler, optimise_handler,
                  optimise_filters, selected_channels, in_out_split):
         super().__init__()
         self.__optimise_filters = optimise_filters
         self.__catalogue = catalogue
-        self.__beq_dir = beq_dir
+        self.__beq_dir = beq_shared_dir
         self.__user_source_dir = user_source_dir
         self.__output_dir = output_dir
         self.__config_file = config_file
@@ -541,9 +541,9 @@ class XmlProcessor(QRunnable):
 
     def __process_dir(self, src_dir):
         if len(src_dir) > 0:
-            beq_dir = Path(src_dir)
-            base_parts_idx = len(beq_dir.parts)
-            for xml in beq_dir.glob(f"**{os.sep}*.xml"):
+            beq_shared_dir = Path(src_dir)
+            base_parts_idx = len(beq_shared_dir.parts)
+            for xml in beq_shared_dir.glob(f"**{os.sep}*.xml"):
                 self.__process_file(base_parts_idx, xml)
 
     def __process_catalogue(self, catalogue: List[CatalogueEntry]) -> int:

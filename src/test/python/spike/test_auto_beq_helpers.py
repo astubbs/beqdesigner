@@ -169,8 +169,8 @@ class TestCachedExtractFeatures:
             cached_extract_features_with_strategy,
         )
 
-        # Point beq_dir at a tmp cache.
-        monkeypatch.setattr(h, "beq_dir", lambda: tmp_path)
+        # Point beq_shared_dir at a tmp cache.
+        monkeypatch.setattr(h, "beq_shared_dir", lambda: tmp_path)
 
         # Stub the uncached extractor to return a counter-tagged sentinel.
         call_count = {"n": 0}
@@ -205,7 +205,7 @@ class TestCachedExtractFeatures:
             cached_extract_features_with_strategy,
         )
 
-        monkeypatch.setattr(h, "beq_dir", lambda: tmp_path)
+        monkeypatch.setattr(h, "beq_shared_dir", lambda: tmp_path)
         call_count = {"n": 0}
 
         def fake_extract(wav_path, freqs_hz, fs, strategy):
@@ -240,7 +240,7 @@ class TestCachedExtractFeatures:
             cached_extract_features_with_strategy,
         )
 
-        monkeypatch.setattr(h, "beq_dir", lambda: tmp_path)
+        monkeypatch.setattr(h, "beq_shared_dir", lambda: tmp_path)
         monkeypatch.setenv("AUTO_BEQ_FEATURE_CACHE", "0")
 
         call_count = {"n": 0}
@@ -270,7 +270,7 @@ class TestDiscoveryCache:
 
         wav_root = tmp_path / "wav-cache"
         wav_root.mkdir()
-        monkeypatch.setattr(h, "beq_dir", lambda: tmp_path)
+        monkeypatch.setattr(h, "beq_shared_dir", lambda: tmp_path)
         monkeypatch.setattr(h, "wav_cache_dir", lambda: wav_root)
 
         call_count = {"n": 0}
@@ -301,7 +301,7 @@ class TestDiscoveryCache:
 
         wav_root = tmp_path / "wav-cache"
         wav_root.mkdir()
-        monkeypatch.setattr(h, "beq_dir", lambda: tmp_path)
+        monkeypatch.setattr(h, "beq_shared_dir", lambda: tmp_path)
         monkeypatch.setattr(h, "wav_cache_dir", lambda: wav_root)
 
         call_count = {"n": 0}
@@ -329,7 +329,7 @@ class TestDiscoveryCache:
 
         wav_root = tmp_path / "wav-cache"
         wav_root.mkdir()
-        monkeypatch.setattr(h, "beq_dir", lambda: tmp_path)
+        monkeypatch.setattr(h, "beq_shared_dir", lambda: tmp_path)
         monkeypatch.setattr(h, "wav_cache_dir", lambda: wav_root)
         monkeypatch.setenv("AUTO_BEQ_DISCOVERY_CACHE", "0")
 

@@ -2,7 +2,7 @@
 """E85 experiment runner — differentiable DSP vs E82 baseline.
 
 Usage:
-    BEQ_WAV_CACHE=/Volumes/jetspeed/beqdesigner/wav-cache \
+    BEQ_WAV_CACHE=/path/to/beqdesigner/wav-cache \
       poetry run python3 scripts/run_e85_experiment.py
 """
 from __future__ import annotations

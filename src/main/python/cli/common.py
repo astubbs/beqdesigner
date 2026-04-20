@@ -265,16 +265,16 @@ def show_banner(title: str, config: CliConfig, log_file: Path | None = None) -> 
     from rich.panel import Panel
     from spike._auto_beq_helpers import wav_cache_dir
 
-    from spike._auto_beq_helpers import beq_dir
+    from spike._auto_beq_helpers import beq_shared_dir
 
     version, branch, commit = get_version_info()
 
     # Shared directory — required, everything derives from it.
     try:
-        shared_dir = beq_dir()
-        shared_str = str(shared_dir)
+        beq_shared_dir = beq_shared_dir()
+        shared_str = str(beq_shared_dir)
     except Exception:
-        shared_dir = None
+        beq_shared_dir = None
         shared_str = "[red]NOT CONFIGURED — set BEQ_SHARED_DIR env var[/red]"
 
     # WAV cache — derived from shared dir.
@@ -291,8 +291,8 @@ def show_banner(title: str, config: CliConfig, log_file: Path | None = None) -> 
         model_info = "E85 differentiable-DSP (torch)"
     elif _os.environ.get("AUTO_BEQ_MODEL_PATH"):
         model_info = f"custom ({_os.environ['AUTO_BEQ_MODEL_PATH']})"
-    elif shared_dir:
-        prod = shared_dir / "production_model.joblib"
+    elif beq_shared_dir:
+        prod = beq_shared_dir / "production_model.joblib"
         if prod.exists():
             model_info = f"E82 production ({prod.name})"
         else:
@@ -322,14 +322,25 @@ def show_banner(title: str, config: CliConfig, log_file: Path | None = None) -> 
 
 
 def setup_log_file(output_dir: str, log_name: str = "beq.log") -> Path:
-    """Create a log file handler and return the log file path."""
+    """Create a log file handler and return the log file path.
+
+    Idempotent - if a FileHandler for the same path already exists on
+    the root logger, it is not added again.
+    """
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     log_file = out_dir / log_name
+
+    # Avoid duplicate file handlers for the same path.
+    root = logging.getLogger()
+    for h in root.handlers:
+        if isinstance(h, logging.FileHandler) and h.baseFilename == str(log_file.resolve()):
+            return log_file
+
     file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter(
         "%(asctime)s %(levelname)-5s %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S",
     ))
-    logging.getLogger().addHandler(file_handler)
+    root.addHandler(file_handler)
     return log_file

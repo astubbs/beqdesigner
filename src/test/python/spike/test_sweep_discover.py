@@ -497,11 +497,11 @@ def test_resolve_library_roots_expands_user(monkeypatch):
 def test_split_paths_strips_around_commas_preserves_internal_spaces():
     """Whitespace around commas is stripped; spaces within paths are kept."""
     result = sd._split_paths(
-        "/Volumes/Batou/media storage/TV , /Users/me/Downloads/movies"
+        "/mnt/nas/media storage/TV , /home/user/Downloads/movies"
     )
     assert result == [
-        Path("/Volumes/Batou/media storage/TV"),
-        Path("/Users/me/Downloads/movies"),
+        Path("/mnt/nas/media storage/TV"),
+        Path("/home/user/Downloads/movies"),
     ]
 
 
@@ -513,21 +513,21 @@ def test_split_paths_handles_trailing_comma():
 def test_split_paths_strips_backslash_escapes():
     """Users paste paths with shell-escaped spaces from tab-completion."""
     result = sd._split_paths(
-        r"/Volumes/DMZ\ Storage\ 24TB/media, /Volumes/Batou/TV"
+        r"/mnt/storage\ drive\ 24TB/media, /mnt/nas/TV"
     )
     assert result == [
-        Path("/Volumes/DMZ Storage 24TB/media"),
-        Path("/Volumes/Batou/TV"),
+        Path("/mnt/storage drive 24TB/media"),
+        Path("/mnt/nas/TV"),
     ]
 
 
 def test_split_paths_mixed_escaped_and_unescaped():
     result = sd._split_paths(
-        r"/Volumes/DMZ\ Storage/Movies,/Users/me/Downloads/movies"
+        r"/mnt/storage\ drive/Movies,/home/user/Downloads/movies"
     )
     assert result == [
-        Path("/Volumes/DMZ Storage/Movies"),
-        Path("/Users/me/Downloads/movies"),
+        Path("/mnt/storage drive/Movies"),
+        Path("/home/user/Downloads/movies"),
     ]
 
 

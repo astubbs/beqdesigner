@@ -131,7 +131,7 @@ same across machines:
 | `production_model.joblib` | Trained E82 XGBoost model |
 | `e85_torch_filter.pt` | Trained E85 differentiable-DSP model |
 
-Resolved by `beq_dir()` in `spike/_auto_beq_helpers.py`:
+Resolved by `beq_shared_dir()` in `spike/_auto_beq_helpers.py`:
 
 1. `BEQ_SHARED_DIR` env var (preferred)
 2. `shared_beq_dir` key in `~/.config/beqdesigner/settings.json`
@@ -153,7 +153,7 @@ machines, CLI preferences are per-user). Resolved by `beq_config_dir()`.
 
 | Key | Purpose |
 |---|---|
-| `shared_beq_dir` | Where the shared BEQ directory is mounted on this machine (used by `beq_dir()` if `BEQ_SHARED_DIR` env var not set) |
+| `shared_beq_dir` | Where the shared BEQ directory is mounted on this machine (used by `beq_shared_dir()` if `BEQ_SHARED_DIR` env var not set) |
 | `library_roots` | Media library roots used by the sweep tool (parallel to `extract_config.json` -- to be unified) |
 | `ollama_hosts` | Ollama LLM backend URLs (advisor mode) |
 | `cli_author` | Default author name on generated profiles |

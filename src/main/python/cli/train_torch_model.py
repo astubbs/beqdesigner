@@ -65,11 +65,11 @@ def main(argv: list[str] | None = None):
         E85TrainingConfig, save_torch_predictor, train_e85_differentiable_dsp,
     )
     from spike._auto_beq_helpers import (
-        STRATEGY_BLENDED_07, beq_dir, discover_wav_catalogue_pairs_cached,
+        STRATEGY_BLENDED_07, beq_shared_dir, discover_wav_catalogue_pairs_cached,
     )
     from spike.test_auto_beq_nn_real import _extract_features_parallel
 
-    target_dir = beq_dir()
+    target_dir = beq_shared_dir()
     output_path = args.output or (target_dir / "e85_torch_filter.pt")
     meta_path = output_path.with_suffix(".meta.json")
     log.info("BEQ working directory: %s", target_dir)

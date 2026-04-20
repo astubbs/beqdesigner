@@ -187,7 +187,7 @@ def _load_or_train_model() -> tuple[object, str]:
     """
     import os as _os
 
-    from spike._auto_beq_helpers import beq_dir
+    from spike._auto_beq_helpers import beq_shared_dir
 
     # --- Tier 1: E85 torch model ---
     advisor_name = _os.environ.get("AUTO_BEQ_ADVISOR", "").lower()
@@ -195,9 +195,9 @@ def _load_or_train_model() -> tuple[object, str]:
         torch_path = _os.environ.get("AUTO_BEQ_TORCH_MODEL_PATH")
         if not torch_path:
             try:
-                torch_path = str(beq_dir() / "e85_torch_filter.pt")
+                torch_path = str(beq_shared_dir() / "e85_torch_filter.pt")
             except RuntimeError as exc:
-                log.debug("beq_dir() unavailable for torch model discovery: %s", exc)
+                log.debug("beq_shared_dir() unavailable for torch model discovery: %s", exc)
                 torch_path = None
         if torch_path and Path(torch_path).exists():
             from model.auto_beq_torch import load_torch_predictor
@@ -220,13 +220,13 @@ def _load_or_train_model() -> tuple[object, str]:
 
     # --- Tier 3: auto-discover production model ---
     try:
-        prod_path = beq_dir() / "production_model.joblib"
+        prod_path = beq_shared_dir() / "production_model.joblib"
         if prod_path.exists():
             from model.auto_beq_nn import load_model
             log.info("  loaded production model: %s", prod_path)
             return load_model(str(prod_path)), "production"
     except RuntimeError as exc:
-        log.debug("beq_dir() unavailable for production model discovery: %s", exc)
+        log.debug("beq_shared_dir() unavailable for production model discovery: %s", exc)
 
     # --- Tier 4: inline fallback (slow, warns user) ---
     log.warning(

@@ -15,7 +15,7 @@ Run with::
 
 Or via ``.env`` / env var::
 
-    AUTO_BEQ_LIBRARY_ROOTS=/Volumes/A:/Volumes/B poetry run python -m spike.sweep_discover --yes
+    AUTO_BEQ_LIBRARY_ROOTS=/mnt/media1:/mnt/media2 poetry run python -m spike.sweep_discover --yes
 """
 
 from __future__ import annotations
@@ -671,7 +671,7 @@ def _split_paths(raw: str) -> list[Path]:
     """Split a string of paths by comma, strip whitespace and shell escapes.
 
     Users often paste paths with backslash-escaped spaces (e.g. from
-    shell tab-completion or drag-and-drop): ``/Volumes/DMZ\\ Storage``.
+    shell tab-completion or drag-and-drop): ``/mnt/media\\ storage``.
     Interactive input isn't shell-parsed, so we strip those escapes.
     """
     parts = []

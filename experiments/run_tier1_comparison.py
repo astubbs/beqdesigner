@@ -24,8 +24,12 @@ for p in (_REPO_ROOT / "src" / "main" / "python", _REPO_ROOT / "src" / "test" / 
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s - %(message)s")
 log = logging.getLogger("tier1_comparison")
+
+# Only configure logging when run directly (not via bin/beq-designer,
+# which sets up its own handlers including a file handler).
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s - %(message)s")
 
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -48,6 +52,7 @@ from model.auto_beq_nn import (
 from model.auto_beq_torch import E85TrainingConfig, train_e85_differentiable_dsp
 from spike._auto_beq_helpers import (
     STRATEGY_BLENDED_07,
+    beq_shared_dir,
     cached_extract_features_with_strategy,
     discover_unmatched_wavs_cached,
     discover_wav_catalogue_pairs_cached,
@@ -175,33 +180,55 @@ def main():
     # --- 3. E83 Whisper-tiny (486 features) ---
     log.info("")
     log.info("--- E83 Whisper-tiny (486 features) ---")
-    # Attach cached Whisper embeddings to the real samples.
-    embed_cache_dir = Path("/Volumes/jetspeed/beqdesigner/foundation-embeddings/whisper-tiny")
-    if not embed_cache_dir.exists():
-        # Try the pytest cache location.
-        embed_cache_dir = Path(".pytest_cache/foundation-embeddings/whisper-tiny")
+
+    # Check Whisper availability once before looping over 500+ samples.
+    # Without this, an ImportError fires on every call and gets silently
+    # caught, producing hundreds of "loading foundation model" log lines.
+    whisper_available = True
+    try:
+        from model.auto_beq_advisor import extract_foundation_embedding
+        # Resolve cache dir via the shared directory (not hardcoded paths).
+        try:
+            embed_cache_dir = beq_shared_dir() / "foundation-embeddings" / "whisper-tiny"
+        except Exception:
+            embed_cache_dir = None
+    except ImportError:
+        whisper_available = False
+        log.warning("openai-whisper not installed - E83 will run without foundation embeddings")
 
     train_samples_whisper = []
-    log.info("extracting Whisper embeddings for %d train samples...", len(train_samples))
-    whisper_train_progress = ProgressLogger(len(train_samples), logger=log, min_interval_s=5)
-    for idx, (entry, features) in enumerate(train_samples):
-        pair_for_entry = next(
-            (p for p, _ in all_real if p["catalogue_entry"] is entry), None,
-        )
-        if pair_for_entry is None:
-            train_samples_whisper.append((entry, features))
+    if whisper_available:
+        log.info("extracting Whisper embeddings for %d train samples...", len(train_samples))
+        whisper_train_progress = ProgressLogger(len(train_samples), logger=log, min_interval_s=5)
+        for idx, (entry, features) in enumerate(train_samples):
+            pair_for_entry = next(
+                (p for p, _ in all_real if p["catalogue_entry"] is entry), None,
+            )
+            if pair_for_entry is None:
+                train_samples_whisper.append((entry, features))
+                whisper_train_progress.update(idx + 1, label=entry.get("title", ""))
+                continue
+            wav_path = pair_for_entry["wav_path"]
+            try:
+                emb = extract_foundation_embedding(wav_path, model_name="whisper-tiny", cache_dir=embed_cache_dir)
+                features_with = dataclasses.replace(features, foundation_embedding=tuple(float(x) for x in emb))
+                train_samples_whisper.append((entry, features_with))
+            except ImportError:
+                log.warning("Whisper became unavailable mid-run - falling back to base features")
+                whisper_available = False
+                train_samples_whisper.append((entry, features))
+                break
+            except Exception as exc:
+                log.debug("Whisper embedding failed for %s: %s", entry.get("title", "?"), exc)
+                train_samples_whisper.append((entry, features))
             whisper_train_progress.update(idx + 1, label=entry.get("title", ""))
-            continue
-        wav_path = pair_for_entry["wav_path"]
-        try:
-            from model.auto_beq_advisor import extract_foundation_embedding
-            emb = extract_foundation_embedding(wav_path, model_name="whisper-tiny", cache_dir=embed_cache_dir)
-            features_with = dataclasses.replace(features, foundation_embedding=tuple(float(x) for x in emb))
-            train_samples_whisper.append((entry, features_with))
-        except Exception:
-            train_samples_whisper.append((entry, features))
-        whisper_train_progress.update(idx + 1, label=entry.get("title", ""))
-    whisper_train_progress.finish("train embeddings complete")
+        whisper_train_progress.finish("train embeddings complete")
+        # Backfill any remaining samples if we broke out early.
+        if len(train_samples_whisper) < len(train_samples):
+            for entry, features in train_samples[len(train_samples_whisper):]:
+                train_samples_whisper.append((entry, features))
+    else:
+        train_samples_whisper = list(train_samples)
 
     t0 = time.time()
     e83_model, _ = train_production_weighted_hybrid(
@@ -212,25 +239,35 @@ def main():
     t_train_e83 = time.time() - t0
 
     # Test set with Whisper embeddings.
-    log.info("extracting Whisper embeddings for %d test samples...", len(test_idx))
-    whisper_test_progress = ProgressLogger(len(test_idx), logger=log, min_interval_s=5)
     X_test_whisper_list = []
-    for prog_idx, i in enumerate(test_idx):
-        pair, features = all_real[i]
-        entry = pair["catalogue_entry"]
-        if not entry.get("filters"):
-            whisper_test_progress.update(prog_idx + 1)
-            continue
-        wav_path = pair["wav_path"]
-        try:
-            emb = extract_foundation_embedding(wav_path, model_name="whisper-tiny", cache_dir=embed_cache_dir)
-            features_with = dataclasses.replace(features, foundation_embedding=tuple(float(x) for x in emb))
-        except Exception:
-            features_with = features
-        metadata = enrich_media_metadata(entry, tmdb_cache)
-        X_test_whisper_list.append(build_feature_vector(features_with, metadata, config=cfg_whisper))
-        whisper_test_progress.update(prog_idx + 1, label=entry.get("title", ""))
-    whisper_test_progress.finish("test embeddings complete")
+    if whisper_available:
+        log.info("extracting Whisper embeddings for %d test samples...", len(test_idx))
+        whisper_test_progress = ProgressLogger(len(test_idx), logger=log, min_interval_s=5)
+        for prog_idx, i in enumerate(test_idx):
+            pair, features = all_real[i]
+            entry = pair["catalogue_entry"]
+            if not entry.get("filters"):
+                whisper_test_progress.update(prog_idx + 1)
+                continue
+            wav_path = pair["wav_path"]
+            try:
+                emb = extract_foundation_embedding(wav_path, model_name="whisper-tiny", cache_dir=embed_cache_dir)
+                features_with = dataclasses.replace(features, foundation_embedding=tuple(float(x) for x in emb))
+            except Exception as exc:
+                log.debug("Whisper embedding failed for test sample: %s", exc)
+                features_with = features
+            metadata = enrich_media_metadata(entry, tmdb_cache)
+            X_test_whisper_list.append(build_feature_vector(features_with, metadata, config=cfg_whisper))
+            whisper_test_progress.update(prog_idx + 1, label=entry.get("title", ""))
+        whisper_test_progress.finish("test embeddings complete")
+    else:
+        for i in test_idx:
+            pair, features = all_real[i]
+            entry = pair["catalogue_entry"]
+            if not entry.get("filters"):
+                continue
+            metadata = enrich_media_metadata(entry, tmdb_cache)
+            X_test_whisper_list.append(build_feature_vector(features, metadata, config=cfg_whisper))
     X_test_whisper = np.array(X_test_whisper_list, dtype=np.float32)
 
     e83_mean, e83_max, e83_auth, _ = _eval(e83_model, X_test_whisper, entries_test, "E83 Whisper-tiny")

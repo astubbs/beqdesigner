@@ -5,7 +5,7 @@ Tests E85 (LowShelf-only) and E86 (multi-type) at 20 vs 100 acoustic
 epochs, with cosine annealing on the 100-epoch variants.
 
 Usage:
-    BEQ_WAV_CACHE=/Volumes/jetspeed/beqdesigner/wav-cache \
+    BEQ_WAV_CACHE=/path/to/beqdesigner/wav-cache \
       poetry run python3 scripts/run_e87_experiment.py
 """
 from __future__ import annotations

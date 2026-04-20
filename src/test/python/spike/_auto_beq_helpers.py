@@ -223,7 +223,7 @@ def extract_lfe_wav(
         # Legacy fallback — mirrored path (deprecated, will be removed).
         cache_root = audio_cache_dir()
         # Mirror the source path under the cache root. Strip the leading /
-        # so it nests cleanly: /Volumes/X/Y.mkv -> cache_root/Volumes/X/Y
+        # so it nests cleanly: /mnt/media/Y.mkv -> cache_root/mnt/media/Y
         relative = Path(str(media_path.resolve()).lstrip("/"))
         stem = relative.with_suffix("").name
         trim_suffix = ""
@@ -846,7 +846,7 @@ def ensure_analysis_reports_current(
     return regenerated
 
 
-def beq_dir() -> Path:
+def beq_shared_dir() -> Path:
     """Return the BEQ shared working directory.
 
     Holds wav-cache/, beq_catalogue.json, media_inventory.json, and
@@ -920,10 +920,10 @@ def wav_cache_dir() -> Path:
                         explicit_source = f"audio_cache_dir in {cfg_path}"
                 except Exception:
                     pass
-    # Derive from beq_dir() as last resort.
+    # Derive from beq_shared_dir() as last resort.
     if not raw:
         try:
-            raw = str(beq_dir() / "wav-cache")
+            raw = str(beq_shared_dir() / "wav-cache")
             explicit_source = None  # auto-derived, will auto-create
         except Exception:
             pass
@@ -987,7 +987,7 @@ def _cache_enabled(env_var: str) -> bool:
 
 def _curve_features_cache_dir(strategy_label: str) -> Path:
     """Per-strategy directory under ``{beq-dir}/curve-features/``."""
-    return beq_dir() / "curve-features" / strategy_label
+    return beq_shared_dir() / "curve-features" / strategy_label
 
 
 def _curve_features_cache_key(wav_path: Path) -> str | None:
@@ -1079,7 +1079,7 @@ def _discovery_cache_signature() -> dict | None:
         return None
 
     catalogue_mtime = 0.0
-    catalogue_cache = beq_dir() / _CATALOGUE_CACHE_FILENAME
+    catalogue_cache = beq_shared_dir() / _CATALOGUE_CACHE_FILENAME
     if catalogue_cache.exists():
         try:
             catalogue_mtime = catalogue_cache.stat().st_mtime
@@ -1114,9 +1114,9 @@ def discover_wav_catalogue_pairs_cached() -> list[dict]:
 
     import pickle as _pickle
     try:
-        cache_file = beq_dir() / _DISCOVERY_CACHE_FILENAME
+        cache_file = beq_shared_dir() / _DISCOVERY_CACHE_FILENAME
     except Exception as exc:
-        log.warning("beq_dir unavailable for discovery cache: %s", exc)
+        log.warning("beq_shared_dir unavailable for discovery cache: %s", exc)
         return discover_wav_catalogue_pairs()
 
     signature = _discovery_cache_signature()
@@ -1256,9 +1256,9 @@ def discover_unmatched_wavs_cached() -> list[Path]:
 
     import pickle as _pickle
     try:
-        cache_file = beq_dir() / _UNMATCHED_CACHE_FILENAME
+        cache_file = beq_shared_dir() / _UNMATCHED_CACHE_FILENAME
     except Exception as exc:
-        log.warning("beq_dir unavailable for unmatched cache: %s", exc)
+        log.warning("beq_shared_dir unavailable for unmatched cache: %s", exc)
         return discover_unmatched_wavs()
 
     signature = _discovery_cache_signature()
@@ -1469,7 +1469,7 @@ def extract_features_with_strategy(
 def check_production_model() -> bool:
     """Return True if a production model exists (fast — no loading).
 
-    Checks env vars and the shared beq_dir for model files. Does NOT
+    Checks env vars and the shared beq_shared_dir for model files. Does NOT
     import any Qt, scipy, or heavy dependencies — safe for headless
     Docker containers and CLI startup.
     """
@@ -1478,11 +1478,11 @@ def check_production_model() -> bool:
         return Path(model_env).exists()
     if os.environ.get("AUTO_BEQ_ADVISOR", "").lower() == "torch_differentiable":
         try:
-            return (beq_dir() / "e85_torch_filter.pt").exists()
+            return (beq_shared_dir() / "e85_torch_filter.pt").exists()
         except Exception:
             return False
     try:
-        return (beq_dir() / "production_model.joblib").exists()
+        return (beq_shared_dir() / "production_model.joblib").exists()
     except Exception:
         return False
 

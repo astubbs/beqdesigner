@@ -261,12 +261,12 @@ _cached_beq_dir: Path | None | bool = False  # False = not yet checked
 
 
 def _auto_beq_dir() -> Path | None:
-    """Get beq_dir from shared config, or None if not configured. Cached."""
+    """Get beq_shared_dir from shared config, or None if not configured. Cached."""
     global _cached_beq_dir
     if _cached_beq_dir is not False:
         return _cached_beq_dir
     try:
-        from spike._auto_beq_helpers import beq_dir as _bd
+        from spike._auto_beq_helpers import beq_shared_dir as _bd
         _cached_beq_dir = _bd()
     except Exception:
         _cached_beq_dir = None
@@ -478,13 +478,44 @@ def dev_test(
         raise SystemExit(1)
 
 
-@dev_app.command(name="sweep")
-def dev_sweep(
+def _check_ollama_if_needed(advisor: str) -> None:
+    """Check Ollama host availability if the advisor requires it.
+
+    Warns about unreachable hosts. Fails fast if ALL hosts are down.
+    No-op for non-Ollama advisors.
+    """
+    ollama_advisors = {"ollama"}
+    if advisor.lower() not in ollama_advisors:
+        return
+
+    from model.auto_beq_advisor import check_ollama_hosts
+    result = check_ollama_hosts()
+    for host in result["unavailable"]:
+        console.print(f"[yellow]WARNING:[/yellow] Ollama host {host} is not reachable - skipping")
+    if not result["available"]:
+        raise RuntimeError(
+            "No Ollama hosts are reachable. "
+            "Start Ollama or use --advisor measurement."
+        )
+    if result["unavailable"]:
+        console.print(
+            f"[dim]Proceeding with {len(result['available'])} of "
+            f"{len(result['available']) + len(result['unavailable'])} hosts[/dim]"
+        )
+
+
+@dev_app.command(name="evaluate")
+def dev_evaluate(
     limit: int = typer.Option(10, "--limit", help="Max files to process."),
     parallel: bool = typer.Option(False, "--parallel", help="Run in parallel across Ollama hosts."),
     advisor: str = typer.Option("measurement", "--advisor", help="Advisor implementation."),
 ) -> None:
-    """Run auto-BEQ sweep pipeline on discovered media."""
+    """Evaluate an advisor across the media library.
+
+    Runs the selected advisor on discovered media files and measures
+    performance against BEQ catalogue ground truth.
+    """
+    _check_ollama_if_needed(advisor)
     test_module = "src/test/python/spike/test_auto_beq_library_sweep.py"
     test_func = "test_library_sweep_parallel" if parallel else "test_library_sweep"
     env = {
@@ -498,13 +529,18 @@ def dev_sweep(
     )
 
 
-@dev_app.command(name="compare-advisors")
-def dev_compare_advisors(
+@dev_app.command(name="benchmark")
+def dev_benchmark(
     limit: int = typer.Option(0, "--limit", help="Max titles per advisor (0 = all)."),
 ) -> None:
-    """Compare all advisor implementations side-by-side on sweep corpus."""
+    """Benchmark all advisor implementations side-by-side.
+
+    Runs each advisor (measurement, topology, slope_extension) on the
+    same media library and shows results for comparison.
+    """
     advisors = ["measurement", "topology", "slope_extension"]
     for adv in advisors:
+        _check_ollama_if_needed(adv)
         console.rule(f"[bold]Advisor: {adv}[/bold]")
         test_module = "src/test/python/spike/test_auto_beq_library_sweep.py"
         env = {
@@ -518,13 +554,13 @@ def dev_compare_advisors(
         )
 
 
-@dev_app.command(name="playground")
-def dev_playground(
+@dev_app.command(name="test-advisor")
+def dev_test_advisor(
     title: str = typer.Option(..., "--title", help="Title in catalogue snapshot."),
     filter_count: Optional[int] = typer.Option(None, "--filter-count", help="Disambiguate entries."),  # noqa: UP007
     plot: bool = typer.Option(False, "--plot", help="Show matplotlib plot."),
 ) -> None:
-    """Test filter proposals on a single catalogue title (spike playground)."""
+    """Test an advisor's filter proposal on a single catalogue title."""
     from cli.spike_playground import main as spike_main
     argv = ["--entry-title", title]
     if filter_count is not None:
@@ -650,23 +686,36 @@ def main_callback(
     else:
         log_level = logging.INFO
 
-    logging.basicConfig(level=log_level, handlers=[logging.NullHandler()])
+    # Single authority for logging: clear everything, set up exactly
+    # stderr + file. This prevents handler accumulation from module-level
+    # basicConfig calls or repeated menu-loop dispatches.
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.setLevel(log_level)
 
-    # All log output goes to stderr — standard CLI behaviour.
     _stderr = logging.StreamHandler(_sys.stderr)
     _stderr.setLevel(log_level)
     _stderr.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
-    logging.getLogger().addHandler(_stderr)
+    root.addHandler(_stderr)
 
     cfg = load_config()
+    log_file = setup_log_file(cfg.output_dir)
+
+    # Sanity check: exactly 2 handlers (stderr + file). If this fires,
+    # something is adding handlers outside this callback.
+    if len(root.handlers) > 2:
+        root.warning(
+            "unexpected handler count: %d (expected 2). Types: %s",
+            len(root.handlers),
+            [type(h).__name__ for h in root.handlers],
+        )
 
     if ctx.invoked_subcommand is None:
         # Only show banner and validate for interactive mode.
-        log_file = setup_log_file(cfg.output_dir)
         plain_banner = show_banner("BEQ Designer CLI", cfg, log_file=log_file)
         _file_logger = logging.getLogger("beq_cli.banner")
         _file_logger.propagate = False
-        for h in logging.getLogger().handlers:
+        for h in root.handlers:
             if isinstance(h, logging.FileHandler):
                 _file_logger.addHandler(h)
         _file_logger.info(plain_banner)
@@ -688,7 +737,7 @@ def _validate_config_paths() -> None:
     _beq = None
 
     # Shared dir — required, everything derives from it.
-    from spike._auto_beq_helpers import beq_dir as _bd
+    from spike._auto_beq_helpers import beq_shared_dir as _bd
     try:
         _beq = _bd()
     except Exception:

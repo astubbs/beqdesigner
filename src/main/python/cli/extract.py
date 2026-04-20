@@ -101,8 +101,8 @@ def extract_media_id(media_path: Path) -> tuple[str, str] | None:
 # ---------------------------------------------------------------------------
 
 
-def fetch_catalogue(beq_dir: Path) -> list[dict]:
-    """Fetch the BEQ catalogue, caching at {beq_dir}/beq_catalogue.json.
+def fetch_catalogue(beq_shared_dir: Path) -> list[dict]:
+    """Fetch the BEQ catalogue, caching at {beq_shared_dir}/beq_catalogue.json.
 
     Uses If-Modified-Since on the GET request. If the server returns 304
     Not Modified, we skip the download. Uses stdlib only.
@@ -111,7 +111,7 @@ def fetch_catalogue(beq_dir: Path) -> list[dict]:
     import urllib.error
     import urllib.request
 
-    cache_path = beq_dir / "beq_catalogue.json"
+    cache_path = beq_shared_dir / "beq_catalogue.json"
 
     _CATALOGUE_TTL = 86400  # 24 hours
 
@@ -1385,23 +1385,23 @@ def _load_or_prompt_config(
     """
     from spike._auto_beq_helpers import beq_config_dir
 
-    beq_dir = beq_dir_arg
-    if beq_dir is None:
+    beq_shared_dir = beq_dir_arg
+    if beq_shared_dir is None:
         # Try to get default from shared config, fall back to ~/beqdesigner.
         try:
-            from spike._auto_beq_helpers import beq_dir as _bd
+            from spike._auto_beq_helpers import beq_shared_dir as _bd
             default_beq = str(_bd())
         except Exception:
             default_beq = str(Path.home() / ".config" / "beqdesigner")
         log.info("BEQ working directory not specified.")
         log.info("  Default: %s", default_beq)
         raw = input(f"BEQ working directory [{default_beq}]: ").strip()
-        beq_dir = Path(raw) if raw else Path(default_beq)
+        beq_shared_dir = Path(raw) if raw else Path(default_beq)
 
-    beq_dir = beq_dir.expanduser().resolve()
-    beq_dir.mkdir(parents=True, exist_ok=True)
+    beq_shared_dir = beq_shared_dir.expanduser().resolve()
+    beq_shared_dir.mkdir(parents=True, exist_ok=True)
 
-    wav_root = beq_dir / "wav-cache"
+    wav_root = beq_shared_dir / "wav-cache"
     wav_root.mkdir(parents=True, exist_ok=True)
 
     # Config lives in local config dir (machine-specific), not in the
@@ -1411,7 +1411,7 @@ def _load_or_prompt_config(
 
     # Backward compat: migrate from old location (shared dir) if present.
     # Skip in auto-discovery mode (Docker) — config is rebuilt every run.
-    old_config_path = beq_dir / _CONFIG_NAME
+    old_config_path = beq_shared_dir / _CONFIG_NAME
     auto_discovery = bool(os.environ.get("BEQ_MEDIA_DIR"))
     if not config_path.exists() and old_config_path.exists() and not auto_discovery:
         log.info("migrating %s from %s to %s", _CONFIG_NAME, old_config_path, config_path)
@@ -1462,7 +1462,7 @@ def _load_or_prompt_config(
 
     save_extract_config(media_roots)
 
-    return {"beq_dir": beq_dir, "wav_root": wav_root, "media_roots": media_roots}
+    return {"beq_shared_dir": beq_shared_dir, "wav_root": wav_root, "media_roots": media_roots}
 
 
 # ---------------------------------------------------------------------------
@@ -2061,7 +2061,7 @@ def main(argv: list[str] | None = None):
 
     # Config.
     config = _load_or_prompt_config(args.beq_dir, args.media_roots)
-    beq_dir = config["beq_dir"]
+    beq_shared_dir = config["beq_shared_dir"]
     wav_root = config["wav_root"]
     media_roots = config["media_roots"]
 
@@ -2091,17 +2091,17 @@ def main(argv: list[str] | None = None):
 
     # Fetch BEQ catalogue (may take a few seconds — HTTP check).
     log.info("fetching BEQ catalogue...")
-    catalogue = fetch_catalogue(beq_dir)
+    catalogue = fetch_catalogue(beq_shared_dir)
     cat_index = build_catalogue_index(catalogue)
 
     # Discover media (incremental — uses media_inventory.json as a
     # directory-mtime cache, rescanning only changed/new directories).
-    inventory_path = beq_dir / "media_inventory.json"
+    inventory_path = beq_shared_dir / "media_inventory.json"
     media, missing_ids, all_with_ids, no_catalogue_media = discover_media_incremental(
         media_roots, cat_index, inventory_path,
     )
     if missing_ids:
-        missing_file = beq_dir / "missing_ids.txt"
+        missing_file = beq_shared_dir / "missing_ids.txt"
         log.info("writing %d missing IDs to %s ...", len(missing_ids), missing_file)
         missing_file.write_text("\n".join(sorted(set(missing_ids))) + "\n")
 

@@ -408,7 +408,7 @@ def extract_foundation_embedding(
     cache_dir
         Directory for per-source cached embeddings. If None, caches under
         ``{beq-dir}/foundation-embeddings/<model_name>/`` via the
-        spike helper ``beq_dir()``.
+        spike helper ``beq_shared_dir()``.
 
     Returns
     -------
@@ -425,12 +425,12 @@ def extract_foundation_embedding(
     from pathlib import Path
     expected_dim = foundation_embedding_dim(model_name)
 
-    # Resolve cache dir. Prefer caller-supplied; else derive from beq_dir.
+    # Resolve cache dir. Prefer caller-supplied; else derive from beq_shared_dir.
     if cache_dir is None:
         try:
             # Local import — spike helpers are only available on test sys.path.
-            from spike._auto_beq_helpers import beq_dir  # type: ignore
-            cache_dir = beq_dir() / "foundation-embeddings" / model_name
+            from spike._auto_beq_helpers import beq_shared_dir  # type: ignore
+            cache_dir = beq_shared_dir() / "foundation-embeddings" / model_name
         except Exception:
             cache_dir = Path.cwd() / ".foundation-embeddings" / model_name
     cache_dir = Path(cache_dir)
@@ -471,6 +471,7 @@ def extract_foundation_embedding(
                 if model_name not in _FOUNDATION_MODEL_CACHE:
                     log.info("loading foundation model: %s (one-time cost)", model_name)
                     _FOUNDATION_MODEL_CACHE[model_name] = _load_whisper_encoder(size)
+                    log.info("foundation model %s loaded successfully", model_name)
         model = _FOUNDATION_MODEL_CACHE[model_name]
         audio = _read_audio_to_target_sr(source_path, target_sr=16000)
         embedding = _run_whisper_encoder(model, audio, sample_rate=16000)
@@ -1635,6 +1636,36 @@ def _load_ollama_hosts() -> list[str]:
     return [DEFAULT_OLLAMA_HOST]
 
 
+def check_ollama_hosts(hosts: list[str] | None = None, timeout_s: float = 5.0) -> dict:
+    """Check which Ollama hosts are reachable.
+
+    Parameters
+    ----------
+    hosts : list[str] or None
+        Hosts to check. If None, loads from config via ``_load_ollama_hosts()``.
+    timeout_s : float
+        Timeout per host in seconds.
+
+    Returns
+    -------
+    dict
+        ``{"available": [...], "unavailable": [...]}``
+    """
+    if hosts is None:
+        hosts = _load_ollama_hosts()
+    available = []
+    unavailable = []
+    for host in hosts:
+        url = f"{host.rstrip('/')}/api/version"
+        try:
+            req = urllib.request.Request(url, method="GET")
+            urllib.request.urlopen(req, timeout=timeout_s)
+            available.append(host)
+        except Exception:
+            unavailable.append(host)
+    return {"available": available, "unavailable": unavailable}
+
+
 class OllamaAdvisor:
     """Calls Ollama HTTP API(s) for structured advice.
 
@@ -1944,8 +1975,8 @@ def _production_model_default_path() -> "Path | None":
     a minimal install) or if the path simply doesn't exist yet.
     """
     try:
-        from spike._auto_beq_helpers import beq_dir
-        candidate = beq_dir() / "production_model.joblib"
+        from spike._auto_beq_helpers import beq_shared_dir
+        candidate = beq_shared_dir() / "production_model.joblib"
         return candidate if candidate.exists() else None
     except Exception:
         return None
@@ -2092,7 +2123,7 @@ def get_advisor(name: str | None = None) -> Advisor:
         path = os.environ.get("AUTO_BEQ_TORCH_MODEL_PATH")
         if not path:
             try:
-                from spike._auto_beq_helpers import beq_dir as _beq_dir
+                from spike._auto_beq_helpers import beq_shared_dir as _beq_dir
                 default = _beq_dir() / "e85_torch_filter.pt"
                 if default.exists():
                     path = str(default)

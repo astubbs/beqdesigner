@@ -548,10 +548,11 @@ class TestUnifiedCLI:
             env={**dict(__import__("os").environ), "VIRTUAL_ENV": "1"},
         )
         assert result.returncode == 0
-        assert "test" in result.stdout
-        assert "sweep" in result.stdout
-        assert "compare-advisors" in result.stdout
-        assert "playground" in result.stdout
+        assert "train" in result.stdout
+        assert "reassess" in result.stdout
+        assert "evaluate" in result.stdout
+        assert "benchmark" in result.stdout
+        assert "test-advisor" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -618,7 +619,7 @@ class TestExtractConfigValidation:
 
         fetch_called = []
 
-        def mock_fetch(beq_dir):
+        def mock_fetch(beq_shared_dir):
             fetch_called.append(True)
             return []
 
@@ -656,7 +657,7 @@ class TestStartupConfigValidation:
 
         captured = StringIO()
         with patch("cli.main.console", Console(file=captured)):
-            with patch("spike._auto_beq_helpers.beq_dir", return_value=beq):
+            with patch("spike._auto_beq_helpers.beq_shared_dir", return_value=beq):
                 with patch("spike._auto_beq_helpers.wav_cache_dir", return_value=beq / "wav-cache"):
                     monkeypatch.setattr("sys.stdin", StringIO())
                     _validate_config_paths()
@@ -689,7 +690,7 @@ class TestStartupConfigValidation:
 
         captured = StringIO()
         with patch("cli.main.console", Console(file=captured)):
-            with patch("spike._auto_beq_helpers.beq_dir", return_value=beq):
+            with patch("spike._auto_beq_helpers.beq_shared_dir", return_value=beq):
                 with patch("spike._auto_beq_helpers.wav_cache_dir", return_value=wav_cache):
                     _validate_config_paths()
 

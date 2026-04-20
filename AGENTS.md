@@ -21,9 +21,9 @@ duplication introduced by *this* PR, and refactor to remove it
 before the PR merges.
 
 **Run the full default test suite before every commit.** Use
-`bin/beq-designer dev test` (runs `not integration and not experiment`
-markers, ~1 min). This catches cross-module breakage that targeted
-test runs miss. Do not commit if any test fails.
+`poetry run pytest -m "not integration and not experiment"` (~1 min).
+This catches cross-module breakage that targeted test runs miss. Do
+not commit if any test fails.
 
 ### Development discipline
 
@@ -38,6 +38,10 @@ test runs miss. Do not commit if any test fails.
 - **Don't propose workarounds that require user action** when the
   software can solve it. If the software has enough information to
   derive the right answer, it should just do it.
+- **Never hardcode local paths.** All paths must be configurable
+  (env var, settings file, or CLI flag). Never commit paths to
+  specific machines, volume mounts, or user directories. Use
+  `beq_shared_dir()`, `beq_config_dir()`, or env vars instead.
 - **Be DRY.** Reuse existing functions. Don't copy code -- refactor
   where necessary. Extract common patterns into shared utilities.
 - **Use shared libraries, refactor where needed.** When a pattern
@@ -164,8 +168,8 @@ Use the single shared implementations in `spike/_auto_beq_helpers.py`:
 - **Configuration**: `load_settings()` / `save_settings()` — reads/writes
   `~/.config/beqdesigner/settings.json`. Never create separate config files.
 - **Cache directories**: `audio_cache_dir()`, `wav_cache_dir()`,
-  `beq_config_dir()`, `beq_dir()` — single source of truth for paths.
-  `beq_dir()` returns the *shared* (portable) directory; `beq_config_dir()`
+  `beq_config_dir()`, `beq_shared_dir()` — single source of truth for paths.
+  `beq_shared_dir()` returns the *shared* (portable) directory; `beq_config_dir()`
   returns the *local* machine-specific config directory (`~/.config/beqdesigner/`).
   Machine-specific config (like `extract_config.json` with media root paths)
   lives in the local dir; portable data (wav-cache, catalogue, inventory) lives
@@ -354,10 +358,16 @@ bin/beq-designer --help                 # list all subcommands
 | Path | Purpose |
 |---|---|
 | `bin/beq-designer` | Entry point (executable, auto-enters poetry venv) |
+| `scripts/` | Developer helper scripts (convenience wrappers, not end-user programs) |
 | `build/regen_ui.py` | Build tool: regenerate Python from Qt `.ui` files |
 | `docker/Dockerfile` | Docker image for NAS deployment |
 | `docker/docker-compose.example.yml` | Example compose config |
 | `experiments/*.py` | One-off experiment runners (E85-E87, tier1 comparison) |
+
+**`bin/` vs `scripts/`**: `bin/` is exclusively for end-user programs.
+Developer convenience scripts (test runners, code generators, CI
+helpers) go in `scripts/`. Do not add developer-only executables to
+`bin/`.
 
 ## Docker (NAS LFE extraction)
 
@@ -405,9 +415,11 @@ docker build -f docker/Dockerfile -t beq-extract .
 docker save beq-extract | ssh nas docker load
 ```
 
-## Running spike tests
+## Running tests
 
-**Use `bin/beq-designer dev test` to run spike tests.**
+**Use `poetry run pytest` to run tests.** The `pythonpath` setting in
+`pyproject.toml` ensures both `src/main/python` and `src/test/python`
+are on the import path automatically.
 
 ### Three test groups (pytest markers)
 
@@ -416,9 +428,17 @@ default group**; the other two are opt-in.
 
 | Command | Marker filter | Runtime | When to use |
 |---|---|---|---|
-| `bin/beq-designer dev test` | `not integration and not experiment` (default) | ~1 min | Every iteration, CI, pre-commit. Hermetic — no media scans, no network, no model retraining. |
-| `bin/beq-designer dev test --integration` | `integration` | minutes | Verifying code that touches real external resources (media files, TMDb API, Ollama hosts, library sweep config). Tests skip if their resources aren't configured locally. |
-| `bin/beq-designer dev test --experiments` | `experiment` | **minutes to hours** | Reproducing or iterating on F/G/H/I experiment batches, real-audio training (E77/E82), chunked-strategy comparison. Not for CI. |
+| `poetry run pytest -m "not integration and not experiment"` | default | ~1 min | Every iteration, CI, pre-commit. Hermetic - no media scans, no network, no model retraining. |
+| `poetry run pytest -m integration` | integration | minutes | Verifying code that touches real external resources (media files, TMDb API, Ollama hosts, library sweep config). Tests skip if their resources aren't configured locally. |
+| `poetry run pytest -m experiment` | experiment | **minutes to hours** | Reproducing or iterating on F/G/H/I experiment batches, real-audio training (E77/E82), chunked-strategy comparison. Not for CI. |
+
+**Note:** torch tests (`test_auto_beq_torch.py`) should run in a
+separate pytest invocation to avoid a segfault caused by torch + PyQt6
+in the same process on macOS (MPS conflict):
+```bash
+poetry run pytest --ignore=src/test/python/spike/test_auto_beq_torch.py -m "not integration and not experiment"
+poetry run pytest src/test/python/spike/test_auto_beq_torch.py
+```
 
 ### Marker rules
 
@@ -430,42 +450,27 @@ Markers are registered in `pyproject.toml` under `[tool.pytest.ini_options]`. Ad
 
 ### Env vars
 
-| Var / CLI flag | Purpose | Default |
+| Var | Purpose | Default |
 |---|---|---|
-| `--file` | pytest selector (file path or nodeid) | `src/test/python/spike/` (all) |
-| `--advisor` / `AUTO_BEQ_ADVISOR` | advisor impl: heuristic / mock / ollama / measurement | `measurement` |
-| `--verbose` / `SPIKE_VERBOSE=1` | enables `-s` (no capture) | off |
+| `AUTO_BEQ_ADVISOR` | advisor impl: heuristic / mock / ollama / measurement | `measurement` |
 | `AUTO_BEQ_MODEL_PATH` | path to production model file | auto-detected |
-| `SPIKE_MARKERS` | override marker filter (advanced) | `not integration and not experiment` |
-| `BEQ_SHARED_DIR` | shared BEQ directory (wav-cache, catalogue, inventory) — **required** | from `shared_beq_dir` in settings.json |
+| `BEQ_SHARED_DIR` | shared BEQ directory (wav-cache, catalogue, inventory) - **required** | from `shared_beq_dir` in settings.json |
 
 ```bash
-# All spike tests
-bin/beq-designer dev test
+# Default test suite (unit tests only)
+poetry run pytest -m "not integration and not experiment"
 
 # Specific test file
-bin/beq-designer dev test --file src/test/python/spike/test_auto_beq.py
+poetry run pytest src/test/python/spike/test_auto_beq.py -v
 
 # Single test
-bin/beq-designer dev test --file 'src/test/python/spike/test_auto_beq.py::test_synthetic_roundtrip'
+poetry run pytest 'src/test/python/spike/test_auto_beq.py::test_synthetic_roundtrip' -v
 
-# With specific advisor and verbose output
-bin/beq-designer dev test --advisor measurement --verbose
+# Integration tests (opt-in, needs real media/TMDb/Ollama)
+poetry run pytest -m integration
 
-# Run sweep pipeline
-bin/beq-designer dev sweep --limit 3 --advisor measurement
-```
-
-Run integration tests (opt-in, needs real media/TMDb/Ollama):
-
-```bash
-bin/beq-designer dev test --integration
-```
-
-Run experiment tests (opt-in, minutes to hours):
-
-```bash
-bin/beq-designer dev test --experiments --file src/test/python/spike/test_auto_beq_nn_experiments.py
+# Experiment tests (opt-in, minutes to hours)
+poetry run pytest -m experiment src/test/python/spike/test_auto_beq_nn_experiments.py
 ```
 
 
@@ -482,3 +487,8 @@ Additional test discipline:
 - Run the complete test suite periodically, not just targeted tests.
 - Maintain good high-level test coverage. Only get detailed on
   particularly complex functions that benefit from fine-grained testing.
+- **Evaluate every diagnostic script for becoming a test.** If you
+  write a one-off script to investigate a bug or verify behavior,
+  assess whether it should be a permanent test before moving on.
+  Keep it if it verifies behavior that could regress. Drop it if
+  it was a one-time check (file exists, print a value).

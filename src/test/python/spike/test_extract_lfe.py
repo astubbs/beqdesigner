@@ -1183,16 +1183,16 @@ def test_extract_config_uses_local_config_dir(tmp_path, monkeypatch):
         lambda: local_config,
     )
 
-    beq_dir = tmp_path / "shared_beq"
-    beq_dir.mkdir()
+    beq_shared_dir = tmp_path / "shared_beq"
+    beq_shared_dir.mkdir()
 
-    # Should NOT look in beq_dir for extract_config.json.
-    result = extract_mod_static._load_or_prompt_config(beq_dir, None)
+    # Should NOT look in beq_shared_dir for extract_config.json.
+    result = extract_mod_static._load_or_prompt_config(beq_shared_dir, None)
     assert result["media_roots"] == [Path("/test/media")]
 
 
 # ---------------------------------------------------------------------------
-# beq_dir() — resolution order tests
+# beq_shared_dir() — resolution order tests
 # ---------------------------------------------------------------------------
 
 
@@ -1204,7 +1204,7 @@ def test_beq_dir_resolves_from_BEQ_SHARED_DIR(tmp_path, monkeypatch):
     monkeypatch.setenv("BEQ_SHARED_DIR", str(target))
     # Clear BEQ_DIR to avoid interference.
     monkeypatch.delenv("BEQ_DIR", raising=False)
-    assert helpers.beq_dir() == target
+    assert helpers.beq_shared_dir() == target
 
 
 def test_beq_dir_resolves_from_shared_beq_dir_setting(tmp_path, monkeypatch):
@@ -1228,17 +1228,17 @@ def test_beq_dir_resolves_from_shared_beq_dir_setting(tmp_path, monkeypatch):
         json.dumps(settings)
     )
 
-    assert helpers.beq_dir() == target
+    assert helpers.beq_shared_dir() == target
 
 
 def test_beq_dir_errors_when_not_configured(tmp_path, monkeypatch):
-    """beq_dir() raises RuntimeError when nothing is configured."""
+    """beq_shared_dir() raises RuntimeError when nothing is configured."""
     from spike import _auto_beq_helpers as helpers
     monkeypatch.delenv("BEQ_SHARED_DIR", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "fakehome")
 
     with pytest.raises(RuntimeError, match="not configured"):
-        helpers.beq_dir()
+        helpers.beq_shared_dir()
 
 
 
@@ -1250,7 +1250,7 @@ def test_beq_dir_errors_when_not_configured(tmp_path, monkeypatch):
 class TestWavCacheDirResolution:
     """wav_cache_dir() should auto-derive from BEQ_SHARED_DIR."""
 
-    def test_derives_from_beq_shared_dir(self, tmp_path, monkeypatch):
+    def test_derives_from_beq_beq_shared_dir(self, tmp_path, monkeypatch):
         """When BEQ_SHARED_DIR is set, wav_cache_dir returns {shared}/wav-cache."""
         from spike import _auto_beq_helpers as helpers
         monkeypatch.setenv("BEQ_SHARED_DIR", str(tmp_path))

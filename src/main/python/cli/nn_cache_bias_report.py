@@ -92,14 +92,14 @@ def _load_inventory(inventory_path: Path | None) -> dict | None:
 
     **Fail-fast semantics**: if the caller explicitly passes an
     ``inventory_path``, the file must exist.  Only the default fallback
-    path (``{beq_dir}/media_inventory.json``) is tolerated as missing
+    path (``{beq_shared_dir}/media_inventory.json``) is tolerated as missing
     (returns ``None``).
     """
     explicit = inventory_path is not None
     if inventory_path is None:
         try:
-            from spike._auto_beq_helpers import beq_dir
-            _beq = beq_dir()
+            from spike._auto_beq_helpers import beq_shared_dir
+            _beq = beq_shared_dir()
         except RuntimeError:
             _beq = Path.home() / "Downloads" / "beqdesigner"
         inventory_path = _beq / "media_inventory.json"
