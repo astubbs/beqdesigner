@@ -5,15 +5,22 @@ import os
 from enum import Enum
 
 import qtawesome as qta
-from qtpy import QtWidgets, QtCore
-from qtpy.QtCore import Qt, QObject, QRunnable, QThread, Signal, QThreadPool
-from qtpy.QtGui import QIcon
-from qtpy.QtWidgets import QDialog, QStatusBar, QFileDialog
-
-from model.ffmpeg import Executor, parse_audio_stream, ViewProbeDialog, SIGNAL_CONNECTED, SIGNAL_ERROR, \
-    SIGNAL_COMPLETE, SIGNAL_CANCELLED, FFMpegDetailsDialog
-from model.preferences import EXTRACTION_OUTPUT_DIR, EXTRACTION_BATCH_FILTER, ANALYSIS_TARGET_FS
+from model.ffmpeg import (
+    SIGNAL_CANCELLED,
+    SIGNAL_COMPLETE,
+    SIGNAL_CONNECTED,
+    SIGNAL_ERROR,
+    Executor,
+    FFMpegDetailsDialog,
+    ViewProbeDialog,
+    parse_audio_stream,
+)
+from model.preferences import ANALYSIS_TARGET_FS, EXTRACTION_BATCH_FILTER, EXTRACTION_OUTPUT_DIR
 from model.spin import StoppableSpin, stop_spinner
+from qtpy import QtCore, QtWidgets
+from qtpy.QtCore import QObject, QRunnable, Qt, QThread, QThreadPool, Signal
+from qtpy.QtGui import QIcon
+from qtpy.QtWidgets import QDialog, QFileDialog, QStatusBar
 from ui.batch import Ui_batchExtractDialog
 
 logger = logging.getLogger('batch')
@@ -53,7 +60,7 @@ class BatchExtractDialog(QDialog, Ui_batchExtractDialog):
             self.threads.setMaximum(core_count)
             self.threads.setValue(core_count)
         except Exception as e:
-            logger.warning(f"Unable to get cpu_count()", e)
+            logger.warning("Unable to get cpu_count()", e)
 
     def enable_search(self, search):
         '''
@@ -167,7 +174,7 @@ class BatchExtractDialog(QDialog, Ui_batchExtractDialog):
             self.searchButton.setIcon(qta.icon('fa5s.check'))
             self.__candidates.probe()
         else:
-            self.resultsTitle.setText(f"Results - no matches, try a different search filter")
+            self.resultsTitle.setText("Results - no matches, try a different search filter")
             self.__prepare_search()
 
     def extract(self):
@@ -423,7 +430,7 @@ class ExtractCandidate:
         self.ffmpegProgress = QtWidgets.QProgressBar(dialog.resultsScrollAreaContents)
         self.ffmpegProgress.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.ffmpegProgress.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeading | QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop)
-        self.ffmpegProgress.setProperty(f"value", 0)
+        self.ffmpegProgress.setProperty("value", 0)
         self.ffmpegProgress.setObjectName(f"progress{self.__idx}")
         self.ffmpegProgress.setEnabled(False)
         dialog.resultsLayout.addWidget(self.ffmpegProgress, self.__idx + 1, 8, 1, 1)
@@ -640,10 +647,10 @@ class ExtractCandidate:
         '''
         msg_box = FFMpegDetailsDialog(self.executor.file, self.__dialog)
         if self.__result is None:
-            msg_box.message.setText(f"Command")
+            msg_box.message.setText("Command")
             msg_box.details.setPlainText(self.executor.ffmpeg_cli)
         else:
-            msg_box.message.setText(f"Result")
+            msg_box.message.setText("Result")
             msg_box.details.setPlainText(self.__result)
         msg_box.show()
 

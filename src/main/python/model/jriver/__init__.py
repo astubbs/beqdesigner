@@ -3,9 +3,8 @@ from __future__ import annotations
 from typing import Iterable
 
 import numpy as np
-from scipy.signal import unit_impulse
-
 from model.signal import Signal
+from scipy.signal import unit_impulse
 
 JRIVER_FS: int = 48000
 

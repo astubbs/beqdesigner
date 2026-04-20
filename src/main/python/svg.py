@@ -1,11 +1,19 @@
 import logging
 
-from qtpy.QtCore import QByteArray, QObject, Signal, QRectF, QPoint, QTimer
+from qtpy.QtCore import QByteArray, QObject, QPoint, QRectF, QTimer, Signal
 from qtpy.QtGui import QBrush, QColor, QPalette
 from qtpy.QtSvg import QSvgRenderer
 from qtpy.QtSvgWidgets import QGraphicsSvgItem
-from qtpy.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsItem, QWidget, QGraphicsSceneMouseEvent, \
-    QGraphicsSceneContextMenuEvent, QApplication, QGraphicsSceneHoverEvent
+from qtpy.QtWidgets import (
+    QApplication,
+    QGraphicsItem,
+    QGraphicsScene,
+    QGraphicsSceneContextMenuEvent,
+    QGraphicsSceneHoverEvent,
+    QGraphicsSceneMouseEvent,
+    QGraphicsView,
+    QWidget,
+)
 
 logger = logging.getLogger('svg')
 

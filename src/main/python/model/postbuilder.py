@@ -6,14 +6,13 @@ import sys
 
 import qtawesome as qta
 import requests
-from qtpy.QtCore import QRegularExpression, Qt, QCoreApplication
-from qtpy.QtGui import QRegularExpressionValidator, QValidator, QIcon
-from qtpy.QtWidgets import QDialog, QFileDialog
-
 from model.iir import Gain
 from model.merge import DspType
 from model.minidsp import HDXmlParser
-from model.preferences import BEQ_DOWNLOAD_DIR, Preferences, POST_GEOMETRY
+from model.preferences import BEQ_DOWNLOAD_DIR, POST_GEOMETRY, Preferences
+from qtpy.QtCore import QCoreApplication, QRegularExpression
+from qtpy.QtGui import QIcon, QRegularExpressionValidator, QValidator
+from qtpy.QtWidgets import QDialog, QFileDialog
 from ui.postbuilder import Ui_postbuilder
 
 logger = logging.getLogger('postbuilder')
@@ -242,7 +241,8 @@ class CreateAVSPostDialog(QDialog, Ui_postbuilder):
             if self.postTypePicker.currentIndex() == 1:
                 title = result["name"]
                 alt = result["original_name"]
-                if alt != title: self.altTitleField.setText(alt)
+                if alt != title:
+                    self.altTitleField.setText(alt)
                 cr = result.get("content_ratings")
                 if cr is not None:
                     results = cr["results"]
@@ -254,10 +254,12 @@ class CreateAVSPostDialog(QDialog, Ui_postbuilder):
             else:
                 title = result["title"]
                 alt = result["original_title"]
-                if alt != title: self.altTitleField.setText(alt)
+                if alt != title:
+                    self.altTitleField.setText(alt)
                 self.collection = result.get("belongs_to_collection")
                 runtime = result["runtime"]
-                if runtime is not None: self.runtimeField.setText(str(runtime))
+                if runtime is not None:
+                    self.runtimeField.setText(str(runtime))
                 cr = result.get("release_dates")
                 if cr is not None:
                     results = cr["results"]

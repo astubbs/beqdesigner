@@ -1,14 +1,13 @@
 import glob
 import os
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 import matplotlib
 import matplotlib.style as style
 import qtawesome as qta
 from qtpy.QtCore import QSettings
-from qtpy.QtWidgets import QDialog, QFileDialog, QMessageBox, QDialogButtonBox, QLineEdit
-
+from qtpy.QtWidgets import QDialog, QDialogButtonBox, QFileDialog, QLineEdit, QMessageBox
 from ui.preferences import Ui_preferencesDialog
 
 X_RESOLUTION = 32769
@@ -554,7 +553,7 @@ class PreferencesDialog(QDialog, Ui_preferencesDialog):
         '''
         result = QMessageBox.question(self,
                                       'Reset Preferences?',
-                                      f"All preferences will be restored to their default values. This action is irreversible.\nAre you sure you want to continue?",
+                                      "All preferences will be restored to their default values. This action is irreversible.\nAre you sure you want to continue?",
                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                       QMessageBox.StandardButton.No)
         if result == QMessageBox.StandardButton.Yes:
@@ -716,7 +715,7 @@ class PreferencesDialog(QDialog, Ui_preferencesDialog):
     def showDefaultOutputDirectoryPicker(self):
         dialog = QFileDialog(parent=self)
         dialog.setFileMode(QFileDialog.FileMode.Directory)
-        dialog.setWindowTitle(f"Select Extract Audio Output Directory")
+        dialog.setWindowTitle("Select Extract Audio Output Directory")
         if dialog.exec():
             selected = dialog.selectedFiles()
             if len(selected) > 0:
@@ -726,7 +725,7 @@ class PreferencesDialog(QDialog, Ui_preferencesDialog):
         dialog = QFileDialog(parent=self)
         dialog.setFileMode(QFileDialog.FileMode.ExistingFile)
         dialog.setNameFilter("Audio (*.wav)")
-        dialog.setWindowTitle(f"Select Notification Sound")
+        dialog.setWindowTitle("Select Notification Sound")
         if dialog.exec():
             selected = dialog.selectedFiles()
             if len(selected) > 0:
@@ -740,7 +739,7 @@ class PreferencesDialog(QDialog, Ui_preferencesDialog):
         ''' selects an output directory for the beq files '''
         dialog = QFileDialog(parent=self)
         dialog.setFileMode(QFileDialog.FileMode.Directory)
-        dialog.setWindowTitle(f"Select BEQ Files Download Directory")
+        dialog.setWindowTitle("Select BEQ Files Download Directory")
         if dialog.exec():
             selected = dialog.selectedFiles()
             if len(selected) > 0:

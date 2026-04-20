@@ -1,4 +1,5 @@
 # from http://www.musicdsp.org/files/Audio-EQ-Cookbook.txt
+import decimal
 import logging
 import math
 import struct
@@ -6,18 +7,15 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from enum import Enum
 from functools import reduce
-from typing import Optional, List, Callable
+from typing import Callable, List, Optional
 
 import numpy as np
+from model.xy_data import ComplexData
 from scipy import signal
-
-from model.xy import ComplexData
 
 DEFAULT_Q = 1 / math.sqrt(2.0)
 
 logger = logging.getLogger('iir')
-
-import decimal
 
 ctx = decimal.Context()
 ctx.prec = 17
@@ -290,8 +288,9 @@ class Biquad(SOS):
         :return: the transfer function.
         '''
         if self.__transfer_function is None:
-            from model.preferences import X_RESOLUTION
             import time
+
+            from model.preferences import X_RESOLUTION
             start = time.time()
             w, h = signal.freqz(b=self.b, a=self.a, worN=X_RESOLUTION)
             end = time.time()

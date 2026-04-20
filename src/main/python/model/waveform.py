@@ -4,14 +4,12 @@ import math
 import numpy as np
 import qtawesome as qta
 from matplotlib.font_manager import FontProperties
-from qtpy.QtCore import QTime
-from qtpy.QtCore import Qt
+from model.magnitude import MagnitudeModel
+from model.preferences import BASS_MANAGEMENT_LPF_FS, BM_LPF_OPTIONS, STYLE_IMAGE_FORMAT_DEFAULT
+from model.signal import SIGNAL_CHANNEL, SIGNAL_SOURCE_FILE, SignalDialog, SingleChannelSignalData
+from qtpy.QtCore import Qt, QTime
 from qtpy.QtGui import QFont
 from qtpy.QtWidgets import QDialog
-
-from model.magnitude import MagnitudeModel
-from model.preferences import BM_LPF_OPTIONS, BASS_MANAGEMENT_LPF_FS, STYLE_IMAGE_FORMAT_DEFAULT
-from model.signal import SignalDialog, SIGNAL_SOURCE_FILE, SIGNAL_CHANNEL, SingleChannelSignalData
 from ui.stats import Ui_signalStatsDialog
 
 logger = logging.getLogger('waveform')
@@ -316,7 +314,7 @@ class WaveformController:
         if apply is None:
             apply = self.__bm_hpf.isChecked() and self.__bm_hpf.isEnabled()
         if apply is True:
-            from model.iir import FilterType, ComplexHighPass
+            from model.iir import ComplexHighPass, FilterType
             hpf_fs = self.__preferences.get(BASS_MANAGEMENT_LPF_FS)
             post_filt = ComplexHighPass(FilterType.LINKWITZ_RILEY, 4, 1000, hpf_fs)
         return post_filt
@@ -422,7 +420,7 @@ class WaveformModel:
         '''
         exports the waveform chart.
         '''
-        from app import SaveChartDialog, PyQtGraphExportProcessor
+        from app import PyQtGraphExportProcessor, SaveChartDialog
         SaveChartDialog(self.__chart, 'waveform', self.__chart, PyQtGraphExportProcessor(),
                         image_format=self.__prefs.get(STYLE_IMAGE_FORMAT_DEFAULT)).exec()
 
@@ -509,7 +507,7 @@ class WaveformModel:
         Calculates the spectrum view.
         '''
         from app import wait_cursor
-        with wait_cursor(f"Analysing"):
+        with wait_cursor("Analysing"):
             x = np.linspace(0, self.signal.duration_seconds, endpoint=False, num=len(self.signal.samples))
             y = self.signal.samples
             if self.__curve is None:

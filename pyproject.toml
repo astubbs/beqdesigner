@@ -11,31 +11,97 @@ package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.13"
-pyqt6 = "*"
-ffmpeg-python = "*"
-soundfile = "*"
-pyqtgraph = "*"
-numpy = "*"
-scipy = "*"
-qtpy = "*"
-qtawesome = "*"
-sortedcontainers = "*"
-pillow = "*"
-requests = "*"
-awesomeversion = "*"
-markdown = "*"
-plumbum = "*"
-graphviz = "*"
-sanitize-filename = "*"
-matplotlib = "*"
-soxr = "*"
+pyqt6 = "^6.10"
+ffmpeg-python = "^0.2"
+soundfile = "^0.13"
+pyqtgraph = "^0.14"
+numpy = "^2.4"
+scipy = "^1.17"
+qtpy = "^2.4"
+qtawesome = "^1.4"
+sortedcontainers = "^2.4"
+pillow = "^12.1"
+requests = "^2.32"
+awesomeversion = "^25.8"
+markdown = "^3.10"
+plumbum = "^1.10"
+graphviz = "^0.21"
+sanitize-filename = "^1.2"
+matplotlib = "^3.10"
+soxr = "^1.0"
+typer = "^0.15"
+rich = "^14.0"
+InquirerPy = "^0.3"
 
 [tool.poetry.group.dev.dependencies]
-pytest = "*"
-pytest-cov = "*"
-distro = "*"
-atomicwrites = "*"
-scipy-stubs = "*"
+pytest = "^9.0"
+pytest-cov = "^7.0"
+pytest-qt = "*"
+distro = "^1.9"
+atomicwrites = "^1.4"
+scipy-stubs = "^1.17"
+ruff = "*"
+mypy = "*"
+xgboost = "^3.2.0"
+scikit-learn = "^1.8.0"
+
+# Opt-in deps for paradigm-shift experiments (E83+) are installed OUTSIDE
+# poetry via `pip --no-deps` in the existing venv. Reason: openai-whisper
+# pins torch<2.2 which conflicts with the torch 2.11 already installed
+# for other project deps, and poetry's resolver can't reconcile them.
+# `pip --no-deps` keeps the existing torch and only adds the whisper
+# package source (all sub-deps like tiktoken/tqdm/numba were already
+# pulled in by the earlier failed attempt).
+#
+#   poetry run pip install --no-deps openai-whisper  # E83/T1.1
+#   poetry run python3 -c "import whisper; whisper.load_model('tiny')"  # downloads weights
+#
+# CI does not install these. See docs/design/auto_beq_nn_paradigm_shifts.md.
+pytest-forked = "^1.6.0"
+
+[tool.poetry.scripts]
+ui-gen = "build.regen_ui:main"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+extend-exclude = ["src/main/python/ui/*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+# Legacy style warnings we're not fixing in this pass. Remove entries as the
+# codebase is gradually cleaned up -- none of these mask real bugs in Python,
+# but E722 and E741 are worth revisiting later.
+ignore = [
+    "E501",  # line too long (~110 offenders, all pre-existing)
+    "E722",  # bare except (~22 offenders)
+    "E731",  # lambda-assignment
+    "E741",  # ambiguous variable name (l, I, O)
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src/main/python", "src/test/python"]
+# Test classification: tests are unit by default. Opt-in groups live behind
+# markers so CI and `run-spike-tests.sh` can skip them without scanning real
+# media libraries, hitting external APIs, or retraining models from scratch.
+markers = [
+    "integration: needs real external resources (media files, TMDb, Ollama, NAS mounts). Opt-in via run-spike-integration.sh.",
+    "experiment: long-running model training / sweep tests (minutes each). Opt-in via run-spike-experiments.sh.",
+]
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+# Skip following imports so transitively-loaded scipy-stubs doesn't crash
+# the analyzer (known mypy/scipy-stubs incompatibility). Downside: errors
+# are only reported in the explicitly-listed files; expand the list as
+# modules get cleaned up enough to pass cleanly.
+follow_imports = "skip"
+files = [
+    "src/main/python/model/preferences.py",
+    "src/main/python/model/log.py",
+    "src/main/python/model/codec.py",
+]
 
 [build-system]
 requires = ["poetry-core"]
