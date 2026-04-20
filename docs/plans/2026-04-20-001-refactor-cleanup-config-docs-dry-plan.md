@@ -306,18 +306,99 @@ FAQ and experiment log are valid links.
 ## Dependencies
 
 ```
-Unit 1 (iter_cached_wavs) --+
-Unit 2 (migrate discovery)  |-- depends on Unit 1
-Unit 3 (migrate other walks)|-- depends on Unit 1
-Unit 4 (unify config)       -- independent
-Unit 5 (WAV count fix)      -- independent
-Unit 6 (rewrite docs)       -- depends on Units 4 and 5
+[x] Unit 1 (iter_cached_wavs) --+
+[x] Unit 2 (migrate discovery)  |-- DONE
+[x] Unit 3 (migrate other walks)|-- DONE
+[x] Unit 4 (unify config)       -- DONE
+[x] Unit 5 (WAV count fix)      -- DONE
+[x] Unit 6 (rewrite docs)       -- DONE
+[ ] Unit 7 (CI quality gates)   -- independent
 ```
 
-Suggested execution order:
-1. Unit 1 + Unit 4 + Unit 5 in parallel (independent)
-2. Units 2 + 3 (depend on Unit 1)
-3. Unit 6 (depends on 4 and 5)
+---
+
+- [ ] **Unit 7: CI quality gates - duplication, coverage, static analysis**
+
+**Goal:** Add code duplication scanning, coverage gates, and enhanced
+static analysis to the GitHub Actions CI pipeline. Match the quality
+gates from the parallel-consumer project (adapted for Python).
+
+**Requirements:** CI catches duplication introduced by PRs, coverage
+regressions, and code quality issues before merge.
+
+**Dependencies:** None (independent of Units 1-6)
+
+**Files:**
+- Modify: `.github/workflows/test.yaml` - add duplication and
+  coverage gate jobs
+- Create: `.jscpd.json` - jscpd configuration for Python
+- Create: `codecov.yml` - coverage thresholds
+
+**Approach:**
+
+Add six new CI capabilities, modelled on parallel-consumer's
+workflows:
+
+**Quality gates (from maven.yml):**
+
+1. **Code duplication scanning** - use
+   `astubbs/duplicate-code-cross-check@v1` (already used in
+   parallel-consumer). Supports Python via jscpd engine. Configure
+   with Python-appropriate thresholds (5% max duplication). Compares
+   base branch vs PR to catch new clones.
+
+2. **File similarity detection** - use
+   `astubbs/duplicate-code-detection-tool@feat/base-vs-pr-comparison`.
+   Configure for `.py` files, warn at 50% similarity, fail at 80%,
+   max 10% increase allowed, ignore files under 30 lines.
+
+3. **Coverage gates** - add `codecov.yml` with thresholds:
+   - Patch coverage: 80% minimum (new code must be tested)
+   - Project coverage: no more than 1% drop allowed
+   - This uses the existing Codecov integration (already uploads
+     coverage in test.yaml)
+
+4. **Ensure ruff + mypy run in CI** - the current test.yaml has a
+   `lint` job but verify it's correctly configured and running on PRs.
+
+**Claude and PR automation (from parallel-consumer workflows):**
+
+5. **Claude Code Review** - automatic PR review on every PR using
+   `anthropics/claude-code-action@v1` with the `code-review` plugin.
+   Creates `.github/workflows/claude-code-review.yml`. Requires
+   `CLAUDE_CODE_OAUTH_TOKEN` secret.
+
+6. **Claude Code** - `@claude` mentions in issues and PR comments
+   trigger Claude to respond. Creates
+   `.github/workflows/claude.yml`. Same secret.
+
+7. **PR Dependency Check** - use
+   `astubbs/dependencies-action@feat/auto-unblock-children-on-merge`
+   to block child PRs until parent merges (for stacked PRs). Creates
+   `.github/workflows/check-dependencies.yml`. Uses GITHUB_TOKEN.
+
+**Patterns to follow:**
+- `parallel-consumer/.github/workflows/maven.yml` lines 121-162
+  for duplication actions
+- `parallel-consumer/.github/workflows/claude-code-review.yml` for
+  Claude review
+- `parallel-consumer/.github/workflows/claude.yml` for @claude
+  mentions
+- `parallel-consumer/.github/workflows/check-dependencies.yml` for
+  PR dependencies
+- `parallel-consumer/codecov.yml` for coverage gate config
+
+**Test scenarios:**
+- PR with duplicated code block -> CI reports duplication increase
+- PR that drops test coverage -> CI fails with coverage gate
+- PR with ruff/mypy violations -> CI fails in lint job
+- PR opened -> Claude Code Review posts review comments
+- @claude mentioned in PR comment -> Claude responds
+- Stacked PR -> blocked until parent merges
+- Clean PR -> all checks pass
+
+**Verification:** Open a PR on this branch and verify all quality
+gates run and post results.
 
 ## Risks & Dependencies
 

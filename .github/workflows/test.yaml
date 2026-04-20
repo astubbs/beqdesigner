@@ -25,6 +25,50 @@ defaults:
   run:
     shell: bash
 jobs:
+  # --- Code quality gates (PR only) ---
+
+  duplicate-detection:
+    if: github.event_name == 'pull_request'
+    name: Duplicate Code Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: astubbs/duplicate-code-cross-check@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          directories: 'src/main/python src/test/python'
+          cpd-max-duplication: '5'
+          jscpd-max-duplication: '4'
+
+  file-similarity:
+    if: github.event_name == 'pull_request'
+    name: File Similarity Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: astubbs/duplicate-code-detection-tool@feat/base-vs-pr-comparison
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          directories: 'src/main/python,src/test/python'
+          file_extensions: 'py'
+          ignore_below: 30
+          fail_above: 80
+          warn_above: 50
+          one_comment: true
+          compare_with_base: true
+          max_increase: 10
+
+  # --- Existing jobs ---
+
   ui-sync-check:
     name: Qt .ui -> .py drift check
     runs-on: ubuntu-24.04

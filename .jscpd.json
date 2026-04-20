@@ -1,0 +1,13 @@
+{
+  "threshold": 4,
+  "reporters": ["consoleFull"],
+  "ignore": [
+    "**/node_modules/**",
+    "**/.venv/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/__pycache__/**"
+  ],
+  "format": ["python"],
+  "absolute": true
+}
