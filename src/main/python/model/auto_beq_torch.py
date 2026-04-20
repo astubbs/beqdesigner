@@ -389,7 +389,16 @@ class BiquadResponseLayer:
 
 
 def _maybe_import_nn():
-    """Lazy import of torch.nn so this module can be imported without torch."""
+    """Lazy import of torch.nn so this module can be imported without torch.
+
+    Disables MPS (Metal Performance Shaders) on macOS to prevent SIGSEGV
+    when torch shares a process with scipy/xgboost that also use Metal.
+    E85 uses device="cpu" explicitly, but torch initializes MPS on import
+    regardless. Setting PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 prevents
+    MPS from allocating GPU memory.
+    """
+    import os as _os
+    _os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
     try:
         import torch
         import torch.nn as nn
