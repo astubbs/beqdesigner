@@ -223,6 +223,10 @@ End-user docs live in three places, in priority order:
 3. **`docs/design/*.md`** — internal design + experiment logs. Less
    visible to end users, but the source of truth for "why is the
    model the way it is".
+4. **`docs/solutions/`** — documented solutions to past problems
+   (bugs, best practices, workflow patterns), organized by category
+   with YAML frontmatter (`module`, `tags`, `problem_type`).
+   Relevant when implementing or debugging in documented areas.
 
 Rules:
 
