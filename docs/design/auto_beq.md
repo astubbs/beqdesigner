@@ -25,6 +25,25 @@ production.
 
 ---
 
+> **Note:** Parts of this document are outdated (it still says "spike,
+> not shipped"). The system has evolved significantly. See
+> [FAQ and Glossary](../faq.md) for current terminology and
+> [the experiment log](auto_beq_experiments.md) for the latest results.
+
+## Evaluation modes
+
+The system has two evaluation modes for measuring model quality:
+
+- **Reassess** (`dev reassess`) - trains each experiment approach from
+  scratch on an 80/20 held-out split and compares them. Measures
+  generalisation. Use during research.
+- **Evaluate** (`dev evaluate`) - loads the saved production model and
+  runs it on all catalogue-matched titles. Measures real-world
+  performance. Use for quality assurance.
+
+See the [FAQ](../faq.md#dev-reassess-vs-dev-evaluate) for detailed
+guidance on when to use each.
+
 ## 1. Overview
 
 Extend BEQDesigner with automated IIR filter suggestion. Goal: a user loads

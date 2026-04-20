@@ -421,32 +421,92 @@ U5/U6 are output formatting changes verified visually by running `bin/beq-design
 
 ### U11: Full-library evaluation against ground truth
 
-**Goal:** Build a proper evaluation pipeline that runs each experiment/advisor on ALL catalogue-matched titles (not just the 113-title test split) and produces a comprehensive comparison report.
+**Goal:** Replace the current `dev evaluate` pytest wrapper with a proper evaluation pipeline that loads the production model, runs it on ALL catalogue-matched titles, compares predictions against ground truth, and produces a comprehensive report.
+
+**Requirements:**
+- R7: Evaluate production model against all catalogue-matched WAVs, not just the test split
+- R8: Report per-title, per-author, and aggregate dB error with train/held-out labels
+- R9: Persist results as CSV + JSON for cross-run comparison
+- R10: Prompt user to retrain before evaluating if model is stale
 
 **The gap today:**
-- `dev reassess` (tier1 comparison) only evaluates on a 113-title test split
-- `dev sweep` runs an advisor across the library but doesn't compare against ground truth
-- Nobody has systematically evaluated whether the winning model (E85 at 2.27 dB on 113 titles) actually performs well across all 563 matched titles
+- `dev reassess` only evaluates on 113 held-out titles (research metric)
+- The old `dev evaluate` (was `dev sweep`) shells out to a pytest that runs an advisor on the media library but doesn't use `downstream_loss()` or compare against catalogue filters systematically
+- No way to know how the production model performs across the full 563-title matched set
 
-**What "evaluate" should do:**
-1. Take all WAV-catalogue matched pairs (563 titles) - only titles with BEQ catalogue entries, since unmatched titles have no ground truth to assess against
-2. For each approach (E82/E83/E84/E85), generate predicted filters
-3. Compare each prediction against the catalogue's hand-written filters using `downstream_loss()`
-4. Produce a report: per-title dB error, per-author breakdown, worst performers, distribution histogram
-5. Persist results to a CSV/JSON so runs can be compared over time
+**Key difference from reassess:**
+- Reassess: trains from scratch, evaluates on held-out split. "Which approach generalises best?" (research)
+- Evaluate: loads saved production model, evaluates on ALL matched titles. "How does the deployed model perform on my library?" (QA)
 
-**Key difference from reassess:** Reassess trains and evaluates on a held-out split (controlled experiment). Evaluate runs the already-trained models on the full matched set (production readiness check). They answer different questions:
-- Reassess: "which training approach learns best?" (research)
-- Evaluate: "how does the production model actually perform on my library?" (quality assurance)
+**Dependencies:** U10 (command already renamed to `dev evaluate`)
 
 **Files:**
 - Create: `src/main/python/cli/evaluate.py` - full-library evaluation pipeline
-- Modify: `src/main/python/cli/main.py` - wire up `dev evaluate` command
-- Modify: `AGENTS.md` - document the command
+- Modify: `src/main/python/cli/main.py` - replace the pytest-wrapper `dev_evaluate` with a call to the new pipeline
+- Modify: `AGENTS.md` - document the command in CLI module table
+- Test: `src/test/python/spike/test_evaluate.py`
 
-**Report should flag training vs held-out titles:** Each title in the report should be marked as "train" or "held-out" so the user can see whether performance differs between titles the model saw during training and titles it didn't. A gap between the two groups is a sign of overfitting.
+**Approach:**
 
-**Verification:** `bin/beq-designer dev evaluate` produces a per-title report across all 563 matched titles with mean/max/per-author dB error, with train/held-out labels.
+The pipeline has five stages:
+
+1. **Load model** - Load `production_model.joblib` (XGBoost/E82) from `beq_shared_dir()`. Check staleness via `check_training_staleness()` from `model/model_metadata.py`. If stale, prompt user: "Training data has changed since the model was trained. Retrain first? [y/N]". Default No - proceed with saved model. Also attempt to load `e85_torch_filter.pt` if present (for E85 comparison column).
+
+2. **Discover WAV-catalogue pairs** - Use `discover_wav_catalogue_pairs_cached()` from `_auto_beq_helpers.py` (same as reassess). Filter to pairs where `catalogue_entry` has filters.
+
+3. **Extract features + predict** - Use `_extract_features_parallel()` for feature extraction (ThreadPoolExecutor, same as reassess). Then for each title, call `model.predict(feature_vector)` to get predicted filters. Also run E85 predictor if loaded. Use `ProgressLogger` for both extraction and prediction.
+
+4. **Score against ground truth** - For each title, call `downstream_loss(predicted_filters, catalogue_filters, DEFAULT_GRID)` to get the dB error. This is the same metric reassess uses.
+
+5. **Reconstruct train/held-out membership** - Reproduce the same stratified split logic from `run_tier1_comparison.py` (same `random_state=42`, same severity classification, same `train_test_split` call). This determines which titles the model saw during training. Label each result row as "train" or "held-out".
+
+**Report output (three formats):**
+
+Console (Rich table):
+```
+PRODUCTION MODEL EVALUATION - 563 titles (448 train, 113 held-out)
+Model: production_model.joblib (trained 2026-04-18, 2 days ago)
+
+  Title                     Author      Split     E82 dB   E85 dB
+  ---------------------------------------------------------------
+  Dune (2021)               aron7awol   held-out    1.23     0.95
+  Mad Max: Fury Road        mobe1969    train       2.45     1.80
+  ...
+
+  Summary:
+                  E82 mean    E85 mean
+  All (563)         2.82        2.27
+  Train (448)       2.65        2.10
+  Held-out (113)    3.14        2.65
+  Gap (train-held)  0.49        0.55   <-- overfitting indicator
+
+  Per-author:
+  ...
+
+  Worst 10 titles:
+  ...
+```
+
+CSV: `{beq_shared_dir}/evaluation_results.csv` - one row per title with columns: title, author, tmdb_id, split, e82_loss_db, e85_loss_db, catalogue_filter_count, catalogue_summed_gain_db
+
+JSON: `{beq_shared_dir}/evaluation_results.json` - full structured output including metadata, per-title results, and summary statistics
+
+**Patterns to follow:**
+- `experiments/run_tier1_comparison.py` for the feature extraction + evaluation loop
+- `model/model_metadata.py` for `load_model_metadata()` and `check_training_staleness()`
+- `cli/nn_report.py` for CLI report module structure
+- `model/media_utils.py` `ProgressLogger` for progress reporting
+
+**Test scenarios:**
+- Happy path: mock model + 5 synthetic WAV pairs -> produces report with correct columns
+- Happy path: train/held-out split labels match the stratified split logic
+- Edge case: no production model found -> clear error with retrain instruction
+- Edge case: E85 model not found -> runs E82 only, notes "E85 not available"
+- Edge case: zero catalogue-matched pairs -> clear error "no matched pairs found"
+- Error path: corrupt model file -> clear error, not a crash
+- Integration: summary statistics (mean, max) match manual calculation from per-title losses
+
+**Verification:** `bin/beq-designer dev evaluate` produces per-title CSV + JSON + console table across all matched titles, with train/held-out labels and overfitting gap metric.
 
 ---
 
@@ -454,44 +514,55 @@ U5/U6 are output formatting changes verified visually by running `bin/beq-design
 
 **Goal:** Make the distinction between reassess (research) and evaluate (QA) unmissable in all user-facing surfaces: CLI help, docs, FAQ, and the output of each command itself.
 
-**The distinction:**
-- **Reassess** trains models from scratch and tests on a held-out split the model has never seen. Answers: "which training approach generalises best?" Used during research/experimentation.
-- **Evaluate** runs already-trained production models on all catalogue-matched titles. Answers: "how does the production model actually perform on my library?" Used for quality assurance before deploying a model.
+**Requirements:** R7-R10 (from U11), plus user request for clear documentation
 
-Both are needed:
-- If evaluate looks great but reassess shows poor generalisation, the model has overfit
-- If reassess looks great but evaluate shows bad results on specific titles, there are coverage gaps
-
-**Where to document:**
-- `src/main/python/cli/main.py` - help text for `dev reassess` and `dev evaluate` must explain the difference in one sentence each
-- `docs/faq.md` (from U9) - full explanation with examples of when to use each
-- `docs/design/auto_beq.md` - architecture section explaining the two evaluation modes
-- Output of each command - the header banner should state what mode it's in and why:
-  - Reassess: "Training and evaluating on an 80/20 held-out split. This measures how well each approach generalises to unseen titles."
-  - Evaluate: "Running the production model on all 563 catalogue-matched titles. This measures real-world performance on your library. Titles marked (train) were used during training; (held-out) titles were not."
+**Dependencies:** U9 (FAQ exists), U10 (command names finalised), U11 (evaluate pipeline exists)
 
 **Files:**
-- Modify: `src/main/python/cli/main.py` - help text for both commands
+- Modify: `src/main/python/cli/main.py` - help text for `dev reassess` and `dev evaluate`
 - Modify: `experiments/run_tier1_comparison.py` - header banner clarification
-- Modify: `docs/faq.md` (created in U9) - reassess vs evaluate section
+- Modify: `src/main/python/cli/evaluate.py` - header banner in evaluate output
+- Modify: `docs/faq.md` - reassess vs evaluate section (already partially written)
 - Modify: `docs/design/auto_beq.md` - evaluation modes section
 
-## Updated Dependencies
+**Approach:**
+
+CLI help text (one sentence each):
+- `dev reassess`: "Train all experiment approaches from scratch and compare on a held-out test split. Measures generalisation - which approach learns best."
+- `dev evaluate`: "Run the saved production model on all catalogue-matched titles. Measures real-world performance - how the deployed model performs on your library."
+
+Output banners:
+- Reassess header: "Training and evaluating on an 80/20 held-out split (seed=42). This measures how well each approach generalises to titles it has never seen during training."
+- Evaluate header: "Evaluating the production model on all N catalogue-matched titles. Titles marked (train) were used during model training; (held-out) titles were not. A large gap between train and held-out performance indicates overfitting."
+
+FAQ update: the `dev reassess vs dev evaluate` section already has the conceptual explanation. Add concrete examples of when to use each:
+- "Just extracted 50 new WAVs" -> retrain, then reassess, then evaluate
+- "Want to check if model is good enough for my library" -> evaluate
+- "Trying a new experiment approach" -> reassess
+
+**Test scenarios:**
+- `dev reassess --help` contains "held-out" and "generalisation"
+- `dev evaluate --help` contains "production model" and "catalogue-matched"
+- FAQ contains both terms with distinct definitions
+
+**Verification:** A developer reading only the CLI help or only the FAQ can explain the difference between reassess and evaluate.
+
+## Dependencies and Status
 
 ```
-U0 (test infra)        -- first: unblocks running tests for all other units
-U1 (metadata banner)  --+
-U2 (champion history) --+-- can run in parallel, all modify run_tier1_comparison.py
-U3 (staleness check)  --+   but in distinct sections (header, results, startup)
-U4 (Whisper cache fix)  -- independent (auto_beq_advisor.py only)
-U5 (WAV count clarity)  -- independent (output formatting in run_tier1_comparison.py)
-U6 (one-episode explain) -- combine with U5 (same output section)
-U7 (logging unification) -- independent (cli/main.py + logging config)
-U8 (Ollama fail-fast)    -- independent (advisor + cli)
-U9 (FAQ/docs)            -- independent (docs)
-U10 (rename commands)    -- independent (cli/main.py)
-U11 (full evaluation)    -- depends on U10 (uses the renamed evaluate command)
-U12 (document reassess vs evaluate) -- depends on U9 (FAQ), U10 (names), U11 (evaluate exists)
+[x] U0  (test infra)        -- DONE
+[x] U1  (metadata banner)   -- DONE
+[x] U2  (champion history)  -- DONE
+[x] U3  (staleness check)   -- DONE
+[x] U4  (Whisper spam fix)  -- DONE (root cause: ImportError caught per-sample)
+[x] U5  (WAV count clarity) -- DONE
+[x] U6  (one-episode explain) -- DONE
+[x] U7  (logging unification) -- DONE
+[x] U8  (Ollama fail-fast)  -- DONE
+[x] U9  (FAQ/docs)          -- DONE
+[x] U10 (rename commands)   -- DONE
+[ ] U11 (full evaluation)   -- depends on U10
+[ ] U12 (document reassess vs evaluate) -- depends on U9, U10, U11
 ```
 
 ## Future: CLI and UI menu consistency

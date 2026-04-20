@@ -506,27 +506,22 @@ def _check_ollama_if_needed(advisor: str) -> None:
 
 @dev_app.command(name="evaluate")
 def dev_evaluate(
-    limit: int = typer.Option(10, "--limit", help="Max files to process."),
-    parallel: bool = typer.Option(False, "--parallel", help="Run in parallel across Ollama hosts."),
-    advisor: str = typer.Option("measurement", "--advisor", help="Advisor implementation."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip retrain prompt (proceed with current model)."),
 ) -> None:
-    """Evaluate an advisor across the media library.
+    """Evaluate the production model on all catalogue-matched titles.
 
-    Runs the selected advisor on discovered media files and measures
-    performance against BEQ catalogue ground truth.
+    Loads the saved production model, runs it on ALL catalogue-matched
+    WAVs, compares predictions against BEQ catalogue ground truth using
+    downstream_loss(), and produces a comprehensive report with
+    train/held-out labels and overfitting gap metric.
+
+    Outputs: console table + CSV + JSON in the BEQ shared directory.
     """
-    _check_ollama_if_needed(advisor)
-    test_module = "src/test/python/spike/test_auto_beq_library_sweep.py"
-    test_func = "test_library_sweep_parallel" if parallel else "test_library_sweep"
-    env = {
-        **os.environ,
-        "AUTO_BEQ_SWEEP_LIMIT": str(limit),
-        "AUTO_BEQ_ADVISOR": advisor,
-    }
-    subprocess.run(
-        ["poetry", "run", "pytest", f"{test_module}::{test_func}", "-v", "-s"],
-        env=env, cwd=str(REPO_ROOT),
-    )
+    argv: list[str] = []
+    if yes or os.environ.get("BEQ_AUTO_YES") == "1":
+        argv.append("--yes")
+    from cli.evaluate import main as evaluate_main
+    evaluate_main(argv)
 
 
 @dev_app.command(name="benchmark")
@@ -586,11 +581,15 @@ def dev_train_torch() -> None:
 
 @dev_app.command(name="reassess")
 def dev_reassess() -> None:
-    """Run all experiment paradigms (E82/E83/E84/E85) on the current WAV cache.
+    """Train all experiment approaches and compare on a held-out test split.
 
-    Produces a leaderboard showing which technique is champion with the
-    latest training data. Uses the same 80/20 stratified split across
-    all experiments for a fair comparison.
+    Measures generalisation: trains E82/E83/E84/E85 from scratch and
+    evaluates on titles the models have never seen (80/20 stratified
+    split, seed=42). Use this during research to determine which
+    training approach learns best.
+
+    For production QA (how the deployed model performs on your full
+    library), use 'dev evaluate' instead.
     """
     import sys as _sys
     # Find repo root via git.

@@ -97,6 +97,20 @@ Both are needed:
 - If reassess looks great but evaluate shows bad results on specific
   titles, there are coverage gaps in the training data
 
+**When to use which:**
+
+| Scenario | Command |
+|---|---|
+| "Just extracted 50 new WAVs" | `dev train` (retrain), then `dev reassess` (does approach still generalise?), then `dev evaluate` (how does it perform on the full library?) |
+| "Want to check if model is good enough for my library" | `dev evaluate` |
+| "Trying a new experiment approach" | `dev reassess` |
+| "Model seems to do badly on a specific title" | `dev evaluate` (check per-title error), then `dev test-advisor` on that title |
+
+The evaluate report also shows an **overfitting gap** - the difference
+in mean error between training titles and held-out titles. A large gap
+means the model memorised training titles instead of learning general
+patterns.
+
 ### `dev benchmark`
 
 Runs multiple advisors on the same media library side-by-side for

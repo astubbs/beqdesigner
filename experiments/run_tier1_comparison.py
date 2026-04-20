@@ -67,10 +67,15 @@ def main():
 
     # --- 1. Load + split ---
     log.info("=" * 70)
-    log.info("  TIER 1 UNIFIED COMPARISON")
+    log.info("  TIER 1 REASSESSMENT (research mode)")
     log.info("")
-    log.info("  Trains and evaluates each experiment technique (E82-E85) on")
-    log.info("  the SAME data split so results are directly comparable.")
+    log.info("  Trains each experiment approach (E82-E85) from scratch and")
+    log.info("  evaluates on an 80/20 held-out split (seed=42). This measures")
+    log.info("  how well each approach generalises to titles it has never seen")
+    log.info("  during training.")
+    log.info("")
+    log.info("  For production QA (how the deployed model performs on your")
+    log.info("  full library), use 'dev evaluate' instead.")
     log.info("")
     log.info("  80/20 stratified split means:")
     log.info("    - 80%% of WAVs are used for training, 20%% held out for testing")
