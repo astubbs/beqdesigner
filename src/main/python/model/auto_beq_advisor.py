@@ -428,8 +428,7 @@ def extract_foundation_embedding(
     # Resolve cache dir. Prefer caller-supplied; else derive from beq_shared_dir.
     if cache_dir is None:
         try:
-            # Local import — spike helpers are only available on test sys.path.
-            from spike._auto_beq_helpers import beq_shared_dir  # type: ignore
+            from model.wav_discovery import beq_shared_dir
             cache_dir = beq_shared_dir() / "foundation-embeddings" / model_name
         except Exception:
             cache_dir = Path.cwd() / ".foundation-embeddings" / model_name
@@ -1975,7 +1974,7 @@ def _production_model_default_path() -> "Path | None":
     a minimal install) or if the path simply doesn't exist yet.
     """
     try:
-        from spike._auto_beq_helpers import beq_shared_dir
+        from model.wav_discovery import beq_shared_dir
         candidate = beq_shared_dir() / "production_model.joblib"
         return candidate if candidate.exists() else None
     except Exception:
@@ -2123,7 +2122,7 @@ def get_advisor(name: str | None = None) -> Advisor:
         path = os.environ.get("AUTO_BEQ_TORCH_MODEL_PATH")
         if not path:
             try:
-                from spike._auto_beq_helpers import beq_shared_dir as _beq_dir
+                from model.wav_discovery import beq_shared_dir as _beq_dir
                 default = _beq_dir() / "e85_torch_filter.pt"
                 if default.exists():
                     path = str(default)

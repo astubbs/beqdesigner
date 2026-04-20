@@ -118,14 +118,13 @@ def main(argv: list[str] | None = None):
         train_e84_self_trained,
         train_production_weighted_hybrid,
     )
-    from spike._auto_beq_helpers import (
+    from model.audio_extraction import (
         STRATEGY_BLENDED_07,
         STRATEGY_WELCH,
-        beq_shared_dir,
         cached_extract_features_with_strategy,
-        discover_unmatched_wavs_cached,
-        prepare_training_data,
     )
+    from model.training_data import prepare_training_data
+    from model.wav_discovery import beq_shared_dir, discover_unmatched_wavs_cached
 
     strategy = STRATEGY_BLENDED_07 if args.extraction_strategy == "blend_07" else STRATEGY_WELCH
     feature_config = AudioFeatureConfig(foundation_model=args.foundation_model)
@@ -279,7 +278,7 @@ def main(argv: list[str] | None = None):
 
     # --- Compute WAV cache mtime for staleness detection ---
     try:
-        from spike._auto_beq_helpers import _latest_wav_mtime, wav_cache_dir
+        from model.wav_discovery import _latest_wav_mtime, wav_cache_dir
         metadata["wav_cache_mtime"] = _latest_wav_mtime(wav_cache_dir())
     except Exception:
         metadata["wav_cache_mtime"] = 0.0

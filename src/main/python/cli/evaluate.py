@@ -61,7 +61,7 @@ def _load_production_model(shared_dir: Path, auto_yes: bool = False):
 
     # Check staleness and prompt if needed.
     try:
-        from spike._auto_beq_helpers import _latest_wav_mtime, wav_cache_dir
+        from model.wav_discovery import _latest_wav_mtime, wav_cache_dir
         current_mtime = _latest_wav_mtime(wav_cache_dir())
     except Exception:
         current_mtime = 0.0
@@ -144,7 +144,7 @@ def _evaluate_pipeline(
         labels_to_filters,
     )
     from model.media_utils import ProgressLogger
-    from spike._auto_beq_helpers import prepare_training_data
+    from model.training_data import prepare_training_data
 
     t_global = time.time()
 
@@ -436,7 +436,7 @@ def main(argv: list[str] | None = None):
         )
 
     # Late imports so --help is fast.
-    from spike._auto_beq_helpers import beq_shared_dir
+    from model.wav_discovery import beq_shared_dir
 
     auto_yes = args.yes or os.environ.get("BEQ_AUTO_YES") == "1"
     shared_dir = beq_shared_dir()

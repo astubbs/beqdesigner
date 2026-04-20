@@ -70,7 +70,7 @@ def _load_inventory(inventory_path: Path | None = None) -> dict | None:
     explicit = inventory_path is not None
     if inventory_path is None:
         try:
-            from spike._auto_beq_helpers import beq_shared_dir
+            from model.wav_discovery import beq_shared_dir
             _beq = beq_shared_dir()
         except RuntimeError:
             _beq = Path.home() / "Downloads" / "beqdesigner"
@@ -97,7 +97,7 @@ def generate_report(output=None, inventory_path: Path | None = None) -> None:
     pr = lambda s="": print(s, file=output or sys.stdout)
 
     from model.auto_beq_catalogue import _fetch_or_cache
-    from spike._auto_beq_helpers import discover_wav_catalogue_pairs_cached
+    from model.wav_discovery import discover_wav_catalogue_pairs_cached
 
     catalogue = _fetch_or_cache()
     trainable = [e for e in catalogue if e.get("filters")]

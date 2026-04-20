@@ -63,7 +63,8 @@ def main(argv: list[str] | None = None):
     from model.auto_beq_torch import (
         E85TrainingConfig, save_torch_predictor, train_e85_differentiable_dsp,
     )
-    from spike._auto_beq_helpers import beq_shared_dir, prepare_training_data
+    from model.training_data import prepare_training_data
+    from model.wav_discovery import beq_shared_dir
 
     target_dir = beq_shared_dir()
     output_path = args.output or (target_dir / "e85_torch_filter.pt")

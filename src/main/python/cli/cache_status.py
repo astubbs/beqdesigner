@@ -25,7 +25,7 @@ import logging
 
 logging.basicConfig(level=logging.WARNING)  # suppress noisy logs
 
-from spike._auto_beq_helpers import discover_wav_catalogue_pairs, wav_cache_dir
+from model.wav_discovery import discover_wav_catalogue_pairs, wav_cache_dir
 
 
 def main(argv: list[str] | None = None):
@@ -84,7 +84,7 @@ def main(argv: list[str] | None = None):
     # Check for growth — save/load last count in local config dir.
     # NEVER write to the WAV cache directory itself (would pollute the
     # cache and break mtime-based change detection).
-    from spike._auto_beq_helpers import beq_config_dir
+    from model.wav_discovery import beq_config_dir
     status_file = beq_config_dir() / "cache_status_last.json"
     last = {}
     if status_file.exists():

@@ -34,14 +34,16 @@ from model.auto_beq_nn import (
 from model.iir import HighShelf, LowShelf, PeakingEQ
 from cli.extract import extract_media_id
 from model.wav_cache import cache_path as build_cache_path, find_cached_wav
-from spike._auto_beq_helpers import (
-    beq_config_dir,
-    extract_lfe_wav,
-    extract_features_with_strategy,
-    load_settings,
-    probe_audio_stream,
-    wav_cache_dir,
+from model.audio_extraction import (
     STRATEGY_WELCH,
+    extract_features_with_strategy,
+    extract_lfe_wav,
+    probe_audio_stream,
+)
+from model.wav_discovery import (
+    beq_config_dir,
+    load_settings,
+    wav_cache_dir,
 )
 from spike.sweep_discover import parse_media_filename
 
@@ -187,7 +189,7 @@ def _load_or_train_model() -> tuple[object, str]:
     """
     import os as _os
 
-    from spike._auto_beq_helpers import beq_shared_dir
+    from model.wav_discovery import beq_shared_dir
 
     # --- Tier 1: E85 torch model ---
     advisor_name = _os.environ.get("AUTO_BEQ_ADVISOR", "").lower()

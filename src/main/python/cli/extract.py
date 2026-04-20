@@ -1343,7 +1343,7 @@ def get_configured_media_roots() -> list[Path]:
 
     # 2. Local config file.
     try:
-        from spike._auto_beq_helpers import beq_config_dir
+        from model.wav_discovery import beq_config_dir
         config_path = beq_config_dir() / _CONFIG_NAME
         if config_path.exists():
             data = json.loads(config_path.read_text())
@@ -1362,7 +1362,7 @@ def save_extract_config(media_roots: list[Path]) -> Path:
     Returns the path the config was written to. This is the write side
     of the config service -- get_configured_media_roots() is the read side.
     """
-    from spike._auto_beq_helpers import beq_config_dir
+    from model.wav_discovery import beq_config_dir
     config_path = beq_config_dir() / _CONFIG_NAME
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(
@@ -1383,13 +1383,13 @@ def _load_or_prompt_config(
     (media roots). The shared BEQ directory (wav-cache, catalogue, inventory)
     is separate and portable across machines.
     """
-    from spike._auto_beq_helpers import beq_config_dir
+    from model.wav_discovery import beq_config_dir
 
     beq_shared_dir = beq_dir_arg
     if beq_shared_dir is None:
         # Try to get default from shared config, fall back to ~/beqdesigner.
         try:
-            from spike._auto_beq_helpers import beq_shared_dir as _bd
+            from model.wav_discovery import beq_shared_dir as _bd
             default_beq = str(_bd())
         except Exception:
             default_beq = str(Path.home() / ".config" / "beqdesigner")
@@ -1653,7 +1653,7 @@ def select_unmatched_to_extract(
     # --- Pre-filter: exclude already-cached media ---
     from model.wav_cache import find_cached_wav
     try:
-        from spike._auto_beq_helpers import wav_cache_dir
+        from model.wav_discovery import wav_cache_dir
         wav_root = wav_cache_dir()
     except Exception:
         wav_root = None

@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from spike._auto_beq_helpers import audio_cache_dir, extract_lfe_wav, have_tool
+from model.audio_extraction import extract_lfe_wav, have_tool
+from model.wav_discovery import audio_cache_dir
 
 
 class TestAudioCacheDir:
@@ -45,7 +46,7 @@ class TestAudioCacheDir:
 class TestExtractLfeWavCachePath:
     """Test that cache paths are mirrored correctly under the cache dir.
 
-    These don't run ffmpeg — they test path construction by pre-seeding
+    These don't run ffmpeg - they test path construction by pre-seeding
     the cache with a dummy file and verifying the function finds it.
     """
 
@@ -146,7 +147,7 @@ class TestExtractLfeWavReal:
         # Source directory should NOT have any new .wav files
         source_dir = self.EOT_PATH.parent
         # Note: old cached WAVs from before this change may still be
-        # there — we only assert the NEW extraction went to cache_root.
+        # there - we only assert the NEW extraction went to cache_root.
         assert str(wav_path.parent) != str(source_dir), (
             "WAV was written next to source instead of cache dir"
         )
@@ -163,14 +164,15 @@ class TestCachedExtractFeatures:
     def test_returns_same_result_on_cache_hit(self, monkeypatch, tmp_path):
         """Second call returns the cached result instead of re-extracting."""
         import numpy as np
-        from spike import _auto_beq_helpers as h
-        from spike._auto_beq_helpers import (
+        import model.audio_extraction as ae
+        import model.wav_discovery as wd
+        from model.audio_extraction import (
             STRATEGY_WELCH,
             cached_extract_features_with_strategy,
         )
 
         # Point beq_shared_dir at a tmp cache.
-        monkeypatch.setattr(h, "beq_shared_dir", lambda: tmp_path)
+        monkeypatch.setattr(wd, "beq_shared_dir", lambda: tmp_path)
 
         # Stub the uncached extractor to return a counter-tagged sentinel.
         call_count = {"n": 0}
@@ -179,7 +181,7 @@ class TestCachedExtractFeatures:
             call_count["n"] += 1
             return ("sentinel", call_count["n"], str(wav_path))
 
-        monkeypatch.setattr(h, "extract_features_with_strategy", fake_extract)
+        monkeypatch.setattr(ae, "extract_features_with_strategy", fake_extract)
 
         wav = tmp_path / "fake.wav"
         wav.write_bytes(b"\x00" * 1024)
@@ -196,23 +198,24 @@ class TestCachedExtractFeatures:
         assert call_count["n"] == 1, "uncached extractor should run only once"
 
     def test_invalidates_on_mtime_change(self, monkeypatch, tmp_path):
-        """Touching the WAV bumps its mtime → new cache key → re-extract."""
+        """Touching the WAV bumps its mtime -> new cache key -> re-extract."""
         import time
         import numpy as np
-        from spike import _auto_beq_helpers as h
-        from spike._auto_beq_helpers import (
+        import model.audio_extraction as ae
+        import model.wav_discovery as wd
+        from model.audio_extraction import (
             STRATEGY_WELCH,
             cached_extract_features_with_strategy,
         )
 
-        monkeypatch.setattr(h, "beq_shared_dir", lambda: tmp_path)
+        monkeypatch.setattr(wd, "beq_shared_dir", lambda: tmp_path)
         call_count = {"n": 0}
 
         def fake_extract(wav_path, freqs_hz, fs, strategy):
             call_count["n"] += 1
             return ("result", call_count["n"])
 
-        monkeypatch.setattr(h, "extract_features_with_strategy", fake_extract)
+        monkeypatch.setattr(ae, "extract_features_with_strategy", fake_extract)
 
         wav = tmp_path / "fake.wav"
         wav.write_bytes(b"\x00" * 1024)
@@ -234,13 +237,14 @@ class TestCachedExtractFeatures:
     def test_env_var_disables_cache(self, monkeypatch, tmp_path):
         """``AUTO_BEQ_FEATURE_CACHE=0`` bypasses the cache entirely."""
         import numpy as np
-        from spike import _auto_beq_helpers as h
-        from spike._auto_beq_helpers import (
+        import model.audio_extraction as ae
+        import model.wav_discovery as wd
+        from model.audio_extraction import (
             STRATEGY_WELCH,
             cached_extract_features_with_strategy,
         )
 
-        monkeypatch.setattr(h, "beq_shared_dir", lambda: tmp_path)
+        monkeypatch.setattr(wd, "beq_shared_dir", lambda: tmp_path)
         monkeypatch.setenv("AUTO_BEQ_FEATURE_CACHE", "0")
 
         call_count = {"n": 0}
@@ -249,7 +253,7 @@ class TestCachedExtractFeatures:
             call_count["n"] += 1
             return ("result", call_count["n"])
 
-        monkeypatch.setattr(h, "extract_features_with_strategy", fake_extract)
+        monkeypatch.setattr(ae, "extract_features_with_strategy", fake_extract)
 
         wav = tmp_path / "fake.wav"
         wav.write_bytes(b"\x00" * 1024)
@@ -265,13 +269,13 @@ class TestDiscoveryCache:
 
     def test_cache_hit_returns_cached_pairs(self, monkeypatch, tmp_path):
         """Second call returns the cached pair list without re-walking."""
-        from spike import _auto_beq_helpers as h
-        from spike._auto_beq_helpers import discover_wav_catalogue_pairs_cached
+        import model.wav_discovery as wd
+        from model.wav_discovery import discover_wav_catalogue_pairs_cached
 
         wav_root = tmp_path / "wav-cache"
         wav_root.mkdir()
-        monkeypatch.setattr(h, "beq_shared_dir", lambda: tmp_path)
-        monkeypatch.setattr(h, "wav_cache_dir", lambda: wav_root)
+        monkeypatch.setattr(wd, "beq_shared_dir", lambda: tmp_path)
+        monkeypatch.setattr(wd, "wav_cache_dir", lambda: wav_root)
 
         call_count = {"n": 0}
 
@@ -282,7 +286,7 @@ class TestDiscoveryCache:
                  "tmdb_id": "1", "media_id": "tmdb-1"},
             ]
 
-        monkeypatch.setattr(h, "discover_wav_catalogue_pairs", fake_discover)
+        monkeypatch.setattr(wd, "discover_wav_catalogue_pairs", fake_discover)
 
         r1 = discover_wav_catalogue_pairs_cached()
         r2 = discover_wav_catalogue_pairs_cached()
@@ -296,13 +300,13 @@ class TestDiscoveryCache:
         """Bumping the wav-cache root mtime (as extract_lfe.py does)
         invalidates the discovery cache."""
         import os as _os
-        from spike import _auto_beq_helpers as h
-        from spike._auto_beq_helpers import discover_wav_catalogue_pairs_cached
+        import model.wav_discovery as wd
+        from model.wav_discovery import discover_wav_catalogue_pairs_cached
 
         wav_root = tmp_path / "wav-cache"
         wav_root.mkdir()
-        monkeypatch.setattr(h, "beq_shared_dir", lambda: tmp_path)
-        monkeypatch.setattr(h, "wav_cache_dir", lambda: wav_root)
+        monkeypatch.setattr(wd, "beq_shared_dir", lambda: tmp_path)
+        monkeypatch.setattr(wd, "wav_cache_dir", lambda: wav_root)
 
         call_count = {"n": 0}
 
@@ -310,7 +314,7 @@ class TestDiscoveryCache:
             call_count["n"] += 1
             return [{"wav_path": wav_root / "a.wav", "catalogue_entry": {}, "tmdb_id": "1"}]
 
-        monkeypatch.setattr(h, "discover_wav_catalogue_pairs", fake_discover)
+        monkeypatch.setattr(wd, "discover_wav_catalogue_pairs", fake_discover)
 
         discover_wav_catalogue_pairs_cached()
         assert call_count["n"] == 1
@@ -324,13 +328,13 @@ class TestDiscoveryCache:
 
     def test_env_var_disables_discovery_cache(self, monkeypatch, tmp_path):
         """``AUTO_BEQ_DISCOVERY_CACHE=0`` bypasses the cache entirely."""
-        from spike import _auto_beq_helpers as h
-        from spike._auto_beq_helpers import discover_wav_catalogue_pairs_cached
+        import model.wav_discovery as wd
+        from model.wav_discovery import discover_wav_catalogue_pairs_cached
 
         wav_root = tmp_path / "wav-cache"
         wav_root.mkdir()
-        monkeypatch.setattr(h, "beq_shared_dir", lambda: tmp_path)
-        monkeypatch.setattr(h, "wav_cache_dir", lambda: wav_root)
+        monkeypatch.setattr(wd, "beq_shared_dir", lambda: tmp_path)
+        monkeypatch.setattr(wd, "wav_cache_dir", lambda: wav_root)
         monkeypatch.setenv("AUTO_BEQ_DISCOVERY_CACHE", "0")
 
         call_count = {"n": 0}
@@ -339,7 +343,7 @@ class TestDiscoveryCache:
             call_count["n"] += 1
             return []
 
-        monkeypatch.setattr(h, "discover_wav_catalogue_pairs", fake_discover)
+        monkeypatch.setattr(wd, "discover_wav_catalogue_pairs", fake_discover)
 
         for _ in range(3):
             discover_wav_catalogue_pairs_cached()
@@ -370,10 +374,10 @@ class TestPrepareTrainingData:
 
     def _patch_dependencies(self, monkeypatch, pairs, features_value="fake_features"):
         """Patch out I/O-heavy dependencies with fakes."""
-        from spike import _auto_beq_helpers as h
+        import model.wav_discovery as wd
 
         monkeypatch.setattr(
-            h, "discover_wav_catalogue_pairs_cached", lambda: pairs,
+            wd, "discover_wav_catalogue_pairs_cached", lambda: pairs,
         )
 
         # Mock _extract_features_parallel to return (pair, features) tuples.
@@ -398,7 +402,7 @@ class TestPrepareTrainingData:
         pairs = [self._make_fake_pair(f"Movie{i}") for i in range(10)]
         self._patch_dependencies(monkeypatch, pairs)
 
-        from spike._auto_beq_helpers import prepare_training_data
+        from model.training_data import prepare_training_data
         result = prepare_training_data(fetch_catalogue=False)
 
         assert "pairs" in result
@@ -417,7 +421,7 @@ class TestPrepareTrainingData:
         ]
         self._patch_dependencies(monkeypatch, pairs)
 
-        from spike._auto_beq_helpers import prepare_training_data
+        from model.training_data import prepare_training_data
         result = prepare_training_data(fetch_catalogue=False)
 
         assert len(result["all_real"]) == 2
@@ -428,7 +432,7 @@ class TestPrepareTrainingData:
         """Empty WAV cache raises RuntimeError."""
         self._patch_dependencies(monkeypatch, pairs=[])
 
-        from spike._auto_beq_helpers import prepare_training_data
+        from model.training_data import prepare_training_data
         with pytest.raises(RuntimeError, match="No catalogue-matched WAVs"):
             prepare_training_data()
 
@@ -437,7 +441,7 @@ class TestPrepareTrainingData:
         pairs = [self._make_fake_pair(f"M{i}") for i in range(5)]
         self._patch_dependencies(monkeypatch, pairs)
 
-        from spike._auto_beq_helpers import prepare_training_data
+        from model.training_data import prepare_training_data
         with pytest.raises(RuntimeError, match="need >= 10"):
             prepare_training_data(min_pairs=10)
 
@@ -452,7 +456,7 @@ class TestPrepareTrainingData:
         import model.auto_beq_nn as nn_mod
         monkeypatch.setattr(nn_mod, "deduplicate_by_title", lambda x: x)
 
-        from spike._auto_beq_helpers import prepare_training_data
+        from model.training_data import prepare_training_data
         result = prepare_training_data(split=True)
 
         assert "train_idx" in result
@@ -469,6 +473,6 @@ class TestPrepareTrainingData:
         pairs = [self._make_fake_pair("M0")]
         self._patch_dependencies(monkeypatch, pairs)
 
-        from spike._auto_beq_helpers import prepare_training_data
+        from model.training_data import prepare_training_data
         with pytest.raises(ValueError, match="requires split=True"):
             prepare_training_data(build_feature_vectors=True, split=False)

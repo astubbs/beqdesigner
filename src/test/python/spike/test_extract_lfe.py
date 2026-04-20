@@ -1168,7 +1168,7 @@ def test_inventory_relative_paths_with_different_root(tmp_path, _bypass_min_size
 
 def test_extract_config_uses_local_config_dir(tmp_path, monkeypatch):
     """extract_config.json is loaded from ~/.config/beqdesigner/, not shared dir."""
-    from spike._auto_beq_helpers import beq_config_dir as _real_beq_config_dir
+    from model.wav_discovery import beq_config_dir as _real_beq_config_dir
 
     local_config = tmp_path / "local_config"
     local_config.mkdir()
@@ -1179,7 +1179,7 @@ def test_extract_config_uses_local_config_dir(tmp_path, monkeypatch):
 
     # Patch beq_config_dir to return our test dir.
     monkeypatch.setattr(
-        "spike._auto_beq_helpers.beq_config_dir",
+        "model.wav_discovery.beq_config_dir",
         lambda: local_config,
     )
 

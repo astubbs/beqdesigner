@@ -45,11 +45,11 @@ from model.auto_beq_nn import (
     labels_to_filters,
     train_late_fusion,
 )
-from spike._auto_beq_helpers import (
+from model.audio_extraction import (
     STRATEGY_WELCH,
     cached_extract_features_with_strategy,
-    discover_wav_catalogue_pairs_cached,
 )
+from model.wav_discovery import discover_wav_catalogue_pairs_cached
 
 log = logging.getLogger("nn_comparison_report")
 

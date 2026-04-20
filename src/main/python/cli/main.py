@@ -71,7 +71,7 @@ def _model_status_line() -> str:
         return _cached_model_status
     # Import from shared helpers — NOT cli.profile, which pulls in the
     # full Qt/GUI stack via generate → auto_beq → iir → xy → preferences.
-    from spike._auto_beq_helpers import check_production_model
+    from model.wav_discovery import check_production_model
     _cached_model_status = (
         "✓ production model found" if check_production_model()
         else "✗ no model — train one first"
@@ -85,7 +85,7 @@ def _build_tools_menu() -> list[tuple[str, object]]:
 
     # Quick WAV cache check — just existence, no counting.
     try:
-        from spike._auto_beq_helpers import wav_cache_dir
+        from model.wav_discovery import wav_cache_dir
         cache = wav_cache_dir()
         cache_status = "✓ configured" if cache.exists() else "not found"
     except Exception:
@@ -266,7 +266,7 @@ def _auto_beq_dir() -> Path | None:
     if _cached_beq_dir is not False:
         return _cached_beq_dir
     try:
-        from spike._auto_beq_helpers import beq_shared_dir as _bd
+        from model.wav_discovery import beq_shared_dir as _bd
         _cached_beq_dir = _bd()
     except Exception:
         _cached_beq_dir = None
@@ -282,7 +282,7 @@ def _auto_wav_cache() -> Path | None:
     if _cached_wav_cache is not False:
         return _cached_wav_cache
     try:
-        from spike._auto_beq_helpers import wav_cache_dir
+        from model.wav_discovery import wav_cache_dir
         _cached_wav_cache = wav_cache_dir()
     except Exception:
         _cached_wav_cache = None
@@ -736,7 +736,7 @@ def _validate_config_paths() -> None:
     _beq = None
 
     # Shared dir — required, everything derives from it.
-    from spike._auto_beq_helpers import beq_shared_dir as _bd
+    from model.wav_discovery import beq_shared_dir as _bd
     try:
         _beq = _bd()
     except Exception:
@@ -802,7 +802,7 @@ def _validate_config_paths() -> None:
         log.info("initialising new shared directory: %s", _beq)
 
     # WAV cache — derived from shared dir.
-    from spike._auto_beq_helpers import wav_cache_dir
+    from model.wav_discovery import wav_cache_dir
     log.info("checking WAV cache configuration...")
     try:
         cache = wav_cache_dir()

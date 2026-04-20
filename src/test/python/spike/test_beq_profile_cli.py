@@ -49,9 +49,9 @@ class TestCliConfig:
 
     def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
         settings_file = tmp_path / "settings.json"
-        monkeypatch.setattr("spike._auto_beq_helpers._SETTINGS_PATH", settings_file)
+        monkeypatch.setattr("model.wav_discovery._SETTINGS_PATH", settings_file)
         # Ensure beq_config_dir() points at tmp_path too.
-        monkeypatch.setattr("spike._auto_beq_helpers.beq_config_dir", lambda: tmp_path)
+        monkeypatch.setattr("model.wav_discovery.beq_config_dir", lambda: tmp_path)
 
         config = CliConfig(output_dir="/tmp/out", verbose=True, last_media_dir="/media")
         save_config(config)
@@ -63,21 +63,21 @@ class TestCliConfig:
         assert loaded.last_media_dir == "/media"
 
     def test_load_missing_file_returns_defaults(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("spike._auto_beq_helpers._SETTINGS_PATH", tmp_path / "nonexistent.json")
+        monkeypatch.setattr("model.wav_discovery._SETTINGS_PATH", tmp_path / "nonexistent.json")
         config = load_config()
         assert config.verbose is False
 
     def test_load_corrupt_file_returns_defaults(self, tmp_path, monkeypatch):
         settings_file = tmp_path / "settings.json"
         settings_file.write_text("not json{{{")
-        monkeypatch.setattr("spike._auto_beq_helpers._SETTINGS_PATH", settings_file)
+        monkeypatch.setattr("model.wav_discovery._SETTINGS_PATH", settings_file)
         config = load_config()
         assert config.output_dir == "profiles"
 
     def test_load_ignores_unknown_fields(self, tmp_path, monkeypatch):
         settings_file = tmp_path / "settings.json"
         settings_file.write_text(json.dumps({"cli_verbose": True, "unknown_field": 42}))
-        monkeypatch.setattr("spike._auto_beq_helpers._SETTINGS_PATH", settings_file)
+        monkeypatch.setattr("model.wav_discovery._SETTINGS_PATH", settings_file)
         config = load_config()
         assert config.verbose is True
 
@@ -574,7 +574,7 @@ class TestExtractConfigValidation:
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         monkeypatch.setattr(
-            "spike._auto_beq_helpers.beq_config_dir", lambda: config_dir,
+            "model.wav_discovery.beq_config_dir", lambda: config_dir,
         )
         # Clear BEQ_MEDIA_DIR so auto-discovery doesn't override config.
         monkeypatch.delenv("BEQ_MEDIA_DIR", raising=False)
@@ -651,14 +651,14 @@ class TestStartupConfigValidation:
         # Use config service to write roots, with beq_config_dir isolated.
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        monkeypatch.setattr("spike._auto_beq_helpers.beq_config_dir", lambda: config_dir)
+        monkeypatch.setattr("model.wav_discovery.beq_config_dir", lambda: config_dir)
         monkeypatch.delenv("BEQ_MEDIA_DIR", raising=False)
         save_extract_config([Path("/nonexistent/nas/path"), Path("/also/missing")])
 
         captured = StringIO()
         with patch("cli.main.console", Console(file=captured)):
-            with patch("spike._auto_beq_helpers.beq_shared_dir", return_value=beq):
-                with patch("spike._auto_beq_helpers.wav_cache_dir", return_value=beq / "wav-cache"):
+            with patch("model.wav_discovery.beq_shared_dir", return_value=beq):
+                with patch("model.wav_discovery.wav_cache_dir", return_value=beq / "wav-cache"):
                     monkeypatch.setattr("sys.stdin", StringIO())
                     _validate_config_paths()
 
@@ -684,14 +684,14 @@ class TestStartupConfigValidation:
 
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        monkeypatch.setattr("spike._auto_beq_helpers.beq_config_dir", lambda: config_dir)
+        monkeypatch.setattr("model.wav_discovery.beq_config_dir", lambda: config_dir)
         monkeypatch.delenv("BEQ_MEDIA_DIR", raising=False)
         save_extract_config([valid_root])
 
         captured = StringIO()
         with patch("cli.main.console", Console(file=captured)):
-            with patch("spike._auto_beq_helpers.beq_shared_dir", return_value=beq):
-                with patch("spike._auto_beq_helpers.wav_cache_dir", return_value=wav_cache):
+            with patch("model.wav_discovery.beq_shared_dir", return_value=beq):
+                with patch("model.wav_discovery.wav_cache_dir", return_value=wav_cache):
                     _validate_config_paths()
 
         output = captured.getvalue()
@@ -715,7 +715,7 @@ class TestExtractLfeWav:
         # Mock audio_cache_dir to a local temp dir (avoids NAS dependency).
         import tempfile as _tf
         _cache_tmp = Path(_tf.mkdtemp(prefix="beq_cache_"))
-        monkeypatch.setattr("spike._auto_beq_helpers.audio_cache_dir", lambda: _cache_tmp)
+        monkeypatch.setattr("model.wav_discovery.audio_cache_dir", lambda: _cache_tmp)
 
         from spike._auto_beq_helpers import extract_lfe_wav
 

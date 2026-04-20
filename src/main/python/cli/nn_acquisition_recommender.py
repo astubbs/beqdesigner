@@ -105,7 +105,7 @@ def _load_library_inventory(
     if inventory_path is None:
         # Default location: next to the WAV cache in the BEQ working dir.
         try:
-            from spike._auto_beq_helpers import beq_shared_dir
+            from model.wav_discovery import beq_shared_dir
             _beq = beq_shared_dir()
         except Exception:
             _beq = Path.home() / "Downloads" / "beqdesigner"
@@ -169,7 +169,7 @@ def select_acquisitions(
     if catalogue is None:
         catalogue = _fetch_or_cache()
     if have_tmdb_ids is None:
-        from spike._auto_beq_helpers import discover_wav_catalogue_pairs_cached
+        from model.wav_discovery import discover_wav_catalogue_pairs_cached
         pairs = discover_wav_catalogue_pairs_cached()
         have_tmdb_ids = {p["tmdb_id"] for p in pairs if p.get("tmdb_id")}
     if library_tmdb_ids is None:
@@ -319,7 +319,7 @@ def generate_report(n: int, output=None, inventory_path: Path | None = None) -> 
     pr = lambda s="": print(s, file=output or sys.stdout)
 
     from model.auto_beq_catalogue import _fetch_or_cache
-    from spike._auto_beq_helpers import discover_wav_catalogue_pairs_cached
+    from model.wav_discovery import discover_wav_catalogue_pairs_cached
 
     catalogue = _fetch_or_cache()
     pairs = discover_wav_catalogue_pairs_cached()

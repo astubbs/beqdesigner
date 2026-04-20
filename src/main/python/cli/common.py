@@ -189,7 +189,7 @@ class CliConfig:
 def load_config() -> CliConfig:
     """Load CLI preferences from shared settings.json."""
     # Lazy import to avoid circular deps before setup_python_path().
-    from spike._auto_beq_helpers import load_settings
+    from model.wav_discovery import load_settings
     settings = load_settings()
     return CliConfig(
         output_dir=settings.get("cli_output_dir", "profiles"),
@@ -201,7 +201,7 @@ def load_config() -> CliConfig:
 
 def save_config(config: CliConfig) -> None:
     """Persist CLI preferences to shared settings.json."""
-    from spike._auto_beq_helpers import save_settings
+    from model.wav_discovery import save_settings
     save_settings({
         "cli_output_dir": config.output_dir,
         "cli_verbose": config.verbose,
@@ -263,9 +263,9 @@ def show_banner(title: str, config: CliConfig, log_file: Path | None = None) -> 
     Returns the banner text with Rich markup stripped (for log files).
     """
     from rich.panel import Panel
-    from spike._auto_beq_helpers import wav_cache_dir
+    from model.wav_discovery import wav_cache_dir
 
-    from spike._auto_beq_helpers import beq_shared_dir
+    from model.wav_discovery import beq_shared_dir
 
     version, branch, commit = get_version_info()
 

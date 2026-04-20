@@ -39,7 +39,7 @@ from cli.generate import generate_profile
 
 
 # Shared implementation — no duplication.
-from spike._auto_beq_helpers import check_production_model as _check_production_model
+from model.wav_discovery import check_production_model as _check_production_model
 
 
 # ---------------------------------------------------------------------------
