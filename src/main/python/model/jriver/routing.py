@@ -4,7 +4,7 @@ from collections import defaultdict
 from itertools import groupby
 from typing import Dict, List, Tuple
 
-from model.jriver.formats import get_channel_name, get_channel_idx
+from model.jriver.formats import get_channel_idx, get_channel_name
 
 logger = logging.getLogger('jriver.routing')
 

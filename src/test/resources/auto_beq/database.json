@@ -1,0 +1,2400 @@
+[
+  {
+    "title": "Battle: Los Angeles",
+    "year": "2011",
+    "audioTypes": [
+      "DTS-HD MA 5.1"
+    ],
+    "content_type": "film",
+    "author": "aron7awol",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/aron7awol/57316732/#dts-hd-ma-51",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 28.0,
+        "gain": 4.0,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0002351230602025",
+              "-1.9981834204960565",
+              "0.9979525215864314"
+            ],
+            "a": [
+              "1.9981841999419296",
+              "-0.9981868652007604"
+            ]
+          }
+        },
+        "count": 1
+      }
+    ],
+    "images": [
+      "https://i.imgur.com/UebY5Dp.jpg",
+      "https://i.imgur.com/ewkHnbz.jpg"
+    ],
+    "warning": "",
+    "mv": "-2.5",
+    "avs": "https://www.avsforum.com/threads/bass-eq-for-filtered-movies.2995212/post-57316732",
+    "sortTitle": "battle: los angeles",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "The Earth is attacked by unknown forces. As people everywhere watch the world's great cities fall, Los Angeles becomes the last stand for mankind in a battle no one expected. It's up to a Marine staff sergeant and his new platoon to draw a line in the sand as they take on an enemy unlike any they've ever encountered before.",
+    "theMovieDB": "44943",
+    "rating": "PG-13",
+    "runtime": "116",
+    "genres": [
+      "Science Fiction",
+      "Action"
+    ],
+    "altTitle": "",
+    "collection": {},
+    "underlying": "Battle Los Angeles (2011) (-2.5 gain) BEQ DTS-HD MA 5.1",
+    "digest": "782b36c0eaa12592c5918792ccdf2135a93cd37c5194a5396ac81d727776281a",
+    "created_at": 1543898641,
+    "updated_at": 1611984156,
+    "audioChannelCounts": [
+      "5.1"
+    ],
+    "audioCodecs": [
+      "DTS-HD MA"
+    ]
+  },
+  {
+    "title": "Captain America: The Winter Soldier",
+    "year": "2014",
+    "audioTypes": [
+      "Atmos"
+    ],
+    "content_type": "film",
+    "author": "aron7awol",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/aron7awol/56778246/#atmos",
+    "filters": [
+      {
+        "type": "PeakingEQ",
+        "freq": 40.0,
+        "gain": 0.5,
+        "q": 1.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000752665109598",
+              "-1.9974526728235638",
+              "0.997384251494545"
+            ],
+            "a": [
+              "1.9974526728235638",
+              "-0.9974595180055047"
+            ]
+          }
+        }
+      },
+      {
+        "type": "LowShelf",
+        "freq": 18.0,
+        "gain": 3.6,
+        "q": 1.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001223684958809",
+              "-1.9989370084032037",
+              "0.9988163465070806"
+            ],
+            "a": [
+              "1.9989372979334437",
+              "-0.9989384254727218"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 18.0,
+        "gain": 3.6,
+        "q": 1.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001223684958809",
+              "-1.9989370084032037",
+              "0.9988163465070806"
+            ],
+            "a": [
+              "1.9989372979334437",
+              "-0.9989384254727218"
+            ]
+          }
+        },
+        "count": 1
+      }
+    ],
+    "images": [
+      "https://i.imgur.com/TN3CsuN.jpg",
+      "https://i.imgur.com/mnVD5VB.jpg"
+    ],
+    "warning": "",
+    "mv": "-1",
+    "avs": "https://www.avsforum.com/threads/bass-eq-for-filtered-movies.2995212/post-56778246",
+    "sortTitle": "captain america: the winter soldier",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "After the cataclysmic events in New York with The Avengers, Steve Rogers, aka Captain America is living quietly in Washington, D.C. and trying to adjust to the modern world. But when a S.H.I.E.L.D. colleague comes under attack, Steve becomes embroiled in a web of intrigue that threatens to put the world at risk. Joining forces with the Black Widow, Captain America struggles to expose the ever-widening conspiracy while fighting off professional assassins sent to silence him at every turn. When the full scope of the villainous plot is revealed, Captain America and the Black Widow enlist the help of a new ally, the Falcon. However, they soon find themselves up against an unexpected and formidable enemy\u2014the Winter Soldier.",
+    "theMovieDB": "100402",
+    "rating": "PG-13",
+    "runtime": "136",
+    "genres": [
+      "Action",
+      "Adventure",
+      "Science Fiction"
+    ],
+    "altTitle": "",
+    "collection": {
+      "id": "131295",
+      "name": "Captain America Collection"
+    },
+    "underlying": "Captain America The Winter Soldier (2014) (-1 gain) BEQ Atmos",
+    "digest": "3c1346a83ef7ee2459e7cdab27e664ab7449dc6feec2a1b6156dc147185be675",
+    "created_at": 1543898641,
+    "updated_at": 1611984156,
+    "audioChannelCounts": [
+      ""
+    ],
+    "audioCodecs": [
+      "Atmos"
+    ]
+  },
+  {
+    "title": "Captain America: The Winter Soldier",
+    "year": "2014",
+    "audioTypes": [
+      "DTS-HD MA 7.1"
+    ],
+    "content_type": "film",
+    "author": "aron7awol",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/aron7awol/56778246/#dts-hd-ma-71",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 22.0,
+        "gain": 3.8,
+        "q": 1.1,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001435985537273",
+              "-1.9988251865698299",
+              "0.9986841667580216"
+            ],
+            "a": [
+              "1.9988256434529763",
+              "-0.9988273084286022"
+            ]
+          }
+        },
+        "count": 1
+      }
+    ],
+    "images": [
+      "https://fanart.tv/fanart/movies/100402/moviethumb/captain-america-the-winter-soldier-5319cae9cf459.jpg",
+      "https://i.imgur.com/7kuaDh9.png"
+    ],
+    "warning": "",
+    "mv": "0",
+    "avs": "https://www.avsforum.com/threads/bass-eq-for-filtered-movies.2995212/post-56778246",
+    "sortTitle": "captain america: the winter soldier",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "After the cataclysmic events in New York with The Avengers, Steve Rogers, aka Captain America is living quietly in Washington, D.C. and trying to adjust to the modern world. But when a S.H.I.E.L.D. colleague comes under attack, Steve becomes embroiled in a web of intrigue that threatens to put the world at risk. Joining forces with the Black Widow, Captain America struggles to expose the ever-widening conspiracy while fighting off professional assassins sent to silence him at every turn. When the full scope of the villainous plot is revealed, Captain America and the Black Widow enlist the help of a new ally, the Falcon. However, they soon find themselves up against an unexpected and formidable enemy\u2014the Winter Soldier.",
+    "theMovieDB": "100402",
+    "rating": "PG-13",
+    "runtime": "136",
+    "genres": [
+      "Science Fiction",
+      "Action",
+      "Adventure"
+    ],
+    "altTitle": "",
+    "collection": {
+      "id": "131295",
+      "name": "Captain America Collection"
+    },
+    "underlying": "Captain America The Winter Soldier (2014) BEQ DTS-HD MA 7.1",
+    "digest": "7fb2fa7df55a46205927371c6f648e08408e85a8398842e5b2202e7d9f7cacb1",
+    "created_at": 1543898641,
+    "updated_at": 1611984156,
+    "audioChannelCounts": [
+      "7.1"
+    ],
+    "audioCodecs": [
+      "DTS-HD MA"
+    ]
+  },
+  {
+    "title": "Edge of Tomorrow",
+    "year": "2014",
+    "audioTypes": [
+      "Atmos"
+    ],
+    "content_type": "film",
+    "author": "aron7awol",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/aron7awol/61796127/#atmos",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 23.0,
+        "gain": 6.9,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000334596741957",
+              "-1.998627158126291",
+              "0.9982959301845908"
+            ],
+            "a": [
+              "1.9986280814202086",
+              "-0.99862960363263"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 23.0,
+        "gain": 6.9,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000334596741957",
+              "-1.998627158126291",
+              "0.9982959301845908"
+            ],
+            "a": [
+              "1.9986280814202086",
+              "-0.99862960363263"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 23.0,
+        "gain": 6.9,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000334596741957",
+              "-1.998627158126291",
+              "0.9982959301845908"
+            ],
+            "a": [
+              "1.9986280814202086",
+              "-0.99862960363263"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 23.0,
+        "gain": 6.9,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000334596741957",
+              "-1.998627158126291",
+              "0.9982959301845908"
+            ],
+            "a": [
+              "1.9986280814202086",
+              "-0.99862960363263"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 54.0,
+        "gain": 1.1,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0002483692764879",
+              "-1.996308281704342",
+              "0.9960723806537881"
+            ],
+            "a": [
+              "1.996308281704342",
+              "-0.9963207499302762"
+            ]
+          }
+        }
+      }
+    ],
+    "images": [
+      "https://i.imgur.com/EnnDpTh.jpg",
+      "https://i.imgur.com/S5Dtktv.png"
+    ],
+    "warning": "This is ONLY for the Atmos track!!! If you use this BEQ with the DTS-HD track, you are risking breaking your system!!!",
+    "mv": "-3.5",
+    "avs": "https://www.avsforum.com/threads/bass-eq-for-filtered-movies.2995212/post-61796127",
+    "sortTitle": "edge of tomorrow",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "Major Bill Cage is an officer who has never seen a day of combat when he is unceremoniously demoted and dropped into combat. Cage is killed within minutes, managing to take an alpha alien down with him. He awakens back at the beginning of the same day and is forced to fight and die again... and again - as physical contact with the alien has thrown him into a time loop.",
+    "theMovieDB": "137113",
+    "rating": "PG-13",
+    "runtime": "113",
+    "genres": [
+      "Science Fiction",
+      "Action"
+    ],
+    "altTitle": "",
+    "collection": {
+      "id": "578704",
+      "name": "Live. Die. Repeat Collection"
+    },
+    "underlying": "Edge of Tomorrow (2014) (-3.5 gain) BEQ Atmos",
+    "digest": "d95e8093b21dd3e118652d8694d24fe7495c62540aea9dfa33d1b32ba0ffb90a",
+    "created_at": 1657037551,
+    "updated_at": 1657216563,
+    "audioChannelCounts": [
+      ""
+    ],
+    "audioCodecs": [
+      "Atmos"
+    ]
+  },
+  {
+    "title": "Pacific Rim",
+    "year": "2013",
+    "audioTypes": [
+      "Atmos"
+    ],
+    "content_type": "film",
+    "author": "aron7awol",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/aron7awol/56760572/#atmos",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 60.0,
+        "gain": 4.7,
+        "q": 0.8,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0006667471479331",
+              "-1.9957055688457814",
+              "0.9950589909388657"
+            ],
+            "a": [
+              "1.9957097831762418",
+              "-0.9957215237563384"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 19.0,
+        "gain": 4.0,
+        "q": 1.1,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001305548538812",
+              "-1.9989913638938615",
+              "0.9988627548736686"
+            ],
+            "a": [
+              "1.9989917229416774",
+              "-0.998992950679734"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 19.0,
+        "gain": 4.0,
+        "q": 1.1,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001305548538812",
+              "-1.9989913638938615",
+              "0.9988627548736686"
+            ],
+            "a": [
+              "1.9989917229416774",
+              "-0.998992950679734"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 19.0,
+        "gain": 4.0,
+        "q": 1.1,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001305548538812",
+              "-1.9989913638938615",
+              "0.9988627548736686"
+            ],
+            "a": [
+              "1.9989917229416774",
+              "-0.998992950679734"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 19.0,
+        "gain": 4.0,
+        "q": 1.1,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001305548538812",
+              "-1.9989913638938615",
+              "0.9988627548736686"
+            ],
+            "a": [
+              "1.9989917229416774",
+              "-0.998992950679734"
+            ]
+          }
+        },
+        "count": 1
+      }
+    ],
+    "images": [
+      "https://i.imgur.com/sIDKC72.jpg",
+      "https://i.imgur.com/VNOyRre.png"
+    ],
+    "warning": "",
+    "mv": "-6",
+    "avs": "https://www.avsforum.com/threads/bass-eq-for-filtered-movies.2995212/post-56760572",
+    "sortTitle": "pacific rim",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "When legions of monstrous creatures, known as Kaiju, started rising from the sea, a war began that would take millions of lives and consume humanity's resources for years on end. To combat the giant Kaiju, a special type of weapon was devised: massive robots, called Jaegers, which are controlled simultaneously by two pilots whose minds are locked in a neural bridge. But even the Jaegers are proving nearly defenseless in the face of the relentless Kaiju. On the verge of defeat, the forces defending mankind have no choice but to turn to two unlikely heroes\u2014a washed-up former pilot (Charlie Hunnam) and an untested trainee (Rinko Kikuchi)\u2014who are teamed to drive a legendary but seemingly obsolete Jaeger from the past. Together, they stand as mankind's last hope against the mounting apocalypse.",
+    "theMovieDB": "68726",
+    "rating": "PG-13",
+    "runtime": "131",
+    "genres": [
+      "Action",
+      "Science Fiction",
+      "Adventure"
+    ],
+    "altTitle": "",
+    "collection": {
+      "id": "363369",
+      "name": "Pacific Rim Collection"
+    },
+    "underlying": "Pacific Rim (2013) (-6 gain) BEQ Atmos",
+    "digest": "250ebb83a1c07b243c9819817dfc82bc776b23e05d863047f9cec43cadceead4",
+    "created_at": 1543898641,
+    "updated_at": 1611984156,
+    "audioChannelCounts": [
+      ""
+    ],
+    "audioCodecs": [
+      "Atmos"
+    ]
+  },
+  {
+    "title": "Run Hide Fight",
+    "year": "2020",
+    "audioTypes": [
+      "DTS-HD MA 5.1"
+    ],
+    "content_type": "film",
+    "author": "aron7awol",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/aron7awol/60948292/#dts-hd-ma-51",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 17.0,
+        "gain": 6.0,
+        "q": 0.7,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0002758962566918",
+              "-1.998662187733624",
+              "0.998388039007549"
+            ],
+            "a": [
+              "1.9986626235789144",
+              "-0.9986634994189503"
+            ]
+          }
+        },
+        "count": 1
+      }
+    ],
+    "images": [
+      "https://i.imgur.com/gLZbyRL.jpg",
+      "https://i.imgur.com/raOnYAl.png"
+    ],
+    "warning": "",
+    "mv": "5.0",
+    "avs": "https://www.avsforum.com/threads/bass-eq-for-filtered-movies.2995212/post-60948292",
+    "sortTitle": "run hide fight",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "A 17-year-old girl uses her wits, survival skills, and compassion to fight for her life, and those of her fellow classmates, against a group of live-streaming school shooters.",
+    "theMovieDB": "629017",
+    "rating": "",
+    "runtime": "109",
+    "genres": [
+      "Drama",
+      "Crime",
+      "Action",
+      "Thriller"
+    ],
+    "altTitle": "",
+    "collection": {},
+    "underlying": "Run Hide Fight (2020) (5.0 gain) BEQ DTS-HD MA 5.1",
+    "digest": "99638e40599d3eed4374fff08349c21c82d5d494af97774562bd42dc1b35ae00",
+    "created_at": 1628895362,
+    "updated_at": 1628895362,
+    "audioChannelCounts": [
+      "5.1"
+    ],
+    "audioCodecs": [
+      "DTS-HD MA"
+    ]
+  },
+  {
+    "title": "Battle: Los Angeles",
+    "year": "2011",
+    "audioTypes": [
+      "DD+ 5.1"
+    ],
+    "content_type": "film",
+    "author": "mobe1969",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/mobe1969/battle-los-angeles/#dd-51",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 10.0,
+        "gain": 3.0,
+        "q": 1.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000056604370915",
+              "-1.9993993898549158",
+              "0.9993432944478269"
+            ],
+            "a": [
+              "1.9993994641774315",
+              "-0.9993998244962264"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 13.0,
+        "gain": 2.0,
+        "q": 7.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000140241016822",
+              "-1.9998909506793",
+              "0.9998776504807001"
+            ],
+            "a": [
+              "1.9998909506793",
+              "-0.9998916745823823"
+            ]
+          }
+        }
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 19.0,
+        "gain": 1.0,
+        "q": 6.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000011936140209",
+              "-1.9998028089066184",
+              "0.9997924190243069"
+            ],
+            "a": [
+              "1.9998028089066184",
+              "-0.9998043551645159"
+            ]
+          }
+        }
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 22.0,
+        "gain": 2.5,
+        "q": 3.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000692968380385",
+              "-1.999582380592044",
+              "0.9995151566251843"
+            ],
+            "a": [
+              "1.999582380592044",
+              "-0.9995844534632226"
+            ]
+          }
+        }
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 29.0,
+        "gain": 1.0,
+        "q": 9.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000012145521172",
+              "-1.9997973209915718",
+              "0.9997887776876774"
+            ],
+            "a": [
+              "1.9997973209915718",
+              "-0.9998009232088492"
+            ]
+          }
+        }
+      }
+    ],
+    "images": [
+      "https://gitlab.com/Mobe1969/beq-reports/-/raw/master/Movies/B/Battle%20Los%20Angeles%20%282011%29%20DD%2B%205.1.jpg"
+    ],
+    "warning": "",
+    "mv": "0",
+    "avs": "",
+    "sortTitle": "battle los angeles",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Streaming",
+    "overview": "When once distant UFOs become a terrifying threat attacking Earth, a Marine staff sergeant and his team take it upon themselves to face the enemy and protect what remains of the planet.",
+    "theMovieDB": "44943",
+    "rating": "PG-13",
+    "runtime": "116",
+    "genres": [
+      "Science Fiction",
+      "Action"
+    ],
+    "altTitle": "Battle Los Angeles",
+    "collection": {},
+    "underlying": "Battle Los Angeles (2011) DD+ 5.1",
+    "digest": "aef18bcc91342a6d88712066a19d454d09e37549fac239b1b3082ef58355c11b",
+    "created_at": 1680318832,
+    "updated_at": 1680318832,
+    "audioChannelCounts": [
+      "5.1"
+    ],
+    "audioCodecs": [
+      "DD+"
+    ]
+  },
+  {
+    "title": "Battle: Los Angeles",
+    "year": "2011",
+    "audioTypes": [
+      "DTS-HD MA 5.1"
+    ],
+    "content_type": "film",
+    "author": "mobe1969",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/mobe1969/battle-los-angeles/#dts-hd-ma-51",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 11.0,
+        "gain": 1.3,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000299463143651",
+              "-1.9992292130823488",
+              "0.999199825155027"
+            ],
+            "a": [
+              "1.9992292518919927",
+              "-0.9992297326597487"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 22.0,
+        "gain": 2.5,
+        "q": 2.6,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000799553342623",
+              "-1.999518465747916",
+              "0.9994405832185745"
+            ],
+            "a": [
+              "1.999518465747916",
+              "-0.999520538552837"
+            ]
+          }
+        }
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 28.0,
+        "gain": 0.7,
+        "q": 7.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.00001055079153",
+              "-1.9997452139336198",
+              "0.9997380211260042"
+            ],
+            "a": [
+              "1.9997452139336198",
+              "-0.9997485719175341"
+            ]
+          }
+        }
+      }
+    ],
+    "images": [
+      "https://gitlab.com/Mobe1969/beq-reports/-/raw/master/Movies/B/Battle%20Los%20Angeles%20%282011%29%20DTS-HD%20MA%205.1.jpg"
+    ],
+    "warning": "",
+    "mv": "0",
+    "avs": "",
+    "sortTitle": "battle los angeles",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "When once distant UFOs become a terrifying threat attacking Earth, a Marine staff sergeant and his team take it upon themselves to face the enemy and protect what remains of the planet.",
+    "theMovieDB": "44943",
+    "rating": "PG-13",
+    "runtime": "116",
+    "genres": [
+      "Science Fiction",
+      "Action"
+    ],
+    "altTitle": "Battle Los Angeles",
+    "collection": {},
+    "underlying": "Battle Los Angeles (2011) DTS-HD MA 5.1",
+    "digest": "1cfa28dee9ff3a3a13fa43a6f140251b05bc4f63d9420033627a7e1d171d3847",
+    "created_at": 1666648074,
+    "updated_at": 1666648074,
+    "audioChannelCounts": [
+      "5.1"
+    ],
+    "audioCodecs": [
+      "DTS-HD MA"
+    ]
+  },
+  {
+    "title": "Captain America: The Winter Soldier",
+    "year": "2014",
+    "audioTypes": [
+      "Atmos"
+    ],
+    "content_type": "film",
+    "author": "mobe1969",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/mobe1969/captain-america-the-winter-soldier/#atmos",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 18.0,
+        "gain": 2.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001056554407135",
+              "-1.9987916806713872",
+              "0.9986876549022682"
+            ],
+            "a": [
+              "1.9987919052108314",
+              "-0.9987930858035378"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 18.0,
+        "gain": 2.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001056554407135",
+              "-1.9987916806713872",
+              "0.9986876549022682"
+            ],
+            "a": [
+              "1.9987919052108314",
+              "-0.9987930858035378"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 18.0,
+        "gain": 2.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001056554407135",
+              "-1.9987916806713872",
+              "0.9986876549022682"
+            ],
+            "a": [
+              "1.9987919052108314",
+              "-0.9987930858035378"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 18.0,
+        "gain": 2.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001056554407135",
+              "-1.9987916806713872",
+              "0.9986876549022682"
+            ],
+            "a": [
+              "1.9987919052108314",
+              "-0.9987930858035378"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 22.0,
+        "gain": 3.0,
+        "q": 3.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000083282875396",
+              "-1.9995941681061473",
+              "0.9995129581141492"
+            ],
+            "a": [
+              "1.9995941681061473",
+              "-0.9995962409895454"
+            ]
+          }
+        }
+      }
+    ],
+    "images": [
+      "https://gitlab.com/Mobe1969/beq-reports/-/raw/master/Movies/C/Captain%20America%20The%20Winter%20Soldier%20%282014%29%20Atmos.jpg"
+    ],
+    "warning": "",
+    "mv": "0",
+    "avs": "",
+    "sortTitle": "captain america the winter soldier",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "After the cataclysmic events in New York with The Avengers, Steve Rogers, aka Captain America is living quietly in Washington, D.C. and trying to adjust to the modern world. But when a S.H.I.E.L.D. colleague comes under attack, Steve becomes embroiled in a web of intrigue that threatens to put the world at risk. Joining forces with the Black Widow, Captain America struggles to expose the ever-widening conspiracy while fighting off professional assassins sent to silence him at every turn. When the full scope of the villainous plot is revealed, Captain America and the Black Widow enlist the help of a new ally, the Falcon. However, they soon find themselves up against an unexpected and formidable enemy\u2014the Winter Soldier.",
+    "theMovieDB": "100402",
+    "rating": "PG-13",
+    "runtime": "136",
+    "genres": [
+      "Action",
+      "Adventure",
+      "Science Fiction"
+    ],
+    "altTitle": "Captain America The Winter Soldier",
+    "collection": {
+      "id": "131295",
+      "name": "Captain America Collection"
+    },
+    "underlying": "Captain America The Winter Soldier (2014) Atmos",
+    "digest": "7884055ff01be078d60ad307ba23ccae31be7b82f01b67b4f63ba80b39c8e328",
+    "created_at": 1656928434,
+    "updated_at": 1656928434,
+    "audioChannelCounts": [
+      ""
+    ],
+    "audioCodecs": [
+      "Atmos"
+    ]
+  },
+  {
+    "title": "Edge of Tomorrow",
+    "year": "2014",
+    "audioTypes": [
+      "Atmos"
+    ],
+    "content_type": "film",
+    "author": "mobe1969",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/mobe1969/edge-of-tomorrow/#atmos",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 10.0,
+        "gain": 1.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000377020307087",
+              "-1.999309303952143",
+              "0.9992720768927082"
+            ],
+            "a": [
+              "1.999309348402207",
+              "-0.9993097344733531"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 17.0,
+        "gain": 9.0,
+        "q": 1.7,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0003543881955799",
+              "-1.9996089783568833",
+              "0.999255827904135"
+            ],
+            "a": [
+              "1.9996089783568833",
+              "-0.999610216099715"
+            ]
+          }
+        }
+      },
+      {
+        "type": "LowShelf",
+        "freq": 18.0,
+        "gain": 6.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0002579750908438",
+              "-1.998922771124644",
+              "0.9986668478035566"
+            ],
+            "a": [
+              "1.9989233280896603",
+              "-0.9989242659293837"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 18.0,
+        "gain": 6.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0002579750908438",
+              "-1.998922771124644",
+              "0.9986668478035566"
+            ],
+            "a": [
+              "1.9989233280896603",
+              "-0.9989242659293837"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 18.0,
+        "gain": 6.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0002579750908438",
+              "-1.998922771124644",
+              "0.9986668478035566"
+            ],
+            "a": [
+              "1.9989233280896603",
+              "-0.9989242659293837"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 18.0,
+        "gain": 6.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0002579750908438",
+              "-1.998922771124644",
+              "0.9986668478035566"
+            ],
+            "a": [
+              "1.9989233280896603",
+              "-0.9989242659293837"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 24.0,
+        "gain": 5.8,
+        "q": 3.4,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001571055418237",
+              "-1.9996667303859872",
+              "0.999512091836645"
+            ],
+            "a": [
+              "1.9996667303859872",
+              "-0.9996691973784688"
+            ]
+          }
+        }
+      }
+    ],
+    "images": [
+      "https://gitlab.com/Mobe1969/beq-reports/-/raw/master/Movies/E/Edge%20of%20Tomorrow%20%282014%29%20Atmos.jpg"
+    ],
+    "warning": "",
+    "mv": "0",
+    "avs": "",
+    "sortTitle": "edge of tomorrow",
+    "edition": "UHD",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "Major Bill Cage is an officer who has never seen a day of combat when he is unceremoniously demoted and dropped into combat. Cage is killed within minutes, managing to take an alpha alien down with him. He awakens back at the beginning of the same day and is forced to fight and die again... and again - as physical contact with the alien has thrown him into a time loop.",
+    "theMovieDB": "137113",
+    "rating": "PG-13",
+    "runtime": "113",
+    "genres": [
+      "Action",
+      "Science Fiction"
+    ],
+    "altTitle": "",
+    "collection": {
+      "id": "578704",
+      "name": "Live. Die. Repeat Collection"
+    },
+    "underlying": "Edge of Tomorrow (2014) Atmos",
+    "digest": "5db2188c55bb7f7217feb42d615aac0bca9f8714cc5ee98ea92e2e3951e905fe",
+    "created_at": 1656987614,
+    "updated_at": 1656987614,
+    "audioChannelCounts": [
+      ""
+    ],
+    "audioCodecs": [
+      "Atmos"
+    ]
+  },
+  {
+    "title": "Edge of Tomorrow",
+    "year": "2014",
+    "audioTypes": [
+      "DD+ Atmos"
+    ],
+    "content_type": "film",
+    "author": "mobe1969",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/mobe1969/edge-of-tomorrow/#dd-atmos",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 20.0,
+        "gain": 6.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0002866562309622",
+              "-1.9988029660552562",
+              "0.9985188427220004"
+            ],
+            "a": [
+              "1.998803653625296",
+              "-0.9988048113829229"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 20.0,
+        "gain": 6.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0002866562309622",
+              "-1.9988029660552562",
+              "0.9985188427220004"
+            ],
+            "a": [
+              "1.998803653625296",
+              "-0.9988048113829229"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 20.0,
+        "gain": 6.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0002866562309622",
+              "-1.9988029660552562",
+              "0.9985188427220004"
+            ],
+            "a": [
+              "1.998803653625296",
+              "-0.9988048113829229"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 20.0,
+        "gain": 6.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0002866562309622",
+              "-1.9988029660552562",
+              "0.9985188427220004"
+            ],
+            "a": [
+              "1.998803653625296",
+              "-0.9988048113829229"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 20.0,
+        "gain": 7.0,
+        "q": 1.7,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0003186554891645",
+              "-1.999483795886485",
+              "0.999166853429279"
+            ],
+            "a": [
+              "1.999483795886485",
+              "-0.9994855089184435"
+            ]
+          }
+        }
+      }
+    ],
+    "images": [
+      "https://gitlab.com/Mobe1969/beq-reports/-/raw/master/Movies/E/Edge%20of%20Tomorrow%20%282014%29%20DD%2B%20Atmos.jpg"
+    ],
+    "warning": "DO NOT USE WITH BLU-RAY. Lossy Streamed Atmos only",
+    "mv": "0",
+    "avs": "",
+    "sortTitle": "edge of tomorrow",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Streaming",
+    "overview": "Major Bill Cage is an officer who has never seen a day of combat when he is unceremoniously demoted and dropped into combat. Cage is killed within minutes, managing to take an alpha alien down with him. He awakens back at the beginning of the same day and is forced to fight and die again... and again - as physical contact with the alien has thrown him into a time loop.",
+    "theMovieDB": "137113",
+    "rating": "PG-13",
+    "runtime": "113",
+    "genres": [
+      "Action",
+      "Science Fiction"
+    ],
+    "altTitle": "",
+    "collection": {
+      "id": "578704",
+      "name": "Live. Die. Repeat Collection"
+    },
+    "underlying": "Edge of Tomorrow (2014) DD+ Atmos",
+    "digest": "5519b3145d226ca969fe11ca5cbc9b6c3d3057ae9c776432c26a1aacf0b12184",
+    "created_at": 1642113711,
+    "updated_at": 1642113711,
+    "audioChannelCounts": [
+      ""
+    ],
+    "audioCodecs": [
+      "DD+ Atmos"
+    ]
+  },
+  {
+    "title": "Pacific Rim",
+    "year": "2013",
+    "audioTypes": [
+      "Atmos"
+    ],
+    "content_type": "film",
+    "author": "mobe1969",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/mobe1969/pacific-rim/#atmos",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 15.0,
+        "gain": 5.0,
+        "q": 0.8,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001772627204584",
+              "-1.998936862867773",
+              "0.9987608847507511"
+            ],
+            "a": [
+              "1.9989371439766916",
+              "-0.9989378663622904"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 15.0,
+        "gain": 5.0,
+        "q": 0.8,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001772627204584",
+              "-1.998936862867773",
+              "0.9987608847507511"
+            ],
+            "a": [
+              "1.9989371439766916",
+              "-0.9989378663622904"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 15.0,
+        "gain": 5.0,
+        "q": 0.8,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001772627204584",
+              "-1.998936862867773",
+              "0.9987608847507511"
+            ],
+            "a": [
+              "1.9989371439766916",
+              "-0.9989378663622904"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 15.0,
+        "gain": 5.0,
+        "q": 0.8,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001772627204584",
+              "-1.998936862867773",
+              "0.9987608847507511"
+            ],
+            "a": [
+              "1.9989371439766916",
+              "-0.9989378663622904"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 15.0,
+        "gain": 9.0,
+        "q": 2.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0002658041095982",
+              "-1.9997066841295699",
+              "0.9994418437075604"
+            ],
+            "a": [
+              "1.9997066841295699",
+              "-0.9997076478171587"
+            ]
+          }
+        }
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 19.0,
+        "gain": 2.0,
+        "q": 3.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000478195334557",
+              "-1.9996290846969071",
+              "0.9995828112870244"
+            ],
+            "a": [
+              "1.9996290846969071",
+              "-0.9996306308204801"
+            ]
+          }
+        }
+      }
+    ],
+    "images": [
+      "https://gitlab.com/Mobe1969/beq-reports/-/raw/master/Movies/P/Pacific%20Rim%20%282013%29%20Atmos.jpg"
+    ],
+    "warning": "",
+    "mv": "0",
+    "avs": "",
+    "sortTitle": "pacific rim",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "As war between humankind and monstrous sea creatures wages on, a former pilot and a trainee are paired up to drive a seemingly obsolete special weapon in a desperate effort to save the world.",
+    "theMovieDB": "68726",
+    "rating": "PG-13",
+    "runtime": "131",
+    "genres": [
+      "Action",
+      "Science Fiction",
+      "Adventure"
+    ],
+    "altTitle": "",
+    "collection": {},
+    "underlying": "Pacific Rim (2013) Atmos",
+    "digest": "fc4b7510489fbdc91a0fcfb8af5a20fe0b74b369822cb3c659e30d760e374a6a",
+    "created_at": 1656152278,
+    "updated_at": 1656152278,
+    "audioChannelCounts": [
+      ""
+    ],
+    "audioCodecs": [
+      "Atmos"
+    ]
+  },
+  {
+    "title": "Pacific Rim",
+    "year": "2013",
+    "audioTypes": [
+      "DTS-HD MA 7.1",
+      "DD+ 5.1"
+    ],
+    "content_type": "film",
+    "author": "mobe1969",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/mobe1969/pacific-rim/#dts-hd-ma-71-dd-51",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 10.0,
+        "gain": 4.0,
+        "q": 0.8,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000094413445427",
+              "-1.9992706731883796",
+              "0.9991767988300778"
+            ],
+            "a": [
+              "1.9992707726614516",
+              "-0.9992711128024325"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 13.0,
+        "gain": 6.0,
+        "q": 2.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001498525401666",
+              "-1.9996981444190012",
+              "0.9995490157121265"
+            ],
+            "a": [
+              "1.9996981444190012",
+              "-0.9996988682522933"
+            ]
+          }
+        }
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 15.0,
+        "gain": 7.0,
+        "q": 2.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0002031618448675",
+              "-1.9996710176358965",
+              "0.9994688194614297"
+            ],
+            "a": [
+              "1.9996710176358965",
+              "-0.9996719813062973"
+            ]
+          }
+        }
+      },
+      {
+        "type": "LowShelf",
+        "freq": 16.0,
+        "gain": 7.0,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000236132072725",
+              "-1.999048034745112",
+              "0.9988135426983658"
+            ],
+            "a": [
+              "1.9990484884717536",
+              "-0.9990492210444493"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 16.0,
+        "gain": 7.0,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000236132072725",
+              "-1.999048034745112",
+              "0.9988135426983658"
+            ],
+            "a": [
+              "1.9990484884717536",
+              "-0.9990492210444493"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 16.0,
+        "gain": 7.0,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000236132072725",
+              "-1.999048034745112",
+              "0.9988135426983658"
+            ],
+            "a": [
+              "1.9990484884717536",
+              "-0.9990492210444493"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 16.0,
+        "gain": 7.0,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000236132072725",
+              "-1.999048034745112",
+              "0.9988135426983658"
+            ],
+            "a": [
+              "1.9990484884717536",
+              "-0.9990492210444493"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 43.0,
+        "gain": 1.0,
+        "q": 2.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000809941535491",
+              "-1.998664512539778",
+              "0.9985914336523463"
+            ],
+            "a": [
+              "1.998664512539778",
+              "-0.9986724278058957"
+            ]
+          }
+        }
+      }
+    ],
+    "images": [
+      "https://gitlab.com/Mobe1969/beq-reports/-/raw/master/Movies/P/Pacific%20Rim%20%282013%29%20DTS-HD%20MA%207.1.jpg"
+    ],
+    "warning": "",
+    "mv": "0",
+    "avs": "",
+    "sortTitle": "pacific rim",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "As war between humankind and monstrous sea creatures wages on, a former pilot and a trainee are paired up to drive a seemingly obsolete special weapon in a desperate effort to save the world.",
+    "theMovieDB": "68726",
+    "rating": "PG-13",
+    "runtime": "131",
+    "genres": [
+      "Action",
+      "Science Fiction",
+      "Adventure"
+    ],
+    "altTitle": "",
+    "collection": {},
+    "underlying": "Pacific Rim (2013) DTS-HD MA 7.1",
+    "digest": "f41879f9ca86fdaf5a92f08baaf70601bc9ea5d6fc10d40768fb3e7be88bb01f",
+    "created_at": 1656152278,
+    "updated_at": 1683197981,
+    "audioChannelCounts": [
+      "7.1",
+      "5.1"
+    ],
+    "audioCodecs": [
+      "DTS-HD MA",
+      "DD+"
+    ]
+  },
+  {
+    "title": "Run Hide Fight",
+    "year": "2020",
+    "audioTypes": [
+      "DTS-HD MA 5.1"
+    ],
+    "content_type": "film",
+    "author": "mobe1969",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/mobe1969/run-hide-fight/#dts-hd-ma-51",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 15.0,
+        "gain": 2.2,
+        "q": 0.8,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000777749968446",
+              "-1.9988478051024785",
+              "0.9987711234317176"
+            ],
+            "a": [
+              "1.99884792741991",
+              "-0.9988487761111305"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 15.0,
+        "gain": 2.2,
+        "q": 0.8,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000777749968446",
+              "-1.9988478051024785",
+              "0.9987711234317176"
+            ],
+            "a": [
+              "1.99884792741991",
+              "-0.9988487761111305"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 15.0,
+        "gain": 2.2,
+        "q": 0.8,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000777749968446",
+              "-1.9988478051024785",
+              "0.9987711234317176"
+            ],
+            "a": [
+              "1.99884792741991",
+              "-0.9988487761111305"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 15.0,
+        "gain": 2.2,
+        "q": 0.8,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000777749968446",
+              "-1.9988478051024785",
+              "0.9987711234317176"
+            ],
+            "a": [
+              "1.99884792741991",
+              "-0.9988487761111305"
+            ]
+          }
+        },
+        "count": 1
+      }
+    ],
+    "images": [
+      "https://gitlab.com/Mobe1969/beq-reports/-/raw/master/Movies/R/Run%20Hide%20Fight%20%282020%29%20DTS-HD%20MA%205.1.jpg"
+    ],
+    "warning": "",
+    "mv": "0",
+    "avs": "",
+    "sortTitle": "run hide fight",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "A 17-year-old girl uses her wits, survival skills, and compassion to fight for her life, and those of her fellow classmates, against a group of live-streaming school shooters.",
+    "theMovieDB": "629017",
+    "rating": "15",
+    "runtime": "109",
+    "genres": [
+      "Action",
+      "Crime",
+      "Drama",
+      "Thriller"
+    ],
+    "altTitle": "",
+    "collection": {},
+    "underlying": "Run Hide Fight (2020) DTS-HD MA 5.1",
+    "digest": "7ab6894a14029cc63651dae1695902774df648d75716853205c91b8fc227efe2",
+    "created_at": 1642113711,
+    "updated_at": 1642113711,
+    "audioChannelCounts": [
+      "5.1"
+    ],
+    "audioCodecs": [
+      "DTS-HD MA"
+    ]
+  },
+  {
+    "title": "Battle: Los Angeles",
+    "year": "2011",
+    "audioTypes": [
+      "DTS-HD MA 5.1"
+    ],
+    "content_type": "film",
+    "author": "t1g8rsfan",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/t1g8rsfan/battle-los-angeles/#dts-hd-ma-51",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 25.0,
+        "gain": 2.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001467698390913",
+              "-1.998321413971953",
+              "0.9981777870517274"
+            ],
+            "a": [
+              "1.9983218470096626",
+              "-0.9983241238531088"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 51.0,
+        "gain": 0.1,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000213104976603",
+              "-1.9963081356479315",
+              "0.9962979464928807"
+            ],
+            "a": [
+              "1.9963081356479315",
+              "-0.9963192569905409"
+            ]
+          }
+        }
+      }
+    ],
+    "images": [
+      "https://raw.githubusercontent.com/T1G8RS-FAN/BEQImages/main/Images/Battle%20Los%20Angeles%20(2011)%20(-2.5%20gain)%20DTS-HD%20MA%205.1.jpg",
+      "https://raw.githubusercontent.com/T1G8RS-FAN/BEQImages/main/Images/Battle%20Los%20Angeles%20(2011)%20DTS-HD%20MA%205.1.jpg"
+    ],
+    "warning": "",
+    "mv": "-2.5",
+    "avs": "https://www.avsforum.com/threads/bass-eq-for-filtered-movies.2995212/post-62658366",
+    "sortTitle": "battle: los angeles",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "When once distant UFOs become a terrifying threat attacking Earth, a Marine staff sergeant and his team take it upon themselves to face the enemy and protect what remains of the planet.",
+    "theMovieDB": "44943",
+    "rating": "PG-13",
+    "runtime": "116",
+    "genres": [
+      "Science Fiction",
+      "Action"
+    ],
+    "altTitle": "",
+    "collection": {},
+    "underlying": "Battle- Los Angeles (2011) (-2.5 gain) BEQ DTS-HD MA 5.1",
+    "digest": "46ba9c829d11f7abbdec9e7de6cb0fdb6a4273ef52499e301691f0eca5eb11a6",
+    "created_at": 1688417781,
+    "updated_at": 1707432867,
+    "audioCodecs": [
+      "DTS-HD MA"
+    ],
+    "audioChannelCounts": [
+      "5.1"
+    ]
+  },
+  {
+    "title": "Edge of Tomorrow",
+    "year": "2014",
+    "audioTypes": [
+      "Atmos"
+    ],
+    "content_type": "film",
+    "author": "mikejl",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/mikejl/edge-of-tomorrow/#atmos",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 10.0,
+        "gain": -10.0,
+        "q": 0.75,
+        "biquads": {
+          "96000": {
+            "b": [
+              "0.9997453625689671",
+              "-1.9988364588906473",
+              "0.9990913370707373"
+            ],
+            "a": [
+              "1.9988361986074932",
+              "-0.9988369599228577"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 20.0,
+        "gain": 8.0,
+        "q": 0.75,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000405564975543",
+              "-1.998612699125038",
+              "0.9982098479400572"
+            ],
+            "a": [
+              "1.9986135158305778",
+              "-0.9986145962100599"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 20.0,
+        "gain": 8.0,
+        "q": 0.75,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000405564975543",
+              "-1.998612699125038",
+              "0.9982098479400572"
+            ],
+            "a": [
+              "1.9986135158305778",
+              "-0.9986145962100599"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 20.0,
+        "gain": 8.0,
+        "q": 0.75,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000405564975543",
+              "-1.998612699125038",
+              "0.9982098479400572"
+            ],
+            "a": [
+              "1.9986135158305778",
+              "-0.9986145962100599"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 20.0,
+        "gain": 8.0,
+        "q": 0.75,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000405564975543",
+              "-1.998612699125038",
+              "0.9982098479400572"
+            ],
+            "a": [
+              "1.9986135158305778",
+              "-0.9986145962100599"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 25.0,
+        "gain": -1.6,
+        "q": 2.4,
+        "biquads": {
+          "96000": {
+            "b": [
+              "0.9999371414381194",
+              "-1.9992500582347155",
+              "0.9993155930972125"
+            ],
+            "a": [
+              "1.9992500582347155",
+              "-0.9992527345353321"
+            ]
+          }
+        }
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 30.5,
+        "gain": -3.2,
+        "q": 5.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "0.9999260576993962",
+              "-1.9995161346096186",
+              "0.9995940608483744"
+            ],
+            "a": [
+              "1.9995161346096186",
+              "-0.9995201185477707"
+            ]
+          }
+        }
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 35.0,
+        "gain": -0.5,
+        "q": 3.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "0.9999780279746892",
+              "-1.999209185388935",
+              "0.9992364028618311"
+            ],
+            "a": [
+              "1.999209185388935",
+              "-0.9992144308365203"
+            ]
+          }
+        }
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 40.0,
+        "gain": -0.5,
+        "q": 3.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "0.9999748905295949",
+              "-1.9990954064732647",
+              "0.9991273667551861"
+            ],
+            "a": [
+              "1.9990954064732647",
+              "-0.9991022572847811"
+            ]
+          }
+        }
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 70.0,
+        "gain": 0.2,
+        "q": 1.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000526281481656",
+              "-1.9954602607311576",
+              "0.9954285751655713"
+            ],
+            "a": [
+              "1.9954602607311576",
+              "-0.9954812033137369"
+            ]
+          }
+        }
+      }
+    ],
+    "images": [
+      "https://raw.githubusercontent.com/MikejLarson/Images/refs/heads/main/E/Edge%20of%20Tomorrow/Edge%20Of%20Tomorrow%20(2014)%20Atmos.jpg",
+      "https://raw.githubusercontent.com/MikejLarson/Images/refs/heads/main/E/Edge%20of%20Tomorrow/Edge%20Of%20Tomorrow%20(2014)%20Atmoshm.jpg"
+    ],
+    "warning": "",
+    "mv": "0",
+    "avs": "",
+    "sortTitle": "edge of tomorrow",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "Major Bill Cage is an officer who has never seen a day of combat when he is unceremoniously demoted and dropped into combat. Cage is killed within minutes, managing to take an alpha alien down with him. He awakens back at the beginning of the same day and is forced to fight and die again... and again - as physical contact with the alien has thrown him into a time loop.",
+    "theMovieDB": "137113",
+    "rating": "PG-13",
+    "runtime": "114",
+    "genres": [
+      "Action",
+      "Science Fiction"
+    ],
+    "altTitle": "",
+    "collection": {},
+    "underlying": "Edge of Tomorrow (2014) BEQ Atmos",
+    "digest": "ee9a899723566301a5714d16e5df17593a3f4454e93c6eaf19b385b21033eba0",
+    "created_at": 1744220832,
+    "updated_at": 1744220832,
+    "audioCodecs": [
+      "Atmos"
+    ],
+    "audioChannelCounts": [
+      ""
+    ]
+  },
+  {
+    "title": "Mad Max: Fury Road",
+    "year": "2015",
+    "audioTypes": [
+      "Atmos"
+    ],
+    "content_type": "film",
+    "author": "mobe1969",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/mobe1969/mad-max-fury-road/#atmos",
+    "filters": [
+      {
+        "type": "LowShelf",
+        "freq": 10.0,
+        "gain": 7.0,
+        "q": 0.8,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001659829035023",
+              "-1.9993309256840015",
+              "0.9991655835060734"
+            ],
+            "a": [
+              "1.999331102945988",
+              "-0.9993313891475891"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 11.0,
+        "gain": -6.0,
+        "q": 8.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "0.9999682976645043",
+              "-1.9998723705441093",
+              "0.9999045911722183"
+            ],
+            "a": [
+              "1.9998723705441093",
+              "-0.9998728888367227"
+            ]
+          }
+        }
+      },
+      {
+        "type": "LowShelf",
+        "freq": 18.0,
+        "gain": 4.0,
+        "q": 0.8,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000169966249115",
+              "-1.9986869616626173",
+              "0.9985187415466412"
+            ],
+            "a": [
+              "1.9986872838614225",
+              "-0.998688385596951"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 18.0,
+        "gain": 4.0,
+        "q": 0.8,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.000169966249115",
+              "-1.9986869616626173",
+              "0.9985187415466412"
+            ],
+            "a": [
+              "1.9986872838614225",
+              "-0.998688385596951"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "PeakingEQ",
+        "freq": 18.0,
+        "gain": 6.0,
+        "q": 3.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0001383270084894",
+              "-1.9997206413241266",
+              "0.9995837020356961"
+            ],
+            "a": [
+              "1.9997206413241266",
+              "-0.9997220290441852"
+            ]
+          }
+        }
+      }
+    ],
+    "images": [
+      "https://gitlab.com/Mobe1969/beq-reports/-/raw/master/Movies/M/Mad%20Max%20Fury%20Road%20%282015%29%20Atmos.jpg"
+    ],
+    "warning": "",
+    "mv": "0",
+    "avs": "",
+    "sortTitle": "mad max fury road",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "An apocalyptic story set in the furthest reaches of our planet, in a stark desert landscape where humanity is broken, and most everyone is crazed fighting for the necessities of life. Within this world exist two rebels on the run who just might be able to restore order.",
+    "theMovieDB": "76341",
+    "rating": "R",
+    "runtime": "121",
+    "genres": [
+      "Action",
+      "Adventure",
+      "Science Fiction"
+    ],
+    "altTitle": "Mad Max Fury Road",
+    "collection": {
+      "id": "8945",
+      "name": "Mad Max Collection"
+    },
+    "underlying": "Mad Max Fury Road (2015) Atmos",
+    "digest": "256e2dae91c5822711ebd05d202023600a375881441937fb6057a59b40def2e1",
+    "created_at": 1653129231,
+    "updated_at": 1653129231,
+    "audioChannelCounts": [
+      ""
+    ],
+    "audioCodecs": [
+      "Atmos"
+    ]
+  },
+  {
+    "title": "John Wick",
+    "year": "2014",
+    "audioTypes": [
+      "Atmos"
+    ],
+    "content_type": "film",
+    "author": "aron7awol",
+    "catalogue_url": "https://beqcatalogue.readthedocs.io/en/latest/aron7awol/56811348/#atmos",
+    "filters": [
+      {
+        "type": "PeakingEQ",
+        "freq": 50.0,
+        "gain": 0.4,
+        "q": 1.0,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000752381394842",
+              "-1.996796417705212",
+              "0.9967318716656904"
+            ],
+            "a": [
+              "1.996796417705212",
+              "-0.9968071098051745"
+            ]
+          }
+        }
+      },
+      {
+        "type": "LowShelf",
+        "freq": 11.0,
+        "gain": 3.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000876921908122",
+              "-1.999282660985093",
+              "0.9991956136268323"
+            ],
+            "a": [
+              "1.9992827752319366",
+              "-0.9992831915708004"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 11.0,
+        "gain": 3.8,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0000876921908122",
+              "-1.999282660985093",
+              "0.9991956136268323"
+            ],
+            "a": [
+              "1.9992827752319366",
+              "-0.9992831915708004"
+            ]
+          }
+        },
+        "count": 1
+      },
+      {
+        "type": "LowShelf",
+        "freq": 21.0,
+        "gain": 5.6,
+        "q": 0.9,
+        "biquads": {
+          "96000": {
+            "b": [
+              "1.0002473657695787",
+              "-1.998699031043782",
+              "0.998454271269852"
+            ],
+            "a": [
+              "1.9986996502186276",
+              "-0.9987010178645853"
+            ]
+          }
+        },
+        "count": 1
+      }
+    ],
+    "images": [
+      "https://i.imgur.com/m2ib7Lv.jpg",
+      "https://i.imgur.com/LgEGtHm.jpg"
+    ],
+    "warning": "",
+    "mv": "2",
+    "avs": "https://www.avsforum.com/threads/bass-eq-for-filtered-movies.2995212/post-56811348",
+    "sortTitle": "john wick",
+    "edition": "",
+    "note": "",
+    "language": "English",
+    "source": "Disc",
+    "overview": "Ex-hitman John Wick comes out of retirement to track down the gangsters that took everything from him.",
+    "theMovieDB": "245891",
+    "rating": "R",
+    "runtime": "101",
+    "genres": [
+      "Action",
+      "Thriller"
+    ],
+    "altTitle": "",
+    "collection": {
+      "id": "404609",
+      "name": "John Wick Collection"
+    },
+    "underlying": "John Wick (2014) (+2 gain) BEQ Atmos",
+    "digest": "9174559800d3210fbffb3ca61a3e4489686878d7749bfd67cf44ba32e8d79987",
+    "created_at": 1543898641,
+    "updated_at": 1611984156,
+    "audioChannelCounts": [
+      ""
+    ],
+    "audioCodecs": [
+      "Atmos"
+    ]
+  }
+]

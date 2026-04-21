@@ -1,6 +1,8 @@
 #!/bin/bash
-for ui in $(ls *.ui)
+# Regenerate Python source from Qt Designer .ui files.
+# Run from src/main/python/ui/ via: poetry run bash convert.sh
+for ui in *.ui
 do
     echo "Compiling ${ui}"
-    /home/matt/.cache/pypoetry/virtualenvs/beqdesigner-IpT5f2Ps-py3.13/bin/pyuic6 "${ui}" -o "${ui%.ui}.py"
+    poetry run pyuic6 "${ui}" -o "${ui%.ui}.py"
 done

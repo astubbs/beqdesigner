@@ -1,11 +1,10 @@
 import typing
 
 import qtawesome as qta
-from qtpy.QtCore import QAbstractTableModel, QModelIndex, QVariant, Qt
-from qtpy.QtWidgets import QDialog, QPushButton, QHeaderView
-from sortedcontainers import SortedDict, SortedSet
-
 from mpl import NoCaretStyle
+from qtpy.QtCore import QAbstractTableModel, QModelIndex, Qt, QVariant
+from qtpy.QtWidgets import QDialog, QHeaderView, QPushButton
+from sortedcontainers import SortedDict, SortedSet
 from ui.delegates import CheckBoxDelegate
 from ui.link import Ui_linkSignalDialog
 

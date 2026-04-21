@@ -1,0 +1,12 @@
+# Install with: pre-commit install
+# Run on demand: pre-commit run --all-files
+repos:
+  - repo: local
+    hooks:
+      - id: regen-ui
+        name: regenerate Qt .ui -> .py
+        description: Re-run pyuic6 whenever a Qt Designer .ui file is staged.
+        entry: poetry run python scripts/regen_ui.py
+        language: system
+        pass_filenames: false
+        files: '^src/main/python/ui/.*\.ui$'

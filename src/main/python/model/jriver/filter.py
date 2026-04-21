@@ -9,20 +9,50 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Dict, Optional, Callable, Union, Type, Sequence, overload, Tuple, Iterable, Set
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Type, Union, overload
 
 import numpy as np
-
 from model import iir
-from model.iir import SOS, s_to_q, q_to_s, FirstOrder_LowPass, FirstOrder_HighPass, PassFilter, CompoundPassFilter, \
-    FilterType, SecondOrder_LowPass, ComplexLowPass, SecondOrder_HighPass, ComplexHighPass, CompleteFilter, \
-    BiquadWithQGain, PeakingEQ, LowShelf as LS, Gain as G, LinkwitzTransform as LT, AllPass as AP, MDS_FREQ_DIVISOR, \
-    DEFAULT_Q
-from model.jriver import JRIVER_FS, flatten, s2f, UnsupportedRoutingError, ImpossibleRoutingError, make_dirac_pulse, \
-    make_silence
+from model.iir import (
+    DEFAULT_Q,
+    MDS_FREQ_DIVISOR,
+    SOS,
+    BiquadWithQGain,
+    CompleteFilter,
+    ComplexHighPass,
+    ComplexLowPass,
+    CompoundPassFilter,
+    FilterType,
+    FirstOrder_HighPass,
+    FirstOrder_LowPass,
+    PassFilter,
+    PeakingEQ,
+    SecondOrder_HighPass,
+    SecondOrder_LowPass,
+    q_to_s,
+    s_to_q,
+)
+from model.iir import AllPass as AP
+from model.iir import Gain as G
+from model.iir import LinkwitzTransform as LT
+from model.iir import LowShelf as LS
+from model.jriver import (
+    JRIVER_FS,
+    ImpossibleRoutingError,
+    UnsupportedRoutingError,
+    flatten,
+    make_dirac_pulse,
+    make_silence,
+    s2f,
+)
 from model.jriver.codec import filts_to_xml
-from model.jriver.formats import JRIVER_SHORT_CHANNELS, SHORT_USER_CHANNELS
-from model.jriver.formats import get_channel_name, get_channel_idx, pop_channels
+from model.jriver.formats import (
+    JRIVER_SHORT_CHANNELS,
+    SHORT_USER_CHANNELS,
+    get_channel_idx,
+    get_channel_name,
+    pop_channels,
+)
 from model.jriver.routing import Matrix
 from model.log import to_millis
 from model.signal import Signal
@@ -125,7 +155,7 @@ class SingleFilter(Filter, ABC):
         return {}
 
     def print_disabled(self):
-        return '' if self.enabled else f" *** DISABLED ***"
+        return '' if self.enabled else " *** DISABLED ***"
 
     @classmethod
     def default_values(cls) -> Dict[str, str]:
@@ -429,7 +459,7 @@ class Pass(ChannelFilter, ABC):
     def short_desc(self):
         q_suffix = ''
         if not math.isclose(self.jriver_q, 1.0):
-            q_suffix = f" VarQ"
+            q_suffix = " VarQ"
         if self.freq >= 1000:
             f = f"{self.freq / 1000.0:.3g}k"
         else:
@@ -1465,7 +1495,7 @@ class CombineFilterOp(FilterOp, ABC):
 
     def accept(self, signal: Signal):
         if self.ready:
-            raise ValueError(f"Attempting to reuse AddFilterOp")
+            raise ValueError("Attempting to reuse AddFilterOp")
         self.__inbound_signal = signal
         return self
 

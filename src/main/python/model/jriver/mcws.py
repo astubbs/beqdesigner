@@ -1,9 +1,8 @@
 import logging
-from typing import Dict, Optional, Tuple, Callable, List
+from typing import Callable, Dict, List, Optional, Tuple
 from xml.etree import ElementTree as ET
 
 import requests
-from requests.models import HTTPError
 
 logger = logging.getLogger('jriver.mcws')
 

@@ -6,6 +6,7 @@ on:
     paths:
       - 'src/main/python/**'
       - 'src/test/**'
+      - 'scripts/**'
       - 'poetry.lock'
       - 'test.yaml'
   pull_request:
@@ -14,6 +15,7 @@ on:
     paths:
       - 'src/main/python/**'
       - 'src/test/**'
+      - 'scripts/**'
       - 'poetry.lock'
       - 'test.yaml'
   workflow_dispatch:
@@ -23,6 +25,90 @@ defaults:
   run:
     shell: bash
 jobs:
+  # --- Code quality gates (PR only) ---
+
+  duplicate-detection:
+    if: github.event_name == 'pull_request'
+    name: Duplicate Code Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: astubbs/duplicate-code-cross-check@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          directories: 'src/main/python src/test/python'
+          cpd-max-duplication: '5'
+          jscpd-max-duplication: '4'
+
+  file-similarity:
+    if: github.event_name == 'pull_request'
+    name: File Similarity Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: astubbs/duplicate-code-detection-tool@feat/base-vs-pr-comparison
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          directories: 'src/main/python,src/test/python'
+          file_extensions: 'py'
+          ignore_below: 30
+          fail_above: 80
+          warn_above: 50
+          one_comment: true
+          compare_with_base: true
+          max_increase: 10
+
+  # --- Existing jobs ---
+
+  ui-sync-check:
+    name: Qt .ui -> .py drift check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.13
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-in-project: true
+      - name: Install minimal deps for pyuic6
+        run: poetry install --no-interaction --only main
+      - name: Regenerate UI
+        run: poetry run python scripts/regen_ui.py
+      - name: Fail if generated files drifted
+        run: git diff --exit-code src/main/python/ui/
+
+  lint:
+    name: ruff + mypy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.13
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-in-project: true
+      - name: Install dev deps
+        run: poetry install --no-interaction --only main,dev
+      - name: ruff
+        run: poetry run ruff check src/main/python
+      - name: mypy
+        run: poetry run mypy
+
   build:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -56,8 +142,14 @@ jobs:
             sudo apt install -y libegl1
           fi
       - name: pytest
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
-          PYTHONPATH=./src/main/python poetry run pytest --cov=./src/main/python
+          # Exclude spike tests marked `integration` (need real media / TMDb /
+          # Ollama) and `experiment` (retrain models, minutes-to-hours each).
+          # Both groups are opt-in via scripts/run-spike-{integration,experiments}.sh.
+          PYTHONPATH=./src/main/python poetry run pytest --cov=./src/main/python \
+            -m "not integration and not experiment"
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:

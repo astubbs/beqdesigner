@@ -1,0 +1,6 @@
+{
+  "max_gain_db": 28.0,
+  "knee_hz": 23.0,
+  "confidence": 0.85,
+  "reasoning": "Edge of Tomorrow (2014) is a Tom Cruise sci-fi action blockbuster with aggressive modern LFE mastering. Its BEQ catalogue entry cascades multiple low-shelves to add ~+28 dB of infra-bass extension at 10 Hz, knee around 23 Hz."
+}

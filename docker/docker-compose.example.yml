@@ -1,0 +1,48 @@
+# BEQ Designer — docker-compose configuration
+#
+# Copy this file to docker-compose.yml and edit the volume paths to match
+# your NAS/server layout. Then run:
+#
+#   ./run.sh                    # Build and launch interactive menu
+#   ./run.sh extract            # Build and extract LFE WAVs
+#   ./run.sh -p extract         # Git pull, build, then extract
+#   ./run.sh --help             # List all subcommands
+#
+# Media roots are auto-discovered: all directories under /media/ are
+# treated as media library roots (via BEQ_MEDIA_DIR=/media).
+#
+# The extractor runs breadth-first: alternates movies and TV, one episode
+# per show per round. Already-extracted titles are skipped instantly. Safe
+# to interrupt and re-run — atomic writes prevent corrupt WAVs.
+
+services:
+
+  beq-designer:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: beq-designer:latest
+    container_name: beq-designer
+    stdin_open: true
+    tty: true
+    volumes:
+      # BEQ shared working directory — stores catalogue cache, WAV output,
+      # models, and media_inventory.json. WAVs go in {beq-dir}/wav-cache/.
+      # Machine-specific config (extract_config.json) lives in ~/.config/beqdesigner/.
+      - "/path/to/your/beqdesigner:/beq-designer-shared"
+
+      # Media libraries (read-only). Mount under /media/ — each subdirectory
+      # becomes a media root automatically. Add or remove as needed.
+      # IMPORTANT: keep mount names flat (no nesting like /media/a/b).
+      # Auto-discovery only checks one level under /media/.
+      - "/path/to/your/Movies:/media/Movies:ro"
+      - "/path/to/your/TV:/media/TV:ro"
+      - "/path/to/your/Anime Movies:/media/Anime_Movies:ro"
+      - "/path/to/your/Anime TV:/media/Anime_TV:ro"
+
+    environment:
+      # Set your timezone so log timestamps are local, not UTC.
+      - TZ=Pacific/Auckland
+
+    # No default command — launches the interactive menu.
+    # Pass subcommands directly: docker compose run beq-designer extract ...

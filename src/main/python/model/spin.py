@@ -1,4 +1,5 @@
 import logging
+
 from qtawesome import Spin
 
 logger = logging.getLogger('spin')

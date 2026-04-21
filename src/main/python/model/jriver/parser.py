@@ -3,12 +3,24 @@ import logging
 from pathlib import Path
 from typing import List
 
-from model.iir import ComplexFilter, SOS, ComplexLowPass, FilterType, ComplexHighPass, LinkwitzTransform
+from model.iir import SOS, ComplexFilter, ComplexHighPass, ComplexLowPass, FilterType, LinkwitzTransform
 from model.jriver import JRIVER_FS
-from model.jriver.codec import get_peq_key_name, filts_to_xml, include_filters_in_dsp
-from model.jriver.formats import get_channel_indexes, JRIVER_CHANNELS
-from model.jriver.filter import convert_filter_to_mc_dsp, MSOFilter, Filter, Delay, Peak, LowShelf, HighShelf, AllPass, \
-    Gain, Polarity, LowPass, HighPass
+from model.jriver.codec import filts_to_xml, get_peq_key_name, include_filters_in_dsp
+from model.jriver.filter import (
+    AllPass,
+    Delay,
+    Filter,
+    Gain,
+    HighPass,
+    HighShelf,
+    LowPass,
+    LowShelf,
+    MSOFilter,
+    Peak,
+    Polarity,
+    convert_filter_to_mc_dsp,
+)
+from model.jriver.formats import JRIVER_CHANNELS, get_channel_indexes
 
 logger = logging.getLogger('jriver.parser')
 

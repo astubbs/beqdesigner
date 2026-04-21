@@ -1,3 +1,19 @@
+# Claude Code config (local only -- repo owner prefers AGENTS.md)
+CLAUDE.md
+
+# Compound Engineering local config (per-machine preferences)
+.compound-engineering/*.local.yaml
+.claude/settings.local.json
+
+# Generated at build time
+build/version.json
+
+# Generated profile output (JSON, spectrographs, reports)
+profiles/
+
+# Local Docker compose (personal volume mounts -- copy from example)
+docker/docker-compose.yml
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

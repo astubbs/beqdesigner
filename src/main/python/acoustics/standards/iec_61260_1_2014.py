@@ -25,8 +25,8 @@ Nominal center frequencies
 .. autoattribute:: acoustics.standards.iec_61260_1_2014.OCTAVE_FREQUENCY_RATIO
 
 """
-from acoustics.standards import iec_61672_1_2013
 import numpy as np
+from acoustics.standards import iec_61672_1_2013
 
 NOMINAL_OCTAVE_CENTER_FREQUENCIES = np.array([31.5, 63.0, 125.0, 250.0,
                                               500.0, 1000.0, 2000.0,
