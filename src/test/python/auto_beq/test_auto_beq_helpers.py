@@ -296,15 +296,17 @@ class TestDiscoveryCache:
         # Pickle roundtrip equivalence (Path objects compare by value).
         assert [p["tmdb_id"] for p in r2] == [p["tmdb_id"] for p in r1]
 
-    def test_cache_invalidates_on_wav_root_mtime_change(self, monkeypatch, tmp_path):
-        """Bumping the wav-cache root mtime (as extract_lfe.py does)
-        invalidates the discovery cache."""
-        import os as _os
+    def test_cache_invalidates_on_wav_count_change(self, monkeypatch, tmp_path):
+        """Adding a WAV file to the cache invalidates the discovery cache."""
         import model.wav_discovery as wd
         from model.wav_discovery import discover_wav_catalogue_pairs_cached
 
         wav_root = tmp_path / "wav-cache"
-        wav_root.mkdir()
+        # Create bucket/shard structure with one WAV
+        shard = wav_root / "tmdb" / "19"
+        shard.mkdir(parents=True)
+        (shard / "avatar.wav").write_bytes(b"fake")
+
         monkeypatch.setattr(wd, "beq_shared_dir", lambda: tmp_path)
         monkeypatch.setattr(wd, "wav_cache_dir", lambda: wav_root)
 
@@ -312,19 +314,18 @@ class TestDiscoveryCache:
 
         def fake_discover():
             call_count["n"] += 1
-            return [{"wav_path": wav_root / "a.wav", "catalogue_entry": {}, "tmdb_id": "1"}]
+            return [{"wav_path": shard / "avatar.wav", "catalogue_entry": {}, "tmdb_id": "1"}]
 
         monkeypatch.setattr(wd, "discover_wav_catalogue_pairs", fake_discover)
 
         discover_wav_catalogue_pairs_cached()
         assert call_count["n"] == 1
 
-        # Bump the root mtime to simulate a fresh extract_lfe.py run.
-        new_time = wav_root.stat().st_mtime + 10
-        _os.utime(wav_root, (new_time, new_time))
+        # Add a new WAV to the same shard - count changes, cache invalidates.
+        (shard / "inception.wav").write_bytes(b"fake")
 
         discover_wav_catalogue_pairs_cached()
-        assert call_count["n"] == 2, "root mtime change should invalidate"
+        assert call_count["n"] == 2, "WAV count change should invalidate"
 
     def test_env_var_disables_discovery_cache(self, monkeypatch, tmp_path):
         """``AUTO_BEQ_DISCOVERY_CACHE=0`` bypasses the cache entirely."""

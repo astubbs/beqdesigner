@@ -96,63 +96,8 @@ def extract_media_id(media_path: Path) -> tuple[str, str] | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# BEQ catalogue fetch + cache
-# ---------------------------------------------------------------------------
-
-
-def fetch_catalogue(beq_shared_dir: Path) -> list[dict]:
-    """Fetch the BEQ catalogue, caching at {beq_shared_dir}/beq_catalogue.json.
-
-    Uses If-Modified-Since on the GET request. If the server returns 304
-    Not Modified, we skip the download. Uses stdlib only.
-    """
-    import email.utils
-    import urllib.error
-    import urllib.request
-
-    cache_path = beq_shared_dir / "beq_catalogue.json"
-
-    _CATALOGUE_TTL = 86400  # 24 hours
-
-    req = urllib.request.Request(CATALOGUE_URL)
-    if cache_path.exists():
-        local_mtime = cache_path.stat().st_mtime
-        age_hours = (time.time() - local_mtime) / 3600
-        if age_hours < _CATALOGUE_TTL / 3600:
-            log.info("catalogue cached (%.0fh old, <24h) — skipping freshness check", age_hours)
-            data = cache_path.read_bytes()
-            catalogue = json.loads(data)
-            log.info("catalogue loaded: %d entries (%s)", len(catalogue), _human_size(len(data)))
-            return catalogue
-        mtime_str = email.utils.formatdate(local_mtime, usegmt=True)
-        req.add_header("If-Modified-Since", mtime_str)
-        log.info("checking catalogue freshness (cached: %s, %.0fh old)...", mtime_str, age_hours)
-
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = resp.read()
-        tmp = cache_path.with_suffix(".tmp")
-        tmp.write_bytes(data)
-        tmp.rename(cache_path)
-        log.info("catalogue updated: %s (%s)", cache_path, _human_size(len(data)))
-    except urllib.error.HTTPError as exc:
-        if exc.code == 304:
-            log.info("catalogue is up to date (304 Not Modified)")
-        elif cache_path.exists():
-            log.warning("catalogue fetch failed (HTTP %d) — using cached copy", exc.code)
-        else:
-            raise RuntimeError(f"cannot fetch catalogue (HTTP {exc.code}) and no cache exists")
-    except Exception as exc:
-        if cache_path.exists():
-            log.warning("catalogue fetch failed (%s) — using cached copy", exc)
-        else:
-            raise RuntimeError(f"cannot fetch catalogue and no cache exists: {exc}")
-
-    catalogue = json.loads(cache_path.read_text())
-    size = cache_path.stat().st_size
-    log.info("catalogue loaded: %d entries (%s)", len(catalogue), _human_size(size))
-    return catalogue
+# BEQ catalogue fetch — consolidated in model/auto_beq_catalogue.py
+from model.auto_beq_catalogue import fetch_catalogue  # noqa: F401 — re-export for backward compat
 
 
 def build_catalogue_index(catalogue: list[dict]) -> dict:
@@ -2031,7 +1976,7 @@ def main(argv: list[str] | None = None):
 
     # Fetch BEQ catalogue (may take a few seconds — HTTP check).
     log.info("fetching BEQ catalogue...")
-    catalogue = fetch_catalogue(beq_shared_dir)
+    catalogue = fetch_catalogue()
     cat_index = build_catalogue_index(catalogue)
 
     # Discover media (incremental — uses media_inventory.json as a

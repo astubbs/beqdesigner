@@ -13,47 +13,76 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
+from model.media_constants import CATALOGUE_URL
+
 log = logging.getLogger("auto_beq_catalogue")
 
-_CATALOGUE_URL = (
-    "https://raw.githubusercontent.com/3ll3d00d/beqcatalogue/"
-    "master/docs/database.json"
-)
-_CACHE_DIR = Path.home() / ".config" / "beqdesigner"
-_CACHE_FILE = _CACHE_DIR / "catalogue_cache.json"
+_CACHE_FILENAME = "catalogue_cache.json"
 _CACHE_MAX_AGE_HOURS = 24
 
 
-def _fetch_or_cache() -> list[dict]:
-    """Return the full catalogue, fetching from GitHub if stale/missing."""
-    import time
+def _cache_path() -> Path:
+    """Return the catalogue cache file path via beq_config_dir()."""
+    from model.wav_discovery import beq_config_dir
+    return beq_config_dir() / _CACHE_FILENAME
 
-    if _CACHE_FILE.exists():
-        age_hours = (time.time() - _CACHE_FILE.stat().st_mtime) / 3600
+
+def fetch_catalogue() -> list[dict]:
+    """Return the full BEQ catalogue, fetching from GitHub if stale/missing.
+
+    Uses If-Modified-Since for efficient freshness checks and atomic
+    writes via .tmp rename to prevent partial reads. Falls back to
+    stale cache on network failure.
+    """
+    import email.utils
+
+    cache = _cache_path()
+
+    if cache.exists():
+        age_hours = (time.time() - cache.stat().st_mtime) / 3600
         if age_hours < _CACHE_MAX_AGE_HOURS:
-            log.debug("catalogue cache hit (%d entries, %.1fh old)",
-                      0, age_hours)
-            with _CACHE_FILE.open() as f:
-                return json.load(f)
+            data = json.loads(cache.read_text())
+            log.debug("catalogue cache hit (%d entries, %.1fh old)", len(data), age_hours)
+            return data
 
-    log.info("fetching catalogue from %s", _CATALOGUE_URL)
+    req = urllib.request.Request(CATALOGUE_URL)
+    if cache.exists():
+        mtime_str = email.utils.formatdate(cache.stat().st_mtime, usegmt=True)
+        req.add_header("If-Modified-Since", mtime_str)
+        log.info("checking catalogue freshness (cached: %s)...", mtime_str)
+
     try:
-        with urllib.request.urlopen(_CATALOGUE_URL, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        with _CACHE_FILE.open("w") as f:
-            json.dump(data, f)
-        log.info("cached %d catalogue entries", len(data))
-        return data
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read()
+        tmp = cache.with_suffix(".tmp")
+        tmp.write_bytes(raw)
+        tmp.rename(cache)
+        log.info("catalogue updated: %d bytes", len(raw))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 304:
+            log.info("catalogue is up to date (304 Not Modified)")
+        elif cache.exists():
+            log.warning("catalogue fetch failed (HTTP %d) - using cached copy", exc.code)
+        else:
+            return []
     except Exception as exc:
-        log.warning("catalogue fetch failed: %s", exc)
-        if _CACHE_FILE.exists():
-            with _CACHE_FILE.open() as f:
-                return json.load(f)
-        return []
+        if cache.exists():
+            log.warning("catalogue fetch failed (%s) - using cached copy", exc)
+        else:
+            return []
+
+    if cache.exists():
+        return json.loads(cache.read_text())
+    return []
+
+
+# Backward-compat alias for callers using the old name.
+_fetch_or_cache = fetch_catalogue
 
 
 def _normalise_title(title: str) -> str:

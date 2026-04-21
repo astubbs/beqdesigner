@@ -506,12 +506,10 @@ def discover_wav_catalogue_pairs_cached() -> list[dict]:
 
     Opt-out via ``AUTO_BEQ_DISCOVERY_CACHE=0``.
 
-    Signature captures the WAV cache root mtime and the catalogue cache
-    file mtime. Adding a new WAV inside an existing subdirectory does
-    NOT invalidate (root mtime unchanged), so if the user manually drops
-    a WAV deep in the tree they need to either re-run extract_lfe.py
-    (which refreshes ``.status_last.json`` in the root) or set
-    ``AUTO_BEQ_DISCOVERY_CACHE=0`` once.
+    Signature captures the WAV file count and the catalogue cache file
+    mtime. Adding a new WAV anywhere in the cache tree invalidates the
+    signature (count changes). The ``AUTO_BEQ_DISCOVERY_CACHE=0`` env
+    var bypasses the cache entirely.
     """
     if not _cache_enabled(_DISCOVERY_CACHE_ENABLED_ENV):
         log.info("discovery cache disabled via %s=0", _DISCOVERY_CACHE_ENABLED_ENV)
@@ -533,8 +531,8 @@ def discover_wav_catalogue_pairs_cached() -> list[dict]:
                 pairs = blob.get("pairs", [])
                 log.info(
                     "discover_wav_catalogue_pairs: cache hit - %d pairs "
-                    "(wav_root_mtime=%.0f, catalogue_mtime=%.0f)",
-                    len(pairs), signature["wav_root_mtime"], signature["catalogue_mtime"],
+                    "(wav_count=%d, catalogue_mtime=%.0f)",
+                    len(pairs), signature.get("wav_count", 0), signature.get("catalogue_mtime", 0),
                 )
                 return pairs
             log.info("discover_wav_catalogue_pairs: cache signature mismatch, re-walking")

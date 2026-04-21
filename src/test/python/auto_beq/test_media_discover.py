@@ -624,7 +624,8 @@ def test_main_against_fake_library(tmp_path, monkeypatch, capsys):
     # Stub out the network fetch by seeding the cache.
     cache_path = tmp_path / "catalogue_cache.json"
     cache_path.write_text(json.dumps(_mock_catalogue()))
-    monkeypatch.setattr(sd, "_catalogue_cache_path", lambda: cache_path)
+    import model.auto_beq_catalogue as cat_mod
+    monkeypatch.setattr(cat_mod, "_cache_path", lambda: cache_path)
 
     config_path = tmp_path / "sweep.json"
     exit_code = sd.main([
@@ -671,7 +672,8 @@ def test_main_clean_deletes_config(tmp_path, monkeypatch, capsys):
     # Provide a library to avoid the interactive prompt.
     cache_path = tmp_path / "catalogue_cache.json"
     cache_path.write_text(json.dumps(_mock_catalogue()))
-    monkeypatch.setattr(sd, "_catalogue_cache_path", lambda: cache_path)
+    import model.auto_beq_catalogue as cat_mod
+    monkeypatch.setattr(cat_mod, "_cache_path", lambda: cache_path)
 
     exit_code = sd.main([
         "--clean",

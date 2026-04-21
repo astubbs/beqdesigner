@@ -31,16 +31,13 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from model.media_constants import CATALOGUE_URL
 from model.wav_discovery import beq_config_dir
 from cli.extract import get_configured_media_roots, save_extract_config
 
 log = logging.getLogger("auto_beq_sweep")
 
-_DEFAULT_CATALOGUE_URL = (
-    "https://raw.githubusercontent.com/3ll3d00d/beqcatalogue/master/docs/database.json"
-)
 _DEFAULT_TEST_LIMIT = 10
-_CATALOGUE_CACHE_MAX_AGE_HOURS = 24
 _SCHEMA_VERSION = 1
 
 # Pattern 1 — Standard directory: "Title (YEAR)" optionally followed by " [tmdb-NNN]",
@@ -520,34 +517,7 @@ def sort_matches(matches: list[SweepFilm]) -> list[SweepFilm]:
 # Catalogue fetch + cache
 # ---------------------------------------------------------------------------
 
-def _catalogue_cache_path() -> Path:
-    return beq_config_dir() / "beq_catalogue_cache.json"
-
-
-def _is_cache_fresh(cache_path: Path, max_age_hours: int) -> bool:
-    if not cache_path.exists():
-        return False
-    age_s = dt.datetime.now().timestamp() - cache_path.stat().st_mtime
-    return age_s < max_age_hours * 3600
-
-
-def load_or_fetch_catalogue(
-    url: str = _DEFAULT_CATALOGUE_URL,
-    force_refresh: bool = False,
-    max_age_hours: int = _CATALOGUE_CACHE_MAX_AGE_HOURS,
-) -> list[dict]:
-    """Load the BEQ catalogue from cache, or fetch fresh from upstream."""
-    cache_path = _catalogue_cache_path()
-    if not force_refresh and _is_cache_fresh(cache_path, max_age_hours):
-        log.info("using cached catalogue: %s", cache_path)
-        with cache_path.open() as f:
-            return json.load(f)
-    log.info("fetching catalogue: %s", url)
-    with urllib.request.urlopen(url, timeout=60) as resp:  # noqa: S310
-        data = resp.read()
-    cache_path.write_bytes(data)
-    log.info("wrote catalogue cache: %s (%d bytes)", cache_path, len(data))
-    return json.loads(data)
+  # Catalogue fetch consolidated in model/auto_beq_catalogue.py
 
 
 # ---------------------------------------------------------------------------
@@ -568,7 +538,7 @@ def write_config(
     library_roots: list[Path],
     test_limit: int,
     output: Path | None = None,
-    catalogue_url: str = _DEFAULT_CATALOGUE_URL,
+    catalogue_url: str = CATALOGUE_URL,
 ) -> Path:
     """Write the discovered films to the sweep config JSON.
 
@@ -863,7 +833,8 @@ def main(argv: list[str] | None = None) -> int:
     # Persist library roots immediately so they survive Ctrl-C during scan.
     _save_library_roots(library_roots, output=args.output)
 
-    catalogue = load_or_fetch_catalogue(force_refresh=args.refresh)
+    from model.auto_beq_catalogue import fetch_catalogue
+    catalogue = fetch_catalogue()
     log.info("catalogue entries: %d", len(catalogue))
 
     # ---- Phase 1: Inventory ----
