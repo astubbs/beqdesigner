@@ -167,9 +167,8 @@ def _interactive_menu_loop(config: CliConfig, verbose: bool) -> None:
             _dispatch(action, config, verbose)
         except KeyboardInterrupt:
             console.print("\n[dim]Interrupted - returning to menu.[/dim]")
-        except SystemExit as e:
-            if e.code and e.code != 0:
-                console.print(f"[red]Command exited with code {e.code}[/red]")
+        except (SystemExit, typer.Exit):
+            pass  # Normal exit from typer commands - return to menu
         except Exception as e:
             msg = str(e) or type(e).__name__
             console.print(f"\n[red]Error:[/red] {msg}")
@@ -195,9 +194,8 @@ def _tools_menu_loop(config: CliConfig, verbose: bool) -> None:
             _dispatch(action, config, verbose)
         except KeyboardInterrupt:
             console.print("\n[dim]Interrupted - returning to tools menu.[/dim]")
-        except SystemExit as e:
-            if e.code and e.code != 0:
-                console.print(f"[red]Command exited with code {e.code}[/red]")
+        except (SystemExit, typer.Exit):
+            pass  # Normal exit from typer commands - return to menu
         except Exception as e:
             msg = str(e) or type(e).__name__
             console.print(f"\n[red]Error:[/red] {msg}")

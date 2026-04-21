@@ -457,6 +457,35 @@ class TestDispatch:
                                 "Likely calling typer function without explicit defaults."
                             )
 
+    def test_typer_exit_does_not_show_error(self):
+        """typer.Exit() from a command must not print 'Error:'.
+
+        Regression: typer.Exit inherits from RuntimeError (not SystemExit),
+        so it was caught by the generic Exception handler and displayed as
+        'Error: Exit' after every successful command that uses typer.Exit().
+        """
+        from io import StringIO
+        from unittest.mock import patch
+        from rich.console import Console
+
+        import typer
+        from cli.main import _interactive_menu_loop
+        from cli.common import CliConfig
+
+        config = CliConfig()
+
+        def _raise_exit(action, config, verbose):
+            raise typer.Exit()
+
+        captured = StringIO()
+        with patch("cli.main._dispatch", side_effect=_raise_exit):
+            with patch("cli.main.menu_select", side_effect=["profile", None]):
+                with patch("cli.main.console", Console(file=captured)):
+                    _interactive_menu_loop(config, verbose=False)
+
+        output = captured.getvalue()
+        assert "Error" not in output, f"typer.Exit showed as error: {output}"
+
 
 # ---------------------------------------------------------------------------
 # CLI invocation (subprocess — catches import errors, arg parsing bugs)
