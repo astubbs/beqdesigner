@@ -624,6 +624,20 @@ def extract_foundation_embeddings_parallel(
 # ---------------------------------------------------------------------------
 
 
+def _safe_float(value, default: float, field: str = "") -> float:
+    """Convert a value to float, returning *default* on failure.
+
+    LLM JSON responses may contain non-numeric strings like "about 15 dB"
+    despite format=json. This prevents ValueError from crashing the batch.
+    """
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        if field:
+            log.warning("non-numeric LLM response for %s: %r, using default %.1f", field, value, default)
+        return default
+
+
 def _clamp_advice(advice: Advice, source: str) -> Advice:
     """Clamp numeric fields to sane ranges, preserve other fields."""
     max_gain = float(np.clip(advice.max_gain_db, *MAX_GAIN_DB_RANGE))
@@ -1484,7 +1498,7 @@ def _apply_diff(
     """
     try:
         if action == "scale_gain":
-            factor = float(diff.get("factor", 1.0))
+            factor = _safe_float(diff.get("factor", 1.0), 1.0, "factor")
             factor = max(0.5, min(2.0, factor))
             new_chain = []
             for f in chain:
@@ -1494,7 +1508,7 @@ def _apply_diff(
                 new_chain.append(nf)
             return new_chain
         if action == "shift_knee":
-            delta = float(diff.get("delta_hz", 0.0))
+            delta = _safe_float(diff.get("delta_hz", 0.0), 0.0, "delta_hz")
             delta = max(-5.0, min(5.0, delta))
             if abs(delta) < 0.1:
                 return None
@@ -1511,9 +1525,9 @@ def _apply_diff(
             new_chain[inner_idx]["freq"] = max(5.0, min(80.0, new_freq))
             return new_chain
         if action == "add_notch":
-            freq = float(diff.get("freq_hz", 0.0))
-            q = float(diff.get("q", 3.0))
-            gain = float(diff.get("gain_db", 0.0))
+            freq = _safe_float(diff.get("freq_hz", 0.0), 0.0, "freq_hz")
+            q = _safe_float(diff.get("q", 3.0), 3.0, "q")
+            gain = _safe_float(diff.get("gain_db", 0.0), 0.0, "gain_db")
             if not (5.0 <= freq <= 80.0) or abs(gain) < 0.5:
                 return None
             new_chain = [dict(f) for f in chain]
@@ -1846,13 +1860,13 @@ class OllamaAdvisor:
         numbers_result = self._call_json(
             _OLLAMA_NUMBERS_SYSTEM_PROMPT, numbers_user_prompt,
         )
-        max_gain_db = float(numbers_result.get("max_gain_db", 0.0))
+        max_gain_db = _safe_float(numbers_result.get("max_gain_db", 0.0), 0.0, "max_gain_db")
         knee_hz = (
             None if numbers_result.get("knee_hz") is None
-            else float(numbers_result["knee_hz"])
+            else _safe_float(numbers_result["knee_hz"], 80.0, "knee_hz")
         )
         numbers_reasoning = str(numbers_result.get("reasoning", ""))
-        confidence = float(numbers_result.get("confidence", 0.5))
+        confidence = _safe_float(numbers_result.get("confidence", 0.5), 0.5, "confidence")
         log.info(
             "Ollama step 3a (numbers): max_gain_db=%.1f knee_hz=%s - %s",
             max_gain_db, knee_hz, numbers_reasoning,

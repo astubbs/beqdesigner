@@ -433,14 +433,14 @@ def dev_test(
     # Pass 1: all tests except torch (avoids Qt + torch segfault).
     console.print("[bold]Pass 1:[/bold] Running tests (excluding torch)...")
     cmd1 = base_cmd + [test_selector, "--ignore=src/test/python/auto_beq/test_auto_beq_torch.py"] + marker_args
-    r1 = subprocess.run(cmd1, env=env, cwd=str(REPO_ROOT))
+    r1 = subprocess.run(cmd1, env=env, cwd=str(REPO_ROOT), timeout=600)
 
     # Pass 2: torch tests only (separate process, no Qt loaded).
     torch_test = "src/test/python/auto_beq/test_auto_beq_torch.py"
     if not file or "torch" in (file or ""):
         console.print("\n[bold]Pass 2:[/bold] Running torch tests (separate process)...")
         cmd2 = base_cmd + [torch_test]
-        r2 = subprocess.run(cmd2, env=env, cwd=str(REPO_ROOT))
+        r2 = subprocess.run(cmd2, env=env, cwd=str(REPO_ROOT), timeout=300)
         if r1.returncode != 0 or r2.returncode != 0:
             raise SystemExit(1)
     elif r1.returncode != 0:
@@ -514,7 +514,7 @@ def dev_benchmark(
         }
         subprocess.run(
             ["poetry", "run", "pytest", f"{test_module}::test_library_sweep", "-v", "-s"],
-            env=env, cwd=str(REPO_ROOT),
+            env=env, cwd=str(REPO_ROOT), timeout=3600,
         )
 
 
