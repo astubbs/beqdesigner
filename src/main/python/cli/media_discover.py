@@ -385,11 +385,17 @@ def inventory_root(library_root: Path) -> list[Path]:
             f"({len(media_files)} files) — {child.name}",
             end="", flush=True,
         )
-        for ext in _MEDIA_EXTENSIONS:
-            media_files.extend(child.rglob(f"*{ext}"))
+        for dirpath, _dirnames, filenames in os.walk(child):
+            for fname in filenames:
+                if any(fname.lower().endswith(ext) for ext in _MEDIA_EXTENSIONS):
+                    media_files.append(Path(dirpath) / fname)
     # Also check for media files directly in the root (not in subdirs).
-    for ext in _MEDIA_EXTENSIONS:
-        media_files.extend(library_root.glob(f"*{ext}"))
+    try:
+        for entry in os.scandir(library_root):
+            if entry.is_file() and any(entry.name.lower().endswith(ext) for ext in _MEDIA_EXTENSIONS):
+                media_files.append(Path(entry.path))
+    except OSError:
+        pass
 
     # Filter out samples, trailers, featurettes: exclude files in junk
     # subdirectories or below minimum size for a feature.

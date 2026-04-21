@@ -7,6 +7,7 @@ from standalone scripts (Docker containers, NAS extraction, etc.).
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from datetime import datetime, timedelta
@@ -184,10 +185,11 @@ def find_media_dirs(library_root: Path) -> list[Path]:
     sample: Path | None = None
     for child in library_root.iterdir():
         if child.is_dir():
-            for ext in MEDIA_EXTENSIONS:
-                for p in child.rglob(f"*{ext}"):
-                    sample = p
-                    break
+            for dirpath, _dirnames, filenames in os.walk(child):
+                for fname in filenames:
+                    if any(fname.lower().endswith(ext) for ext in MEDIA_EXTENSIONS):
+                        sample = Path(dirpath) / fname
+                        break
                 if sample:
                     break
         elif any(child.suffix == ext for ext in MEDIA_EXTENSIONS):

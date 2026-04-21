@@ -210,8 +210,10 @@ def discover_media(
 
         log.info("scanning for media files in %s ...", root)
         media_files = []
-        for ext in MEDIA_EXTENSIONS:
-            media_files.extend(root.rglob(f"*{ext}"))
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for fname in filenames:
+                if any(fname.lower().endswith(ext) for ext in MEDIA_EXTENSIONS):
+                    media_files.append(Path(dirpath) / fname)
 
         for f in sorted(media_files):
             if any(part.lower() in JUNK_SUBDIRS for part in f.parts):
@@ -1244,10 +1246,13 @@ def verify_cache(wav_root: Path) -> int:
 def cleanup_tmp(wav_root: Path) -> int:
     """Delete leftover .tmp files from interrupted extractions."""
     cleaned = 0
-    for tmp in wav_root.rglob("*.tmp"):
-        log.info("cleaning up interrupted extraction: %s", tmp.name)
-        tmp.unlink()
-        cleaned += 1
+    for dirpath, _dirnames, filenames in os.walk(wav_root):
+        for fname in filenames:
+            if fname.endswith(".tmp"):
+                tmp = Path(dirpath) / fname
+                log.info("cleaning up interrupted extraction: %s", tmp.name)
+                tmp.unlink()
+                cleaned += 1
     return cleaned
 
 
