@@ -1,7 +1,7 @@
 ---
 title: "refactor: Remove BEQ_WAV_CACHE and purge local-env paths"
 type: refactor
-status: active
+status: completed
 date: 2026-04-22
 origin: docs/brainstorms/2026-04-22-config-cleanup-requirements.md
 ---
@@ -68,7 +68,7 @@ local-environment path references from tracked files. Keep the
 
 ---
 
-- [ ] **Unit 2: Purge `/Volumes/NAS/` test fixtures**
+- [x] **Unit 2: Purge `/Volumes/NAS/` test fixtures**
 
 **Files:**
 - Modify: `src/test/python/auto_beq/test_auto_beq_helpers.py:58,76`
@@ -86,7 +86,7 @@ local-environment path references from tracked files. Keep the
 
 ---
 
-- [ ] **Unit 3: Purge `/home/matt/` references**
+- [x] **Unit 3: Purge `/home/matt/` references**
 
 **Files:**
 - Modify: `src/test/python/beq_loader.py:70` - use tmp_path or env var
@@ -109,7 +109,7 @@ local-environment path references from tracked files. Keep the
 
 ---
 
-- [ ] **Unit 4: Scrub home directories from meta-references**
+- [x] **Unit 4: Scrub home directories from meta-references**
 
 **Files:**
 - Modify: `docs/architecture.md:166` - replace `/Volumes/Batou/...`
@@ -139,7 +139,7 @@ local-environment path references from tracked files. Keep the
 
 ---
 
-- [ ] **Unit 5: Update AGENTS.md and readme.md env var tables**
+- [x] **Unit 5: Update AGENTS.md and readme.md env var tables**
 
 **Files:**
 - Modify: `AGENTS.md` - remove `BEQ_WAV_CACHE` row from env vars table
