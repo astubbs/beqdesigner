@@ -380,7 +380,7 @@ def discover(
             argv.extend(["--library", str(lib)])
     if yes or os.environ.get("BEQ_AUTO_YES") == "1":
         argv.append("--yes")
-    from cli.sweep_discover import main as discover_main
+    from cli.media_discover import main as discover_main
     discover_main(argv if argv else None)
 
 
@@ -635,7 +635,7 @@ def report_f_experiments(
 @report_app.command(name="experiments")
 def report_experiments_cmd() -> None:
     """Compare results from different experiment runs."""
-    from cli.sweep_report import main as report_main
+    from cli.experiment_report import main as report_main
     _render_markdown_report(report_main)
 
 

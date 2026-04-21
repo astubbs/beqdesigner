@@ -45,7 +45,7 @@ from model.wav_discovery import (
     load_settings,
     wav_cache_dir,
 )
-from cli.sweep_discover import parse_media_filename
+from cli.media_discover import parse_media_filename
 
 log = logging.getLogger("generate_beq_profile")
 

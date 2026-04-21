@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Unified report generator for auto-BEQ experiment sweep results.
+"""Unified report generator for auto-BEQ experiment results.
 
 Reads all experiment CSV files from .pytest_cache/ and produces a
 consolidated comparison report showing how each experiment/config
 performs across the library.
 
 Usage:
-    bin/beq-designer sweep report
-    bin/beq-designer sweep report --csv report.csv   # also write CSV
-    bin/beq-designer sweep report --dir /path/to/csvs  # custom CSV dir
+    bin/beq-designer report experiments
+    bin/beq-designer report experiments --csv report.csv   # also write CSV
+    bin/beq-designer report experiments --dir /path/to/csvs  # custom CSV dir
 
 Reports generated:
     1. Per-experiment summary: P/M/F counts, grade changes, avg delta

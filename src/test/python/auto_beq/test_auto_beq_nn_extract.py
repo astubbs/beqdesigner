@@ -35,7 +35,7 @@ from auto_beq.conftest_nn import (
     compute_mean_loss,
     extract_real_audio_features,
 )
-from auto_beq.sweep_discover import inventory_root, match_media_files
+from auto_beq.media_discover import inventory_root, match_media_files
 
 log = logging.getLogger("auto_beq_nn_extract")
 

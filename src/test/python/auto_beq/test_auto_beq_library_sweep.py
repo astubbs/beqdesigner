@@ -45,7 +45,7 @@ from auto_beq._auto_beq_helpers import (
     load_and_smooth_chunked,
     load_measured,
 )
-from auto_beq.sweep_discover import bucket_rating, load_catalogue_by_digest, load_config
+from auto_beq.media_discover import bucket_rating, load_catalogue_by_digest, load_config
 
 log = logging.getLogger("auto_beq_sweep")
 

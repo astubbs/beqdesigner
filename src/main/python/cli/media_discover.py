@@ -1,4 +1,4 @@
-"""Discovery CLI for the auto-BEQ library sweep.
+"""Media discovery CLI for the auto-BEQ pipeline.
 
 Walks one or more media library roots, parses standard media filenames
 (``Title (YEAR) [tmdb-NNNNN]``), cross-references every (title, year)
@@ -6,16 +6,15 @@ against the full BEQ catalogue, and persists all matches to
 ``~/.config/beqdesigner/auto_beq_sweep.json``.
 
 Discovery is fast (in-memory filename parsing + dict lookups) and maps
-the ENTIRE catalogue-matched library — the pytest sweep test applies a
-limit at runtime.
+the ENTIRE catalogue-matched library.
 
 Run with::
 
-    poetry run python -m spike.sweep_discover --library /path/to/movies
+    bin/beq-designer discover --library /path/to/movies
 
 Or via ``.env`` / env var::
 
-    AUTO_BEQ_LIBRARY_ROOTS=/mnt/media1:/mnt/media2 poetry run python -m spike.sweep_discover --yes
+    AUTO_BEQ_LIBRARY_ROOTS=/mnt/media1:/mnt/media2 bin/beq-designer discover --yes
 """
 
 from __future__ import annotations
@@ -801,7 +800,7 @@ def _confirm(prompt: str) -> bool:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        prog="sweep_discover",
+        prog="media_discover",
         description="Discover catalogue-matched films in the user's library.",
     )
     p.add_argument(

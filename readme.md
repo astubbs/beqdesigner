@@ -26,7 +26,7 @@ root is `src/main/python`, not the repo root.
 ### BEQ CLI
 
 Single entry point for all operations — profile generation, LFE extraction,
-cache management, sweep analysis. Run with no arguments for an interactive
+cache management, experiment analysis. Run with no arguments for an interactive
 menu, or use subcommands directly:
 
 ```sh
@@ -34,7 +34,7 @@ bin/beq-designer                                    # interactive menu
 bin/beq-designer profile "Avatar (2009).mkv"        # generate profile
 bin/beq-designer extract --media-root /mnt/media    # extract LFE cache
 bin/beq-designer cache-status                       # WAV cache info
-bin/beq-designer sweep discover                     # discover + match media
+bin/beq-designer discover                            # discover + match media
 bin/beq-designer --help                             # list all subcommands
 ```
 
@@ -255,11 +255,11 @@ poetry install
 #    }
 
 # 3. Discover your media and match against the BEQ catalogue
-bin/beq-designer sweep discover
+bin/beq-designer discover
 
 # 4. Run the auto-BEQ pipeline across discovered media
 #    (extracts LFE audio, proposes filters, grades against catalogue)
-bin/beq-designer sweep run
+bin/beq-designer dev benchmark
 ```
 
 Step 3 walks your library roots, finds media files, matches titles
@@ -291,7 +291,7 @@ compares the output to the catalogue's expert-authored filters.
 | Var | Purpose | Default |
 |---|---|---|
 | `AUTO_BEQ_ADVISOR` | Which advisor: `measurement` (signal-only), `ollama` (LLM), `mock`, `heuristic` | `measurement` |
-| `AUTO_BEQ_SWEEP_LIMIT` | Max media files to process in sweep | `10` |
+| `AUTO_BEQ_SWEEP_LIMIT` | Max media files to process in benchmark | `10` |
 | `OLLAMA_MODEL` | Ollama model name | `qwen:14b` |
 | `SPIKE_TEST` | Pytest selector for run-spike-*.sh wrappers | all auto_beq tests |
 | `SPIKE_MARKERS` | Override default marker filter in `run-spike-tests.sh` | `not integration and not experiment` |
@@ -302,7 +302,7 @@ compares the output to the catalogue's expert-authored filters.
 
 - [`docs/design/auto_beq.md`](docs/design/auto_beq.md) — vision + architecture
 - [`docs/design/auto_beq_experiments.md`](docs/design/auto_beq_experiments.md) — experiment log (ongoing, current champion: E82 50:1 weighted hybrid)
-- [`docs/design/auto_beq_library_sweep_plan.md`](docs/design/auto_beq_library_sweep_plan.md) — sweep quick-start
+- [`docs/design/auto_beq_library_sweep_plan.md`](docs/design/auto_beq_library_sweep_plan.md) — library discovery quick-start
 - [`branch-plans/plan-sharp-goldberg.md`](branch-plans/plan-sharp-goldberg.md) — current branch plan
 
 ## Further reading

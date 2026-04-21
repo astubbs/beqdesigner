@@ -511,7 +511,7 @@ def _run_batch(
 
     succeeded = 0
     failed = 0
-    from cli.sweep_discover import parse_media_filename
+    from cli.media_discover import parse_media_filename
 
     for i, media_path in enumerate(files, 1):
         console.rule(f"[bold][{i}/{len(files)}] {media_path.name}[/bold]")
@@ -612,7 +612,7 @@ def generate(
                 raise typer.Exit()
             effective_output_dir = Path(output_dir or config.output_dir)
             # Organize profiles into a subdirectory per title.
-            from cli.sweep_discover import parse_media_filename
+            from cli.media_discover import parse_media_filename
             parsed = parse_media_filename(media)
             if parsed:
                 title_dir = f"{parsed.title} ({parsed.year})"
@@ -647,7 +647,7 @@ def generate(
         if selected is None:
             raise typer.Exit()
         effective_output_dir = Path(output_dir or config.output_dir)
-        from cli.sweep_discover import parse_media_filename
+        from cli.media_discover import parse_media_filename
         parsed = parse_media_filename(selected)
         if parsed:
             effective_output_dir = effective_output_dir / f"{parsed.title} ({parsed.year})"
@@ -660,7 +660,7 @@ def generate(
     elif media.is_file():
         # Single file mode.
         effective_output_dir = Path(output_dir or config.output_dir)
-        from cli.sweep_discover import parse_media_filename
+        from cli.media_discover import parse_media_filename
         parsed = parse_media_filename(media)
         if parsed:
             effective_output_dir = effective_output_dir / f"{parsed.title} ({parsed.year})"

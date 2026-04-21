@@ -440,7 +440,7 @@ class TestDispatch:
                 "cache-status": "cli.cache_status.main",
                 "verify": "cli.verify_cache.main",
                 "nn-report": "cli.nn_report.main",
-                "discover": "cli.sweep_discover.main",
+                "discover": "cli.media_discover.main",
                 "report-acquisitions": "cli.nn_acquisition_recommender.main",
                 "report-cache-bias": "cli.nn_cache_bias_report.main",
                 "report-author-patterns": "cli.nn_author_pattern_report.main",

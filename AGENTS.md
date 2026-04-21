@@ -344,10 +344,10 @@ bin/beq-designer --help                 # list all subcommands
 | `cli/cache_status.py` | WAV cache summary report |
 | `cli/verify_cache.py` | WAV cache integrity check |
 | `cli/nn_report.py` | NN vs catalogue comparison report |
-| `cli/sweep_report.py` | Experiment comparison report |
+| `cli/experiment_report.py` | Experiment comparison report |
 | `cli/evaluate.py` | Model evaluation and comparison |
 | `cli/report_base.py` | Shared report infrastructure (argparse, output, classification) |
-| `cli/sweep_discover.py` | Media library scanning and catalogue matching |
+| `cli/media_discover.py` | Media library scanning and catalogue matching |
 | `cli/spike_playground.py` | Dev: single-title filter proposal test |
 | `cli/train_production_model.py` | Train E82 production XGBoost model |
 | `cli/train_torch_model.py` | Train E85 differentiable-DSP model |
