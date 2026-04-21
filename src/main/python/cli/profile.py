@@ -527,10 +527,18 @@ def _run_batch(
 
     succeeded = 0
     failed = 0
+    from cli.sweep_discover import parse_media_filename
+
     for i, media_path in enumerate(files, 1):
         console.rule(f"[bold][{i}/{len(files)}] {media_path.name}[/bold]")
-        out_path = output_dir / f"{media_path.stem}_beq.json"
-        result = _run_single(media_path, author, out_path, output_dir, verbose=verbose)
+        # Organize into title subdirectory.
+        parsed = parse_media_filename(media_path)
+        file_output_dir = output_dir
+        if parsed:
+            file_output_dir = output_dir / f"{parsed.title} ({parsed.year})"
+        file_output_dir.mkdir(parents=True, exist_ok=True)
+        out_path = file_output_dir / f"{media_path.stem}_beq.json"
+        result = _run_single(media_path, author, out_path, file_output_dir, verbose=verbose)
         if result:
             succeeded += 1
         else:
@@ -619,6 +627,12 @@ def generate(
             if media is None:
                 raise typer.Exit()
             effective_output_dir = Path(output_dir or config.output_dir)
+            # Organize profiles into a subdirectory per title.
+            from cli.sweep_discover import parse_media_filename
+            parsed = parse_media_filename(media)
+            if parsed:
+                title_dir = f"{parsed.title} ({parsed.year})"
+                effective_output_dir = effective_output_dir / title_dir
             effective_output_dir.mkdir(parents=True, exist_ok=True)
             effective_output = output or (effective_output_dir / f"{media.stem}_beq.json")
             config.last_media_file = str(media)
@@ -649,6 +663,10 @@ def generate(
         if selected is None:
             raise typer.Exit()
         effective_output_dir = Path(output_dir or config.output_dir)
+        from cli.sweep_discover import parse_media_filename
+        parsed = parse_media_filename(selected)
+        if parsed:
+            effective_output_dir = effective_output_dir / f"{parsed.title} ({parsed.year})"
         effective_output_dir.mkdir(parents=True, exist_ok=True)
         effective_output = output or (effective_output_dir / f"{selected.stem}_beq.json")
         config.last_media_file = str(selected)
@@ -658,6 +676,10 @@ def generate(
     elif media.is_file():
         # Single file mode.
         effective_output_dir = Path(output_dir or config.output_dir)
+        from cli.sweep_discover import parse_media_filename
+        parsed = parse_media_filename(media)
+        if parsed:
+            effective_output_dir = effective_output_dir / f"{parsed.title} ({parsed.year})"
         effective_output_dir.mkdir(parents=True, exist_ok=True)
         effective_output = output or (effective_output_dir / f"{media.stem}_beq.json")
         config.last_media_dir = str(media.parent)
