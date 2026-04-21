@@ -481,6 +481,9 @@ def _run_single(
             if error_holder:
                 raise error_holder[0]
             profile = result_holder[0]
+        except KeyboardInterrupt:
+            console.print("\n[dim]Interrupted.[/dim]")
+            raise
         except Exception as exc:
             console.print(f"\n[red]Error:[/red] {exc}")
             console.print_exception(show_locals=False)
@@ -497,6 +500,9 @@ def _run_single(
                     output_path=output_path,
                     output_dir=output_dir,
                 )
+        except KeyboardInterrupt:
+            console.print("\n[dim]Interrupted.[/dim]")
+            raise
         except Exception as exc:
             console.print(f"\n[red]Error:[/red] {exc}")
             console.print_exception(show_locals=False)
