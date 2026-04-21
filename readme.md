@@ -281,8 +281,8 @@ compares the output to the catalogue's expert-authored filters.
 | `bin/beq-designer report acquisitions` | Title acquisition recommendations |
 | `bin/beq-designer dev train` | Train production model |
 | `bin/beq-designer dev test` | Run auto_beq tests |
-| `bin/beq-designer sweep discover` | Discover media in library |
-| `bin/beq-designer sweep run` | Run sweep pipeline |
+| `bin/beq-designer discover` | Discover media in library |
+| `bin/beq-designer report experiments` | Compare experiment results |
 | `bin/beq-designer --help` | Full subcommand list |
 
 

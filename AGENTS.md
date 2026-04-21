@@ -311,7 +311,7 @@ accuracy tests.**
 - **Integration tests** (testing plumbing works, multi-host round-
   robin, JSON parsing, etc): use `llama3.2:latest` or any small
   model that responds in <5s. Set `OLLAMA_MODEL=llama3.2:latest`.
-- **Accuracy/profile-quality tests** (sweep, real-media roundtrip):
+- **Accuracy/profile-quality tests** (evaluation, real-media roundtrip):
   use `qwen:14b` or larger. Set `OLLAMA_MODEL=qwen:14b`.
 - **MeasurementAdvisor** (default advisor, no LLM): no Ollama needed.
   Set `AUTO_BEQ_ADVISOR=measurement`.
@@ -344,7 +344,7 @@ bin/beq-designer --help                 # list all subcommands
 | `cli/cache_status.py` | WAV cache summary report |
 | `cli/verify_cache.py` | WAV cache integrity check |
 | `cli/nn_report.py` | NN vs catalogue comparison report |
-| `cli/sweep_report.py` | Experiment sweep comparison report |
+| `cli/sweep_report.py` | Experiment comparison report |
 | `cli/evaluate.py` | Model evaluation and comparison |
 | `cli/report_base.py` | Shared report infrastructure (argparse, output, classification) |
 | `cli/sweep_discover.py` | Media library scanning and catalogue matching |

@@ -364,7 +364,7 @@ class TestDispatch:
         # known set matches.
         expected = {
             "profile", "extract", "cache-status", "verify", "nn-report",
-            "sweep-discover", "sweep-run", "sweep-report", "config",
+            "discover", "report-experiments", "config",
             "dev-train", "dev-train-torch", "dev-reassess",
             "report-acquisitions", "report-cache-bias", "report-author-patterns",
         }
@@ -429,7 +429,7 @@ class TestDispatch:
         # Test each dispatch action that takes parameters — verify no TypeError.
         actions_to_test = [
             "extract", "cache-status", "verify", "nn-report",
-            "sweep-discover", "report-acquisitions", "report-cache-bias",
+            "discover", "report-acquisitions", "report-cache-bias",
             "report-author-patterns",
         ]
 
@@ -440,7 +440,7 @@ class TestDispatch:
                 "cache-status": "cli.cache_status.main",
                 "verify": "cli.verify_cache.main",
                 "nn-report": "cli.nn_report.main",
-                "sweep-discover": "cli.sweep_discover.main",
+                "discover": "cli.sweep_discover.main",
                 "report-acquisitions": "cli.nn_acquisition_recommender.main",
                 "report-cache-bias": "cli.nn_cache_bias_report.main",
                 "report-author-patterns": "cli.nn_author_pattern_report.main",
@@ -540,7 +540,7 @@ class TestUnifiedCLI:
         assert "profile" in result.stdout
         assert "extract" in result.stdout
         assert "cache-status" in result.stdout
-        assert "sweep" in result.stdout
+        assert "discover" in result.stdout
 
     def test_profile_help(self):
         result = subprocess.run(
@@ -551,16 +551,14 @@ class TestUnifiedCLI:
         assert result.returncode == 0
         assert "Generate BEQ correction profiles" in result.stdout
 
-    def test_sweep_help(self):
+    def test_report_help(self):
         result = subprocess.run(
-            [sys.executable, self._script, "sweep", "--help"],
+            [sys.executable, self._script, "report", "--help"],
             capture_output=True, text=True, timeout=30,
             env={**dict(__import__("os").environ), "VIRTUAL_ENV": "1"},
         )
         assert result.returncode == 0
-        assert "discover" in result.stdout
-        assert "run" in result.stdout
-        assert "report" in result.stdout
+        assert "experiments" in result.stdout
 
     def test_verbose_flag_accepted(self):
         result = subprocess.run(

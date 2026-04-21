@@ -46,8 +46,6 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 
-sweep_app = typer.Typer(help="Sweep operations — discover media, run pipeline, generate reports.")
-app.add_typer(sweep_app, name="sweep")
 
 
 # ---------------------------------------------------------------------------
@@ -121,12 +119,9 @@ def _build_tools_menu() -> list[tuple[str, object]]:
          "  catalogue entries across your WAV cache.", "nn-report"),
         ("Discover media\n"
          "  Scan media library folders and match titles against the\n"
-         "  BEQ catalogue for training and testing.", "sweep-discover"),
-        ("Test predictions\n"
-         "  Run the model against all discovered media and measure\n"
-         "  prediction accuracy.", "sweep-run"),
+         "  BEQ catalogue for training and testing.", "discover"),
         ("Experiment results\n"
-         "  Compare results from different experiment runs.", "sweep-report"),
+         "  Compare results from different experiment runs.", "report-experiments"),
         ("Reassess all techniques\n"
          "  Run E82/E83/E84/E85 on the current WAV cache and produce a\n"
          "  leaderboard. Shows which technique is champion with the\n"
@@ -210,9 +205,8 @@ def _dispatch(action: str, config: CliConfig, verbose: bool) -> None:
         "cache-status": lambda: cache_status(cache_dir=None),
         "verify": lambda: verify(cache_root=None, delete=False, verbose=False),
         "nn-report": lambda: nn_report(output=None),
-        "sweep-discover": lambda: sweep_discover(library=None),
-        "sweep-run": lambda: sweep_run(limit=10, parallel=False),
-        "sweep-report": lambda: sweep_report_cmd(),
+        "discover": lambda: discover(library=None, yes=False),
+        "report-experiments": lambda: report_experiments_cmd(),
         "config": lambda: config_cmd(),
         "dev-train": lambda: dev_train(),
         "dev-train-torch": lambda: dev_train_torch(),
@@ -374,8 +368,8 @@ def nn_report(
         _render_markdown_report(nn_main)
 
 
-@sweep_app.command(name="discover")
-def sweep_discover(
+@app.command(name="discover")
+def discover(
     library: Optional[list[Path]] = typer.Option(None, "--library", help="Media library root(s)."),  # noqa: UP007
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompts (non-interactive mode)."),
 ) -> None:
@@ -390,32 +384,6 @@ def sweep_discover(
     discover_main(argv if argv else None)
 
 
-@sweep_app.command(name="run")
-def sweep_run(
-    limit: int = typer.Option(10, "--limit", help="Max files to process."),
-    parallel: bool = typer.Option(False, "--parallel", help="Run in parallel across Ollama hosts."),
-) -> None:
-    """Run auto-BEQ pipeline on discovered media."""
-    test_module = "src/test/python/auto_beq/test_auto_beq_library_sweep.py"
-    test_func = "test_library_sweep_parallel" if parallel else "test_library_sweep"
-    env = {
-        **os.environ,
-        "AUTO_BEQ_SWEEP_LIMIT": str(limit),
-        "AUTO_BEQ_ADVISOR": "measurement",
-    }
-    subprocess.run(
-        ["poetry", "run", "pytest", f"{test_module}::{test_func}", "-v", "-s"],
-        env=env, cwd=str(REPO_ROOT),
-    )
-
-
-@sweep_app.command(name="report")
-def sweep_report_cmd() -> None:
-    """Generate experiment comparison report from sweep results."""
-    from cli.sweep_report import main as report_main
-    _render_markdown_report(report_main)
-
-
 @app.command(name="config")
 def config_cmd() -> None:
     """Edit CLI preferences (output directory, media paths)."""
@@ -428,7 +396,7 @@ def config_cmd() -> None:
 # Dev subcommands — replaces shell wrappers
 # ---------------------------------------------------------------------------
 
-dev_app = typer.Typer(help="Developer tools — tests, sweeps, advisor comparison.")
+dev_app = typer.Typer(help="Developer tools — tests, evaluation, advisor comparison.")
 app.add_typer(dev_app, name="dev")
 
 
@@ -662,6 +630,13 @@ def report_f_experiments(
         f_main(["-o", str(output)])
     else:
         _render_markdown_report(f_main)
+
+
+@report_app.command(name="experiments")
+def report_experiments_cmd() -> None:
+    """Compare results from different experiment runs."""
+    from cli.sweep_report import main as report_main
+    _render_markdown_report(report_main)
 
 
 # ---------------------------------------------------------------------------
