@@ -1635,7 +1635,8 @@ def _load_ollama_hosts() -> list[str]:
     if host_env:
         return [host_env]
     # 3. settings.json
-    cfg_path = Path.home() / ".config" / "beqdesigner" / "settings.json"
+    from model.wav_discovery import _settings_path
+    cfg_path = _settings_path()
     if cfg_path.exists():
         try:
             with cfg_path.open() as f:

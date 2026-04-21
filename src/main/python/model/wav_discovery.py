@@ -42,7 +42,7 @@ def audio_cache_dir() -> Path:
     """
     raw = os.environ.get("AUTO_BEQ_AUDIO_CACHE")
     if not raw:
-        cfg_path = Path.home() / ".config" / "beqdesigner" / "settings.json"
+        cfg_path = _settings_path()
         if cfg_path.exists():
             with cfg_path.open() as _f:
                 try:
@@ -71,19 +71,25 @@ def beq_config_dir() -> Path:
     return path
 
 
-_SETTINGS_PATH = Path.home() / ".config" / "beqdesigner" / "settings.json"
+def _settings_path() -> Path:
+    """Return the path to settings.json via beq_config_dir()."""
+    return beq_config_dir() / "settings.json"
+
+
+# Backward-compat module-level alias for tests that monkeypatch it.
+_SETTINGS_PATH = _settings_path
 
 
 def load_settings() -> dict:
     """Load the shared settings.json, returning {} on any error."""
-    if _SETTINGS_PATH.exists():
+    path = _settings_path()
+    if path.exists():
         try:
-            return json.loads(_SETTINGS_PATH.read_text())
+            return json.loads(path.read_text())
         except (json.JSONDecodeError, ValueError) as exc:
-            log.warning("failed to parse %s: %s - returning empty settings",
-                        _SETTINGS_PATH, exc)
+            log.warning("failed to parse %s: %s - returning empty settings", path, exc)
         except OSError as exc:
-            log.warning("could not read %s: %s", _SETTINGS_PATH, exc)
+            log.warning("could not read %s: %s", path, exc)
     return {}
 
 
@@ -91,8 +97,8 @@ def save_settings(settings: dict) -> None:
     """Persist the shared settings.json (merges with existing)."""
     existing = load_settings()
     existing.update(settings)
-    beq_config_dir()  # ensure directory exists
-    _SETTINGS_PATH.write_text(json.dumps(existing, indent=2) + "\n")
+    path = _settings_path()
+    path.write_text(json.dumps(existing, indent=2) + "\n")
 
 
 def beq_shared_dir() -> Path:
@@ -115,7 +121,7 @@ def beq_shared_dir() -> Path:
         p.mkdir(parents=True, exist_ok=True)
         return p
 
-    cfg_path = Path.home() / ".config" / "beqdesigner" / "settings.json"
+    cfg_path = _settings_path()
     if cfg_path.exists():
         try:
             data = json.loads(cfg_path.read_text())
@@ -150,7 +156,7 @@ def wav_cache_dir() -> Path:
     if raw:
         explicit_source = "BEQ_WAV_CACHE env var"
     else:
-        cfg_path = Path.home() / ".config" / "beqdesigner" / "settings.json"
+        cfg_path = _settings_path()
         if cfg_path.exists():
             with cfg_path.open() as _f:
                 try:

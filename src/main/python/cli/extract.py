@@ -1277,7 +1277,8 @@ def _load_or_prompt_config(
             from model.wav_discovery import beq_shared_dir as _bd
             default_beq = str(_bd())
         except Exception:
-            default_beq = str(Path.home() / ".config" / "beqdesigner")
+            from model.wav_discovery import beq_config_dir as _bcd
+            default_beq = str(_bcd())
         log.info("BEQ working directory not specified.")
         log.info("  Default: %s", default_beq)
         raw = input(f"BEQ working directory [{default_beq}]: ").strip()

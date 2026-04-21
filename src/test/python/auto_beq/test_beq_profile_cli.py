@@ -49,7 +49,7 @@ class TestCliConfig:
 
     def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
         settings_file = tmp_path / "settings.json"
-        monkeypatch.setattr("model.wav_discovery._SETTINGS_PATH", settings_file)
+        monkeypatch.setattr("model.wav_discovery._settings_path", lambda: settings_file)
         # Ensure beq_config_dir() points at tmp_path too.
         monkeypatch.setattr("model.wav_discovery.beq_config_dir", lambda: tmp_path)
 
@@ -63,21 +63,21 @@ class TestCliConfig:
         assert loaded.last_media_dir == "/media"
 
     def test_load_missing_file_returns_defaults(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("model.wav_discovery._SETTINGS_PATH", tmp_path / "nonexistent.json")
+        monkeypatch.setattr("model.wav_discovery._settings_path", lambda: tmp_path / "nonexistent.json")
         config = load_config()
         assert config.verbose is False
 
     def test_load_corrupt_file_returns_defaults(self, tmp_path, monkeypatch):
         settings_file = tmp_path / "settings.json"
         settings_file.write_text("not json{{{")
-        monkeypatch.setattr("model.wav_discovery._SETTINGS_PATH", settings_file)
+        monkeypatch.setattr("model.wav_discovery._settings_path", lambda: settings_file)
         config = load_config()
         assert config.output_dir == "profiles"
 
     def test_load_ignores_unknown_fields(self, tmp_path, monkeypatch):
         settings_file = tmp_path / "settings.json"
         settings_file.write_text(json.dumps({"cli_verbose": True, "unknown_field": 42}))
-        monkeypatch.setattr("model.wav_discovery._SETTINGS_PATH", settings_file)
+        monkeypatch.setattr("model.wav_discovery._settings_path", lambda: settings_file)
         config = load_config()
         assert config.verbose is True
 

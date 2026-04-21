@@ -483,7 +483,7 @@ def match_media_files(
 
     # Save missing-ID list to a file for the user to fix.
     if missing_ids:
-        missing_file = Path.home() / ".config" / "beqdesigner" / "media_missing_ids.txt"
+        missing_file = beq_config_dir() / "media_missing_ids.txt"
         missing_file.parent.mkdir(parents=True, exist_ok=True)
         missing_file.write_text("\n".join(sorted(set(missing_ids))) + "\n")
         log.info("%d media files missing [tmdb/imdb/tvdb] ID tags → %s",
@@ -593,7 +593,8 @@ def load_catalogue_by_digest(
     Returns ``{digest: entry_dict}``. Used at test time to resolve
     the ``catalogue_digest`` stored in the sweep config.
     """
-    path = catalogue_path or _catalogue_cache_path()
+    from model.auto_beq_catalogue import _cache_path
+    path = catalogue_path or _cache_path()
     if not path.exists():
         return {}
     with path.open() as f:

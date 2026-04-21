@@ -47,8 +47,9 @@ _REQUEST_TIMEOUT_S = 15
 _MAX_RETRIES = 3
 
 # Local user cache — never expires (TMDb metadata doesn't change).
-_CACHE_DIR = Path.home() / ".config" / "beqdesigner"
-_CACHE_FILE = _CACHE_DIR / "tmdb_metadata_cache.json"
+def _cache_file() -> Path:
+    from model.wav_discovery import beq_config_dir
+    return beq_config_dir() / "tmdb_metadata_cache.json"
 
 
 # ---------------------------------------------------------------------------
@@ -58,11 +59,12 @@ _CACHE_FILE = _CACHE_DIR / "tmdb_metadata_cache.json"
 
 def load_cache() -> dict[str, dict]:
     """Load the TMDb metadata cache from disk. Returns empty dict if missing."""
-    if _CACHE_FILE.exists():
+    path = _cache_file()
+    if path.exists():
         try:
-            with _CACHE_FILE.open() as f:
+            with path.open() as f:
                 data = json.load(f)
-            log.info("loaded TMDb cache: %d entries from %s", len(data), _CACHE_FILE)
+            log.info("loaded TMDb cache: %d entries from %s", len(data), path)
             return data
         except (json.JSONDecodeError, OSError) as exc:
             log.warning("failed to load TMDb cache: %s", exc)
@@ -71,12 +73,12 @@ def load_cache() -> dict[str, dict]:
 
 def save_cache(cache: dict[str, dict]) -> None:
     """Persist the TMDb metadata cache to disk."""
-    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = _CACHE_FILE.with_suffix(".tmp")
+    path = _cache_file()
+    tmp = path.with_suffix(".tmp")
     with tmp.open("w") as f:
         json.dump(cache, f, indent=1, sort_keys=True)
-    tmp.replace(_CACHE_FILE)
-    log.info("saved TMDb cache: %d entries to %s", len(cache), _CACHE_FILE)
+    tmp.replace(path)
+    log.info("saved TMDb cache: %d entries to %s", len(cache), path)
 
 
 # ---------------------------------------------------------------------------

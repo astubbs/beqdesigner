@@ -157,11 +157,15 @@ def main(argv: list[str] | None = None):
         extra_args=[
             (("--catalogue",), {
                 "type": Path,
-                "default": Path.home() / ".config/beqdesigner/catalogue_cache.json",
+                "default": None,  # resolved at runtime via auto_beq_catalogue
             }),
         ],
     )
     args = parser.parse_args(argv)
+
+    if args.catalogue is None:
+        from model.auto_beq_catalogue import _cache_path
+        args.catalogue = _cache_path()
 
     if not args.catalogue.exists():
         print(f"Catalogue not found: {args.catalogue}")
