@@ -48,9 +48,9 @@ sweep = E54a–E54e).
 | **F** | E41–E52 | NN accuracy improvements (augmentation, Option B, absolute dBFS, clustering, …) | Partial — F1 kept | **F1 = synthetic feature augmentation σ=0.5** was the breakthrough (-0.73 dB) |
 | **G** | E53–E59 | Combinations and hyperparameter tuning (alpha sweep, sigma sweep, XGB params, ensembles, per-author α lookup) | Adopted | **G8 per-author α** hits the oracle ceiling; G4b σ=0.3 is the best single-α |
 | **H** | E60–E67 | Multi-author resolution (response averaging, marginalization, quality filtering, response curve prediction) | Dead end | Key lesson: *multi-author disagreement is signal, not noise* — averaging regresses |
-| **I** | E68–E76 | Automated author selection, scale-up validation, determinism fix | Adopted | **I1b soft-blend is the production model** — 2.37 dB, fully automated, no user input |
+| **I** | E68–E70 | Automated author selection via metadata classifier (hard / soft-blend / top-3) | Superseded | I1b soft-blend was the synthetic-era production model; superseded by E82 |
 | **J** | (tools, no E-numbers) | Data acquisition tooling (bias analysis, acquisition recommender) | Tools | Scripts live in `cli/nn_cache_bias_report.py`, `cli/nn_acquisition_recommender.py` — not model experiments |
-| — | E71–E74 | 932-WAV scale-up re-validation | Kept | Honest measurement on the full catalogue distribution; rankings preserved, numbers +0.3–0.5 dB |
+| — | E71–E74 | Full-corpus scale-up re-validation | Kept | Rankings preserved at scale |
 | — | E75 | XGBoost `n_jobs=1` determinism fix | Adopted | Baseline bit-identical across runs; unit tests 10× faster |
 | — | E76 | I4 per-author dedicated late-fusion + classifier routing | Dead end | Real-only simpler and better; classifier hedging beats hard routing |
 | **E77+** | E77–E82 | **Real-audio training regime** | **Current** | **50:1 weighted hybrid plain XGB = 1.99 dB, real-audio regime kicks in at just 100 real WAVs** |

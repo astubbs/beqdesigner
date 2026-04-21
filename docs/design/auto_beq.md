@@ -45,6 +45,15 @@ a trained machine learning model.
 
 ### Model accuracy
 
+The 1.99 dB figure above is from `dev reassess` - trains from scratch
+on an 80/20 split and scores on the held-out 20% (measures
+generalisation). The numbers below are from `dev evaluate` - loads the
+saved production model and scores it against every catalogue-matched
+title in the WAV cache, including titles that were in training
+(measures real-world performance across the full library). The two
+modes answer different questions; see the [FAQ](../faq.md#dev-reassess-vs-dev-evaluate)
+for when to use each.
+
 Validated on titles with real extracted LFE audio, compared against
 hand-coded catalogue entries:
 
@@ -329,6 +338,7 @@ families. Full details for each family are in the
 | Multi-author | E60-E67 (H) | Response averaging, marginalisation | Dead end: multi-author disagreement is signal, not noise |
 | Author selection | E68-E70 (I) | Metadata classifier for author routing | I1b soft-blend adopted at 2.37 dB |
 | Scale-up validation | E71-E75 | Full-corpus re-validation | Rankings preserved at scale |
+| Per-author routing | E76 | Dedicated late-fusion + classifier routing | Dead end: classifier hedging beats hard routing |
 | Real-audio regime | E77-E82 | 50:1 weighted hybrid training | **Production model: 1.99 dB** |
 | Differentiable DSP | E85 | Neural network with acoustic loss | **Champion: 1.49 dB**, requires PyTorch |
 

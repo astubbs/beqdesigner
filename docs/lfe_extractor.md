@@ -120,9 +120,8 @@ scp nas:/path/to/beqdesigner/{media_inventory.json,beq_catalogue.json} \
 Then locally:
 
 ```sh
-poetry run python3 scripts/nn_cache_bias_report.py -o docs/wav_cache_bias.md
-poetry run python3 scripts/nn_acquisition_recommender.py -n 50 \
-    -o docs/acquisition_recommendations.md
+bin/beq-designer report cache-bias -o cache_bias.md
+bin/beq-designer report acquisitions -n 50 -o recommendations.md
 ```
 
 The bias report shows how your local WAV cache distribution compares

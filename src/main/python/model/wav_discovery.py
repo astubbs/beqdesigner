@@ -283,8 +283,11 @@ def ensure_analysis_reports_current(
     try:
         report_dir = beq_shared_dir() / "reports"
         report_dir.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        log.info("could not create report output dir; skipping report refresh")
+    except RuntimeError:
+        log.info("BEQ shared dir not configured; skipping report refresh")
+        return []
+    except OSError as exc:
+        log.warning("could not create report output dir: %s; skipping report refresh", exc)
         return []
 
     reports = [

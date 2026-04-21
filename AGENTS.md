@@ -300,8 +300,7 @@ plan/intent to `branch-plans/plan-<branch-name>.md` (project root).
 Also keep experiment logs and living design docs updated and committed
 alongside code — these are gold for resuming work across sessions.
 
-Current branch plan: [`branch-plans/plan-neural-net-strat.md`](branch-plans/plan-neural-net-strat.md)
-Parent branch plans: [`branch-plans/plan-audio-chunks-strat.md`](branch-plans/plan-audio-chunks-strat.md), [`branch-plans/plan-sharp-goldberg.md`](branch-plans/plan-sharp-goldberg.md)
+Active plans live in [`docs/plans/`](docs/plans/).
 
 ## Ollama model usage
 
@@ -478,6 +477,7 @@ Markers are registered in `pyproject.toml` under `[tool.pytest.ini_options]`. Ad
 | `AUTO_BEQ_ADVISOR` | advisor impl: heuristic / mock / ollama / measurement | `measurement` |
 | `AUTO_BEQ_MODEL_PATH` | path to production model file | auto-detected |
 | `BEQ_SHARED_DIR` | shared BEQ directory (wav-cache, catalogue, inventory) - **required** | from `shared_beq_dir` in settings.json |
+| `BEQ_WAV_CACHE` | override WAV cache directory | derived from `BEQ_SHARED_DIR` |
 
 ```bash
 # Default test suite (unit tests only)
