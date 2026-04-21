@@ -1,8 +1,7 @@
 # Auto-BEQ - Automated Filter Suggestion
 
-**Companion docs:**
-- [`auto_beq_experiments.md`](auto_beq_experiments.md) - append-only log of experiments tried, results, lessons
-- [`auto_beq_plan.md`](auto_beq_plan.md) - original advisor design plan (historical context)
+**See also:**
+- [Experiment archive](experiments/README.md) - detailed per-experiment logs (E1-E87)
 - [FAQ and Glossary](../faq.md) - terminology, developer commands, key numbers
 - [LFE Extractor](../lfe_extractor.md) - Docker-based extraction for NAS deployment
 
@@ -42,6 +41,41 @@ a trained machine learning model.
   evaluation.
 - **Catalogue coverage:** 14,785+ entries in the BEQ catalogue (as of
   April 2026).
+
+### Model accuracy
+
+Validated on **241 unique titles** with real extracted LFE audio,
+compared against hand-coded catalogue entries:
+
+| Metric | Result |
+|---|---|
+| Mean error | **3.01 dB** across 20-80 Hz |
+| Expert quality (< 2 dB) | **82 titles (34%)** |
+| Good starting point (< 3 dB) | **146 titles (60%)** |
+| Usable (< 5 dB) | **206 titles (85%)** |
+
+**What does the error mean practically?**
+
+- **< 2 dB**: Indistinguishable to most listeners. Matches expert quality.
+- **2-3 dB**: Audible if A/B compared, but still a good BEQ. Usable as-is.
+- **3-5 dB**: Noticeable - bass extension is right but magnitude is off.
+  Good starting point for manual refinement.
+- **> 5 dB**: Too far off. Mostly older films (pre-1990) and unusual rolloffs.
+
+### Key findings from 87 experiments
+
+1. **No real audio training data needed for initial model.** Synthetic
+   data derived from catalogue filter chains bootstraps the model. Real
+   audio improves it further (E77-E82).
+2. **Metadata is surprisingly powerful.** Studio, year, format, and genre
+   alone predict BEQ filters within 3.4 dB - without any audio.
+3. **Author style is learnable.** The model generates filters "in the
+   style of" specific catalogue authors.
+4. **Real audio training regime kicks in at ~100 WAVs.** Below that,
+   synthetic-only models are competitive. Above 400 WAVs, returns
+   diminish. (E81)
+5. **Multi-author disagreement is signal, not noise.** Averaging
+   conflicting catalogue entries regresses accuracy. (H-series dead end)
 
 ### CLI commands
 
@@ -278,10 +312,9 @@ Each `dev reassess` run records the best-performing experiment in
 
 ## 5. Experiment history
 
-The system has evolved through 85+ experiments across several research
-families. The full details are in the
-[experiment log](auto_beq_experiments.md). Here is a summary of the
-major phases:
+The system has evolved through 87 experiments across several research
+families. Full details for each family are in the
+[experiment archive](experiments/README.md). Summary of major phases:
 
 | Phase | Experiments | Approach | Outcome |
 |---|---|---|---|
@@ -354,56 +387,42 @@ apply" without needing to encode that knowledge as rules.
 
 ## 8. File layout
 
-### Core model
+See `AGENTS.md` for the complete CLI module table. Key auto-BEQ modules:
+
+### Core model (`src/main/python/model/`)
+
+| Module | Role |
+|---|---|
+| `auto_beq.py` | Filter optimizer (grid, smoothing, evaluate_filter_chain) |
+| `auto_beq_nn.py` | ML model (XGBoost, feature vectors, label encoding) |
+| `auto_beq_advisor.py` | Advisor protocol, all advisor implementations |
+| `auto_beq_catalogue.py` | BEQ catalogue fetch + disk cache |
+| `auto_beq_metadata.py` | TMDb metadata enrichment |
+| `audio_extraction.py` | LFE extraction, spectral analysis, feature computation |
+| `training_data.py` | Shared training data preparation |
+| `wav_discovery.py` | WAV cache discovery, config, settings |
+| `wav_cache.py` | WAV cache path computation (ID-based layout) |
+| `media_constants.py` | Shared constants (extensions, URLs, regexes) |
+| `media_utils.py` | Media filesystem utilities |
+
+### CLI (`src/main/python/cli/`)
+
+| Module | Role |
+|---|---|
+| `main.py` | Unified Typer app - menu + all subcommands |
+| `profile.py` | Profile generation (interactive directory browser) |
+| `generate.py` | Profile pipeline (LFE -> NN -> biquads -> JSON) |
+| `extract.py` | LFE extraction to portable WAV cache |
+| `evaluate.py` | Model evaluation and comparison |
+| `media_discover.py` | Media library scanning and catalogue matching |
+| `experiment_report.py` | Experiment comparison report |
+
+### Documentation
 
 | Path | Role |
 |---|---|
-| `src/main/python/model/auto_beq.py` | Filter optimizer (grid, smoothing, evaluate_filter_chain) |
-| `src/main/python/model/auto_beq_nn.py` | NN model (XGBoost late fusion, feature vectors, label encoding) |
-| `src/main/python/model/auto_beq_advisor.py` | Metadata structures (MediaMetadata, CurveFeatures, Advice) |
-| `src/main/python/model/auto_beq_catalogue.py` | BEQ catalogue fetch + disk cache |
-| `src/main/python/model/auto_beq_metadata.py` | TMDb metadata enrichment |
-| `src/main/python/model/iir.py` | Biquad coefficient computation (LowShelf, HighShelf, PeakingEQ) |
-| `src/main/python/model/signal.py` | Audio I/O (Signal class, read_wav_data) |
-| `src/main/python/model/wav_integrity.py` | WAV header validation |
-| `src/test/python/spike/_auto_beq_helpers.py` | Shared helpers: WAV cache, config, audio probing, extraction |
-
-### CLI scripts (user-facing)
-
-| Path | Role | In unified CLI? |
-|---|---|---|
-| `scripts/beq.py` | **Unified CLI** - single entry point, interactive menu + subcommands | Entry point |
-| `scripts/cli_common.py` | Shared CLI utilities (filterable_select, config, banner) | Library |
-| `scripts/beq_profile_cli.py` | Profile generation CLI (menus, progress, directory browser) | `beq.py profile` |
-| `scripts/generate_beq_profile.py` | End-to-end profile generation pipeline | Called by beq_profile_cli |
-| `scripts/extract_lfe.py` | LFE extraction to portable WAV cache (standalone, Docker-safe) | `beq.py extract` |
-| `scripts/wav_cache_status.py` | WAV cache summary: counts, titles, author breakdown | `beq.py cache-status` |
-| `scripts/verify_wav_cache.py` | WAV cache integrity check, optional corrupt file deletion | `beq.py verify` |
-| `scripts/nn_comparison_report.py` | Compare NN-predicted vs hand-coded BEQ filters (markdown) | `beq.py nn-report` |
-| `scripts/sweep_report.py` | Experiment sweep comparison report from CSV results | `beq.py sweep report` |
-
-### Shell wrappers (orchestration)
-
-| Path | Role | In unified CLI? |
-|---|---|---|
-| `scripts/run-sweep-discover.sh` | Discover media + match catalogue (sets PYTHONPATH, calls module) | `beq.py sweep discover` |
-| `scripts/run-sweep-tests.sh` | Run auto-BEQ pipeline on discovered media (pytest wrapper) | `beq.py sweep run` |
-| `scripts/run-spike-tests.sh` | Run spike test suite (unit + integration) | No (dev tooling) |
-| `scripts/run-advisor-comparison.sh` | Compare all advisor implementations side-by-side | No (research) |
-
-### Internal / dev-only
-
-| Path | Role |
-|---|---|
-| `scripts/spike_auto_beq.py` | CLI playground for testing filter proposals on synthetic data |
-| `scripts/regen_ui.py` | Regenerate Python source from Qt Designer `.ui` files |
-
-### Tests and resources
-
-| Path | Role |
-|---|---|
-| `src/test/python/spike/test_auto_beq.py` | Primary deliverable - parametrised integration test |
-| `src/test/python/spike/test_beq_profile_cli.py` | CLI integration tests (25 tests) |
-| `src/test/python/conftest.py` | `catalogue_snapshot` session fixture |
-| `src/test/resources/auto_beq/database.json` | Committed catalogue snapshot (~55 KB) |
-| `docs/design/auto_beq.md` | This document |
+| `docs/design/auto_beq.md` | This document - main auto-BEQ reference |
+| `docs/design/experiments/` | Per-family experiment archive (E1-E87) |
+| `docs/faq.md` | FAQ and glossary |
+| `docs/lfe_extractor.md` | Docker/NAS deployment guide |
+| `docs/architecture.md` | Overall BEQ Designer architecture |
