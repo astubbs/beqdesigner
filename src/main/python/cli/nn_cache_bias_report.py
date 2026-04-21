@@ -16,7 +16,7 @@ present, so the user knows which files need their tags fixed.
 Usage::
 
     bin/beq-designer cache-bias-report
-    bin/beq-designer cache-bias-report -o docs/wav_cache_bias.md
+    bin/beq-designer cache-bias-report -o cache_bias.md
 """
 from __future__ import annotations
 

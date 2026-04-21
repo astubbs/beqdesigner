@@ -72,7 +72,7 @@ XGBoost feature importances gate escalation: if studio/year/format not high
 importance, metadata strategy needs revisiting before CNN.
 
 **New module**: `src/main/python/model/auto_beq_nn.py`
-**New tests**: `src/test/python/spike/test_auto_beq_nn.py` (9 tests)
+**New tests**: `src/test/python/auto_beq/test_auto_beq_nn.py` (9 tests)
 **Deps added**: `xgboost`, `scikit-learn`
 
 ### E25a - TMDb metadata enrichment

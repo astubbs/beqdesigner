@@ -32,27 +32,28 @@ a trained machine learning model.
 
 - **Production model:** E82 - an XGBoost gradient-boosted tree model
   trained on 50:1 weighted hybrid data (real audio + synthetic). Achieves
-  ~2.8 dB mean error against hand-crafted catalogue entries.
-- **Current champion:** E85 - a differentiable DSP approach that trains
-  a neural network to directly output filter parameters, optimised with
-  an acoustic loss function. Achieves ~2.3 dB mean error. Not yet the
-  production default because it requires PyTorch.
-- **WAV cache:** ~1000+ extracted LFE files used for training and
-  evaluation.
+  1.99 dB mean error on held-out test data.
+- **Champion:** E85 - a differentiable DSP approach that trains a neural
+  network to directly output filter parameters, optimised with an acoustic
+  loss function. Achieves 1.49 dB mean error. Available via
+  `AUTO_BEQ_ADVISOR=torch_differentiable` but not the production default
+  because it requires PyTorch.
+- **WAV cache:** Extracted LFE files used for training and evaluation.
+  Size depends on the user's media library.
 - **Catalogue coverage:** 14,785+ entries in the BEQ catalogue (as of
   April 2026).
 
 ### Model accuracy
 
-Validated on **241 unique titles** with real extracted LFE audio,
-compared against hand-coded catalogue entries:
+Validated on titles with real extracted LFE audio, compared against
+hand-coded catalogue entries:
 
 | Metric | Result |
 |---|---|
 | Mean error | **3.01 dB** across 20-80 Hz |
-| Expert quality (< 2 dB) | **82 titles (34%)** |
-| Good starting point (< 3 dB) | **146 titles (60%)** |
-| Usable (< 5 dB) | **206 titles (85%)** |
+| Expert quality (< 2 dB) | **~34%** of titles |
+| Good starting point (< 3 dB) | **~60%** of titles |
+| Usable (< 5 dB) | **~85%** of titles |
 
 **What does the error mean practically?**
 
@@ -327,9 +328,9 @@ families. Full details for each family are in the
 | Hyperparameter tuning | E53-E59 (G) | Alpha sweep, sigma sweep, ensembles | Per-author alpha hits oracle ceiling |
 | Multi-author | E60-E67 (H) | Response averaging, marginalisation | Dead end: multi-author disagreement is signal, not noise |
 | Author selection | E68-E70 (I) | Metadata classifier for author routing | I1b soft-blend adopted at 2.37 dB |
-| Scale-up validation | E71-E75 | 932-WAV corpus re-validation | Rankings preserved; +0.3-0.5 dB honest measurement |
-| Real-audio regime | E77-E82 | 50:1 weighted hybrid training | **Production model: ~2.0 dB** |
-| Differentiable DSP | E85 | Neural network with acoustic loss | **Champion: ~2.3 dB** (reassess), improves with more data |
+| Scale-up validation | E71-E75 | Full-corpus re-validation | Rankings preserved at scale |
+| Real-audio regime | E77-E82 | 50:1 weighted hybrid training | **Production model: 1.99 dB** |
+| Differentiable DSP | E85 | Neural network with acoustic loss | **Champion: 1.49 dB**, requires PyTorch |
 
 ### Key architectural lesson
 
@@ -398,8 +399,11 @@ See `AGENTS.md` for the complete CLI module table. Key auto-BEQ modules:
 | `auto_beq_advisor.py` | Advisor protocol, all advisor implementations |
 | `auto_beq_catalogue.py` | BEQ catalogue fetch + disk cache |
 | `auto_beq_metadata.py` | TMDb metadata enrichment |
+| `auto_beq_torch.py` | Differentiable DSP model (E85, requires PyTorch) |
+| `auto_beq_nn_cnn.py` | CNN dual-branch model architecture |
 | `audio_extraction.py` | LFE extraction, spectral analysis, feature computation |
 | `training_data.py` | Shared training data preparation |
+| `model_metadata.py` | Model provenance, champion tracking, staleness detection |
 | `wav_discovery.py` | WAV cache discovery, config, settings |
 | `wav_cache.py` | WAV cache path computation (ID-based layout) |
 | `media_constants.py` | Shared constants (extensions, URLs, regexes) |

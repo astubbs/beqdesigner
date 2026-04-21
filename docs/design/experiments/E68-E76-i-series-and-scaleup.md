@@ -16,7 +16,7 @@ selection invisibly — closing the production gap.
 
 ### E68/I0 — Pattern analysis (sanity check)
 
-Generated `docs/author_patterns.md` showing per-author distributions across
+Generated an author patterns report showing per-author distributions across
 audio format, era, content type. Confirmed strong inter-author signal:
 
 | Author | catalogue % | Atmos % | 2020s % | TV % |

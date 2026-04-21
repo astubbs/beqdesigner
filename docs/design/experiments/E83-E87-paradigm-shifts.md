@@ -163,7 +163,7 @@ and empirically wasn't.
 
 **CSV**: `.pytest_cache/e83_foundation.csv`
 **Experiment test**: `test_e83_foundation_features` in
-`src/test/python/spike/test_auto_beq_nn_real.py`
+`src/test/python/auto_beq/test_auto_beq_nn_real.py`
 
 ### E85 — Differentiable DSP with acoustic loss (T1.2) — NEW CHAMPION
 
@@ -259,12 +259,12 @@ predicts **negative-gain filters** (cuts) — something E82 never did
 
 **Verdict**: **E85 is the new production champion** at 1.49 dB mean
 (−0.21 dB vs E82). Passes the ≥0.1 dB decision gate. Deployed via
-`AUTO_BEQ_ADVISOR=torch_differentiable` + `scripts/train_torch_model.py`.
+`AUTO_BEQ_ADVISOR=torch_differentiable` + `cli/train_torch_model.py`.
 
 **Code**: `src/main/python/model/auto_beq_torch.py` (BiquadResponseLayer
 + FilterChainPredictor + train_e85_differentiable_dsp), 7 unit tests in
 `test_auto_beq_torch.py`, `TorchFilterAdvisor` in `auto_beq_advisor.py`,
-`scripts/train_torch_model.py` CLI.
+`cli/train_torch_model.py` CLI.
 
 **CSV**: `.pytest_cache/tier1_comparison.csv`,
 `.pytest_cache/e85_diff_dsp.csv`

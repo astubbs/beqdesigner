@@ -297,7 +297,7 @@ noise.  Rebalancing fixed it.
 
 - [x] **Deploy the 50:1 weighted hybrid as the production model** —
       done: `train_production_weighted_hybrid()` in `auto_beq_nn.py`,
-      `scripts/train_production_model.py` CLI wrapper,
+      `cli/train_production_model.py` CLI wrapper,
       `get_advisor("trained_model")` auto-discovers
       `{beq-dir}/production_model.joblib`. `generate_beq_profile.py`
       loads the saved model in `main()` instead of retraining per
@@ -309,9 +309,7 @@ noise.  Rebalancing fixed it.
       pre-port S02E01 output: new model is ~4 dB more aggressive
       on MV, filters concentrated in 17–35 Hz band rather than spread
       5–46 Hz — consistent with the real-audio training regime
-      learning steeper rolloffs. See
-      [`profiles/jjk_v2_comparison_report.md`](../../profiles/jjk_v2_comparison_report.md)
-      for the full breakdown.
+      learning steeper rolloffs.
 - [x] E78 baseline variance debug — **resolved**: the 0.14 dB gap
       (2.83 vs 2.69 dB) was from unstable entry ordering in the old
       pipeline. `discover_wav_catalogue_pairs` used to return entries

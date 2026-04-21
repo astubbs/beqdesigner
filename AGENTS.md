@@ -465,7 +465,7 @@ To run experiment tests:
 
 ### Marker rules
 
-- **Default** (no marker): unit tests. Must be hermetic, no filesystem/network/model-training side effects. The 500 MB media-size filter in `inventory_root` is automatically bypassed for tests via the `_allow_zero_byte_fixtures` autouse fixture in `test_sweep_discover.py`.
+- **Default** (no marker): unit tests. Must be hermetic, no filesystem/network/model-training side effects. The 500 MB media-size filter in `inventory_root` is automatically bypassed for tests via the `_allow_zero_byte_fixtures` autouse fixture in `test_media_discover.py`.
 - **`@pytest.mark.integration`**: needs real media files, TMDb, Ollama, or a populated `~/.config/beqdesigner/auto_beq_sweep.json`. Apply via file-level `pytestmark = pytest.mark.integration` when every test in the file needs external resources, or decorate individual tests when the file is mixed (e.g. `test_auto_beq.py::test_real_media_roundtrip`).
 - **`@pytest.mark.experiment`**: retrains one or more models from scratch. F/G/H/I/real/chunked/extract test files all carry `pytestmark = pytest.mark.experiment` at the top.
 

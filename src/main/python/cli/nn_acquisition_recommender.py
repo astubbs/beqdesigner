@@ -13,7 +13,7 @@ Usage::
 
     bin/beq-designer acquisition-report
     bin/beq-designer acquisition-report -n 50 \
-        -o docs/acquisition_recommendations.md
+        -o recommendations.md
 """
 from __future__ import annotations
 

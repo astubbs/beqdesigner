@@ -229,9 +229,9 @@ scp nas:/path/to/beqdesigner/{media_inventory.json,beq_catalogue.json} \
     ~/Downloads/beqdesigner/
 
 # Then locally generate bias and acquisition reports:
-bin/beq-designer report cache-bias -o docs/wav_cache_bias.md
+bin/beq-designer report cache-bias -o cache_bias.md
 bin/beq-designer report acquisitions -n 50 \
-    -o docs/acquisition_recommendations.md
+    -o recommendations.md
 ```
 
 ### Quick start (local Python, for dev / single machine)
@@ -282,6 +282,7 @@ compares the output to the catalogue's expert-authored filters.
 | `bin/beq-designer dev train` | Train production model |
 | `bin/beq-designer dev test` | Run auto_beq tests |
 | `bin/beq-designer discover` | Discover media in library |
+| `bin/beq-designer config` | Edit CLI preferences |
 | `bin/beq-designer report experiments` | Compare experiment results |
 | `bin/beq-designer --help` | Full subcommand list |
 
@@ -293,9 +294,8 @@ compares the output to the catalogue's expert-authored filters.
 | `AUTO_BEQ_ADVISOR` | Which advisor: `measurement` (signal-only), `ollama` (LLM), `mock`, `heuristic` | `measurement` |
 | `AUTO_BEQ_SWEEP_LIMIT` | Max media files to process in benchmark | `10` |
 | `OLLAMA_MODEL` | Ollama model name | `qwen:14b` |
-| `SPIKE_TEST` | Pytest selector for run-spike-*.sh wrappers | all auto_beq tests |
-| `SPIKE_MARKERS` | Override default marker filter in `run-spike-tests.sh` | `not integration and not experiment` |
-| `SPIKE_VERBOSE` | `1` to show stdout from tests | `0` |
+| `BEQ_SHARED_DIR` | BEQ shared working directory (WAV cache, models) | (from settings.json) |
+| `BEQ_WAV_CACHE` | Override WAV cache directory | (derived from shared dir) |
 | `AUTO_BEQ_MODEL_PATH` | Override path for the trained XGBoost model loaded by `AUTO_BEQ_ADVISOR=trained_model`. Falls back to `{beq-dir}/production_model.joblib`. | (auto-discover) |
 
 ### Design docs

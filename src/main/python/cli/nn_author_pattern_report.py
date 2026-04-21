@@ -16,7 +16,7 @@ from metadata reliably.
 Usage::
 
     bin/beq-designer author-pattern-report
-    bin/beq-designer author-pattern-report -o docs/author_patterns.md
+    bin/beq-designer author-pattern-report -o author_patterns.md
 """
 from __future__ import annotations
 
