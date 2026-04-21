@@ -166,13 +166,13 @@ def _interactive_menu_loop(config: CliConfig, verbose: bool) -> None:
         try:
             _dispatch(action, config, verbose)
         except KeyboardInterrupt:
-            console.print("\n[dim]Interrupted — returning to menu.[/dim]")
-        except RuntimeError as e:
-            console.print(f"\n[red]Error:[/red] {e}")
+            console.print("\n[dim]Interrupted - returning to menu.[/dim]")
         except SystemExit as e:
             if e.code and e.code != 0:
                 console.print(f"[red]Command exited with code {e.code}[/red]")
-        except Exception:
+        except Exception as e:
+            msg = str(e) or type(e).__name__
+            console.print(f"\n[red]Error:[/red] {msg}")
             console.print_exception(show_locals=False)
 
     console.print("[dim]Goodbye.[/dim]")
@@ -194,13 +194,13 @@ def _tools_menu_loop(config: CliConfig, verbose: bool) -> None:
         try:
             _dispatch(action, config, verbose)
         except KeyboardInterrupt:
-            console.print("\n[dim]Interrupted — returning to tools menu.[/dim]")
-        except RuntimeError as e:
-            console.print(f"\n[red]Error:[/red] {e}")
+            console.print("\n[dim]Interrupted - returning to tools menu.[/dim]")
         except SystemExit as e:
             if e.code and e.code != 0:
                 console.print(f"[red]Command exited with code {e.code}[/red]")
-        except Exception:
+        except Exception as e:
+            msg = str(e) or type(e).__name__
+            console.print(f"\n[red]Error:[/red] {msg}")
             console.print_exception(show_locals=False)
 
 
