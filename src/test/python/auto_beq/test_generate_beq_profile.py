@@ -320,3 +320,80 @@ class TestE2EProfilePipeline:
         with pytest.raises((FileNotFoundError, RuntimeError)):
             from model.auto_beq_nn import load_model
             load_model(str(fake_path))
+
+
+class TestRenderResults:
+    """Tests for _render_results output rendering."""
+
+    def test_bracketed_filename_does_not_crash(self, tmp_path):
+        """Filenames with [brackets] must not crash Rich markup parser.
+
+        Regression: media filenames like [Bluray-2160p][FLAC 2.0] contain
+        square brackets that Rich interprets as markup tags, causing
+        MarkupError.
+        """
+        from pathlib import Path
+        from io import StringIO
+        from unittest.mock import patch
+        from rich.console import Console
+
+        from cli.profile import _render_results
+
+        # Profile with brackets in the output path (common in media files)
+        profile = {
+            "title": "Jujutsu Kaisen",
+            "year": "2020",
+            "audioTypes": ["FLAC 2.0"],
+            "content_type": "TV",
+            "author": "auto-beq-nn",
+            "filters": [
+                {"type": "LowShelf", "freq": 25, "gain": 3.2, "q": 1.2,
+                 "biquads": {"96000": {"b": ["1", "2", "3"], "a": ["4", "5"]}}},
+            ],
+            "images": [],
+            "mv": "17.0",
+            "note": "test",
+        }
+        output_path = tmp_path / "JUJUTSU KAISEN (2020) - S01E01 [Bluray-2160p][FLAC 2.0][x265][JA]-Moozzi2_beq.json"
+        output_path.write_text("{}")
+
+        captured = StringIO()
+        with patch("cli.profile.console", Console(file=captured)):
+            _render_results(profile, output_path)
+
+        output = captured.getvalue()
+        assert "Jujutsu Kaisen" in output
+        # Should not crash - if we got here, the brackets were escaped
+
+    def test_spectrograph_with_brackets(self, tmp_path):
+        """Spectrograph path with brackets also gets escaped."""
+        from pathlib import Path
+        from io import StringIO
+        from unittest.mock import patch
+        from rich.console import Console
+
+        from cli.profile import _render_results
+
+        spect_path = tmp_path / "Film [Bluray-2160p]_spectrograph.png"
+        spect_path.write_bytes(b"\x89PNG")
+
+        profile = {
+            "title": "Film",
+            "year": "2020",
+            "audioTypes": ["DTS-HD MA 7.1"],
+            "content_type": "film",
+            "author": "auto-beq-nn",
+            "filters": [{"type": "LowShelf", "freq": 30, "gain": 5, "q": 0.7,
+                         "biquads": {"96000": {"b": ["1", "2", "3"], "a": ["4", "5"]}}}],
+            "images": [str(spect_path)],
+            "mv": "5.0",
+            "note": "test",
+        }
+        output_path = tmp_path / "Film [tmdb-12345]_beq.json"
+        output_path.write_text("{}")
+
+        captured = StringIO()
+        with patch("cli.profile.console", Console(file=captured)):
+            _render_results(profile, output_path)
+
+        # Should complete without MarkupError

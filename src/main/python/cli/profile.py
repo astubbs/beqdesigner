@@ -401,12 +401,19 @@ def _render_results(profile: dict, output_path: Path) -> None:
     console.print()
     console.print(Markdown(md_text))
 
-    # Clickable links (separate from markdown — Rich markdown doesn't support file:// links).
+    # Clickable links (separate from markdown - Rich markdown doesn't support file:// links).
+    # Escape path text because media filenames often contain [brackets]
+    # (e.g. [Bluray-2160p][FLAC 2.0]) which Rich interprets as markup tags.
+    from rich.text import Text
     console.print()
-    console.print(f"  [link=file://{abs_path}]{output_path}[/link]")
+    link_text = Text(f"  {output_path}")
+    link_text.stylize(f"link file://{abs_path}")
+    console.print(link_text)
     if spect:
         spect_abs = spect[0].resolve()
-        console.print(f"  [link=file://{spect_abs}]{spect[0].name}[/link]")
+        spect_text = Text(f"  {spect[0].name}")
+        spect_text.stylize(f"link file://{spect_abs}")
+        console.print(spect_text)
 
 
 # ---------------------------------------------------------------------------
