@@ -258,6 +258,7 @@ def load_and_smooth(
     freqs: np.ndarray,
     expected_runtime_min: float = 0,
     return_absolute: bool = False,
+    preloaded_mono: np.ndarray | None = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Load a WAV file, compute avg spectrum, interp to grid, smooth to 1/6-octave.
 
@@ -275,14 +276,17 @@ def load_and_smooth(
     from model.signal import Signal, read_wav_data
     from model.wav_integrity import validate_wav
 
-    # Integrity gate - every WAV is validated before use.
-    ok, reason = validate_wav(wav_path, expected_runtime_min=expected_runtime_min)
-    if not ok:
-        raise RuntimeError(f"corrupt WAV, skipping: {wav_path.name} - {reason}")
+    if preloaded_mono is not None:
+        mono = preloaded_mono
+    else:
+        # Integrity gate - every WAV is validated before use.
+        ok, reason = validate_wav(wav_path, expected_runtime_min=expected_runtime_min)
+        if not ok:
+            raise RuntimeError(f"corrupt WAV, skipping: {wav_path.name} - {reason}")
 
-    samples, read_fs, _ = read_wav_data(str(wav_path))
-    assert read_fs == fs, f"expected fs={fs}, got {read_fs}"
-    mono = samples[:, 0] if samples.ndim > 1 else samples
+        samples, read_fs, _ = read_wav_data(str(wav_path))
+        assert read_fs == fs, f"expected fs={fs}, got {read_fs}"
+        mono = samples[:, 0] if samples.ndim > 1 else samples
     duration_s = len(mono) / fs
     log.debug("loaded %d samples (%.1f s = %.1f min)", len(mono), duration_s, duration_s / 60)
     sig = Signal(wav_path.stem, mono, fs=fs)
@@ -451,6 +455,7 @@ def load_and_smooth_chunked(
     return_absolute: bool = False,
     return_chunk_stats: bool = False,
     chunk_weights: np.ndarray | None = None,
+    preloaded_mono: np.ndarray | None = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray] | dict:
     """Chunked-percentile spectrum: chunks -> STFT peak per chunk -> Nth-percentile.
 
@@ -487,14 +492,17 @@ def load_and_smooth_chunked(
     from model.signal import read_wav_data
     from model.wav_integrity import validate_wav
 
-    # Integrity gate - every WAV is validated before use.
-    ok, reason = validate_wav(wav_path, expected_runtime_min=expected_runtime_min)
-    if not ok:
-        raise RuntimeError(f"corrupt WAV, skipping: {wav_path.name} - {reason}")
+    if preloaded_mono is not None:
+        mono = preloaded_mono
+    else:
+        # Integrity gate - every WAV is validated before use.
+        ok, reason = validate_wav(wav_path, expected_runtime_min=expected_runtime_min)
+        if not ok:
+            raise RuntimeError(f"corrupt WAV, skipping: {wav_path.name} - {reason}")
 
-    samples, read_fs, _ = read_wav_data(str(wav_path))
-    assert read_fs == fs, f"expected fs={fs}, got {read_fs}"
-    mono = samples[:, 0] if samples.ndim > 1 else samples
+        samples, read_fs, _ = read_wav_data(str(wav_path))
+        assert read_fs == fs, f"expected fs={fs}, got {read_fs}"
+        mono = samples[:, 0] if samples.ndim > 1 else samples
     duration_s = len(mono) / fs
     log.debug(
         "loaded %d samples (%.1f s = %.1f min) for chunked analysis",
@@ -605,15 +613,28 @@ def load_and_smooth_blended(
     When *return_absolute* is True (F3/E42), returns absolute dBFS from
     the Welch extraction (the more stable of the two).
     """
+    # Read WAV data once and pass to both sub-functions to avoid double I/O.
+    from model.signal import read_wav_data
+    from model.wav_integrity import validate_wav
+
+    ok, reason = validate_wav(wav_path)
+    if not ok:
+        raise RuntimeError(f"corrupt WAV, skipping: {wav_path.name} - {reason}")
+
+    samples, read_fs, _ = read_wav_data(str(wav_path))
+    assert read_fs == fs, f"expected fs={fs}, got {read_fs}"
+    mono = samples[:, 0] if samples.ndim > 1 else samples
+
     if return_absolute:
         welch, absolute_at_bins = load_and_smooth(
-            wav_path, fs, freqs, return_absolute=True,
+            wav_path, fs, freqs, return_absolute=True, preloaded_mono=mono,
         )
     else:
-        welch = load_and_smooth(wav_path, fs, freqs)
+        welch = load_and_smooth(wav_path, fs, freqs, preloaded_mono=mono)
         absolute_at_bins = None
     chunked = load_and_smooth_chunked(
         wav_path, fs, freqs, chunk_s=chunk_s, percentile=percentile,
+        preloaded_mono=mono,
     )
     blended = alpha * welch + (1.0 - alpha) * chunked
     log.debug(
