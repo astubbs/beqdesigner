@@ -115,7 +115,7 @@ profile generation in Docker. Tracked for refactoring.
 ### Experiment logging
 
 **Every experiment MUST be logged in
-`docs/design/auto_beq_experiments.md` before committing.** This is
+the [experiment archive](docs/design/experiments/README.md) before committing.** This is
 non-negotiable. The experiment log is the source of truth for "what
 we tried and what happened". If you ran it, log it.
 
@@ -278,13 +278,13 @@ Mandatory practices:
 - **Target reader**: a competent Python developer who has never
   touched machine learning, digital signal processing, or audio
   engineering. They should be able to read
-  `docs/design/auto_beq_how_it_works.md` and understand the full
+  [`docs/design/auto_beq.md`](docs/design/auto_beq.md) and understand the full
   system.
 - **When in doubt, over-explain.** A developer who already knows can
   skim; a developer who doesn't know can't guess.
 
 The canonical "plain language" overview lives at
-`docs/design/auto_beq_how_it_works.md`. Any new technique added to
+[`docs/design/auto_beq.md`](docs/design/auto_beq.md). Any new technique added to
 the system must be explained there in the same accessible style.
 
 ## Branch plans

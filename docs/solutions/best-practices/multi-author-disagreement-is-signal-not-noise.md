@@ -57,6 +57,6 @@ In many ML domains, label disagreement between experts IS noise (medical imaging
 
 ## Related
 
-- H-series experiments (E60-E67) in `docs/design/auto_beq_experiments.md`
+- H-series experiments (E60-E67) in the [experiment archive](../../design/experiments/README.md)
 - `model/auto_beq_nn.py:deduplicate_by_title()` implements the keep-one-author strategy
 - Per-author analysis: `cli/nn_author_pattern_report.py` shows how each author's style differs

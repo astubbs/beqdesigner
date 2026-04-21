@@ -66,6 +66,6 @@ E77: Switch from synthetic to real audio training
 
 ## Related
 
-- Experiment entries: E1-E67, E77, E82 in `docs/design/auto_beq_experiments.md`
+- Experiment entries: E1-E67, E77, E82 in the [experiment archive](../../design/experiments/README.md)
 - The extraction pipeline (`cli/extract.py`, `docker/`) was built specifically to collect real training data at scale
-- `docs/design/auto_beq_how_it_works.md` describes the differentiable biquad layer that made the E85 architecture work - but even E85 needed real data to reach its best performance
+- `docs/design/auto_beq.md` describes the differentiable biquad layer that made the E85 architecture work - but even E85 needed real data to reach its best performance

@@ -39,7 +39,7 @@
 
 ## 2026-04-08: ML trained-model experiments (E25–E29)
 
-See companion doc [`auto_beq_ml_experiments.md`](auto_beq_ml_experiments.md) for full design.
+See [auto_beq.md](../auto_beq.md) for the main reference.
 
 **Note**: Renumbered from E18–E24 to E25–E29 to resolve collision with
 the chunked-audio experiments (E18–E22) above.

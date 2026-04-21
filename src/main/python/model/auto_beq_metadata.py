@@ -9,7 +9,7 @@ we skip the search step and go straight to the details endpoint.
 
 Future: the enriched metadata will be persisted into the git DB catalogue
 output alongside filter parameters — see the TODO in
-docs/design/auto_beq_ml_experiments.md.
+docs/design/auto_beq.md.
 
 Usage::
 

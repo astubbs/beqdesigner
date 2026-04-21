@@ -11,7 +11,7 @@ baseline (late fusion α=0.7 + one-hot type encoding).  67 real-audio
 validation titles.  All experiments share the same training/validation
 split and evaluation metric (mean downstream dB loss, 20–80 Hz).
 
-Full design rationale in `docs/design/auto_beq_nn_future_experiments.md`.
+See [auto_beq.md](../auto_beq.md) for the main reference.
 
 ### E41/F1 — Synthetic feature augmentation
 

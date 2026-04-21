@@ -300,10 +300,8 @@ compares the output to the catalogue's expert-authored filters.
 
 ### Design docs
 
-- [`docs/design/auto_beq.md`](docs/design/auto_beq.md) — vision + architecture
-- [`docs/design/auto_beq_experiments.md`](docs/design/auto_beq_experiments.md) — experiment log (ongoing, current champion: E82 50:1 weighted hybrid)
-- [`docs/design/auto_beq_library_sweep_plan.md`](docs/design/auto_beq_library_sweep_plan.md) — library discovery quick-start
-- [`branch-plans/plan-sharp-goldberg.md`](branch-plans/plan-sharp-goldberg.md) — current branch plan
+- [`docs/design/auto_beq.md`](docs/design/auto_beq.md) - auto-BEQ architecture and reference
+- [`docs/design/experiments/`](docs/design/experiments/) - experiment archive (E1-E87)
 
 ## Further reading
 

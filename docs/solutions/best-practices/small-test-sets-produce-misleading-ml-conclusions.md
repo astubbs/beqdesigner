@@ -63,5 +63,5 @@ Conclusion: real-audio training outperforms synthetic
 
 ## Related
 
-- Experiment log entries: E33, E77, E81, E82 in `docs/design/auto_beq_experiments.md`
+- Experiment log entries: E33, E77, E81, E82 in the [experiment archive](../../design/experiments/README.md)
 - The E82 "50:1 weighted hybrid" production model was the direct result of correctly evaluating real-audio training with adequate sample sizes

@@ -10,7 +10,7 @@ This is Stage 1 of the architecture progression (XGBoost). The same feature
 vector feeds Stage 2 (1D CNN) and Stage 3 (transformer) without changes;
 only the model object changes.
 
-See docs/design/auto_beq_ml_experiments.md for full design rationale.
+See docs/design/auto_beq.md for full design rationale.
 """
 
 from __future__ import annotations

@@ -15,7 +15,7 @@ Audio and metadata are processed through separate branches before merging,
 so the model can't learn spurious cross-correlations between synthetic
 audio features and metadata during training.
 
-See docs/design/auto_beq_ml_experiments.md for architecture rationale.
+See docs/design/auto_beq.md for architecture rationale.
 """
 
 from __future__ import annotations

@@ -260,16 +260,14 @@ def ensure_analysis_reports_current(
 ) -> list[str]:
     """Regenerate analysis reports when they're stale vs the WAV cache.
 
-    Checks ``docs/wav_cache_bias.md``, ``docs/acquisition_recommendations.md``
-    and ``docs/author_patterns.md`` against the max mtime of any WAV in
-    the cache.  Regenerates (via subprocess) any report whose mtime is
-    older than the newest WAV.
+    Reports are written to ``{beq_shared_dir}/reports/`` (not checked
+    into the repo). Regenerates (via subprocess) any report whose mtime
+    is older than the newest WAV.
 
     Called at the start of experiment harness runs so downstream analysis
-    docs always reflect the current training set without a manual step.
+    always reflects the current training set without a manual step.
 
-    Returns the list of reports that were (re)generated - useful for
-    logging and tests.
+    Returns the list of reports that were (re)generated.
     """
     import subprocess
 
@@ -282,20 +280,27 @@ def ensure_analysis_reports_current(
         log.info("WAV cache is empty; skipping analysis report refresh")
         return []
 
+    try:
+        report_dir = beq_shared_dir() / "reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        log.info("could not create report output dir; skipping report refresh")
+        return []
+
     reports = [
         (
-            repo_root / "docs" / "wav_cache_bias.md",
-            repo_root / "scripts" / "nn_cache_bias_report.py",
+            report_dir / "wav_cache_bias.md",
+            repo_root / "src" / "main" / "python" / "cli" / "nn_cache_bias_report.py",
             ["-o"],
         ),
         (
-            repo_root / "docs" / "author_patterns.md",
-            repo_root / "scripts" / "nn_author_pattern_report.py",
+            report_dir / "author_patterns.md",
+            repo_root / "src" / "main" / "python" / "cli" / "nn_author_pattern_report.py",
             ["-o"],
         ),
         (
-            repo_root / "docs" / "acquisition_recommendations.md",
-            repo_root / "scripts" / "nn_acquisition_recommender.py",
+            report_dir / "acquisition_recommendations.md",
+            repo_root / "src" / "main" / "python" / "cli" / "nn_acquisition_recommender.py",
             ["-n", "50", "-o"],
         ),
     ]

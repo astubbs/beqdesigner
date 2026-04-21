@@ -6,7 +6,7 @@
 
 ## 2026-04-12: Paradigm-shift experiments (T1.x)
 
-See [`auto_beq_nn_paradigm_shifts.md`](auto_beq_nn_paradigm_shifts.md)
+See [auto_beq.md](../auto_beq.md)
 for the full research menu. This section logs actual experiment
 results against the E82 production champion.
 
@@ -127,7 +127,7 @@ more split candidate evaluations per tree. Extraction was fully
 cached after the first run, but the training-time cost persists.
 
 **Why it failed** — the theoretical concern from
-`auto_beq_nn_paradigm_shifts.md` was empirically confirmed:
+the auto-BEQ reference doc was empirically confirmed:
 
 1. Our LFE content is sub-500 Hz. When upsampled to 16 kHz for
    Whisper's input, everything above 500 Hz is silence.
