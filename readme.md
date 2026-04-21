@@ -295,7 +295,6 @@ compares the output to the catalogue's expert-authored filters.
 | `AUTO_BEQ_SWEEP_LIMIT` | Max media files to process in benchmark | `10` |
 | `OLLAMA_MODEL` | Ollama model name | `qwen:14b` |
 | `BEQ_SHARED_DIR` | BEQ shared working directory (WAV cache, models) | (from settings.json) |
-| `BEQ_WAV_CACHE` | Override WAV cache directory | (derived from shared dir) |
 | `AUTO_BEQ_MODEL_PATH` | Override path for the trained XGBoost model loaded by `AUTO_BEQ_ADVISOR=trained_model`. Falls back to `{beq-dir}/production_model.joblib`. | (auto-discover) |
 
 ### Design docs

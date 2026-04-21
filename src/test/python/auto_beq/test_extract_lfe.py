@@ -1254,7 +1254,6 @@ class TestWavCacheDirResolution:
         """When BEQ_SHARED_DIR is set, wav_cache_dir returns {shared}/wav-cache."""
         import model.wav_discovery as helpers
         monkeypatch.setenv("BEQ_SHARED_DIR", str(tmp_path))
-        monkeypatch.delenv("BEQ_WAV_CACHE", raising=False)
         monkeypatch.delenv("BEQ_DIR", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "fakehome")
 
@@ -1262,22 +1261,10 @@ class TestWavCacheDirResolution:
         assert result == tmp_path / "wav-cache"
         assert result.exists()  # auto-created
 
-    def test_explicit_wav_cache_takes_precedence(self, tmp_path, monkeypatch):
-        """BEQ_WAV_CACHE overrides BEQ_SHARED_DIR derivation."""
-        import model.wav_discovery as helpers
-        explicit = tmp_path / "my-custom-cache"
-        explicit.mkdir()
-        monkeypatch.setenv("BEQ_WAV_CACHE", str(explicit))
-        monkeypatch.setenv("BEQ_SHARED_DIR", str(tmp_path / "shared"))
-
-        result = helpers.wav_cache_dir()
-        assert result == explicit
-
     def test_errors_when_nothing_configured(self, tmp_path, monkeypatch):
         """Raises RuntimeError when no config can resolve."""
         import model.wav_discovery as helpers
         monkeypatch.delenv("BEQ_SHARED_DIR", raising=False)
-        monkeypatch.delenv("BEQ_WAV_CACHE", raising=False)
         monkeypatch.delenv("BEQ_DIR", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path / "fakehome")
 

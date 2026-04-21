@@ -477,7 +477,6 @@ Markers are registered in `pyproject.toml` under `[tool.pytest.ini_options]`. Ad
 | `AUTO_BEQ_ADVISOR` | advisor impl: heuristic / mock / ollama / measurement | `measurement` |
 | `AUTO_BEQ_MODEL_PATH` | path to production model file | auto-detected |
 | `BEQ_SHARED_DIR` | shared BEQ directory (wav-cache, catalogue, inventory) - **required** | from `shared_beq_dir` in settings.json |
-| `BEQ_WAV_CACHE` | override WAV cache directory | derived from `BEQ_SHARED_DIR` |
 
 ```bash
 # Default test suite (unit tests only)

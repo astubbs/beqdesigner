@@ -6,8 +6,7 @@ and E85 (differentiable DSP) on the identical 80/20 stratified split of the
 full WAV cache, producing a single definitive leaderboard.
 
 Usage:
-    BEQ_WAV_CACHE=/Volumes/jetspeed/beqdesigner/wav-cache \
-      poetry run python3 scripts/run_tier1_comparison.py
+    bin/beq-designer dev reassess
 """
 from __future__ import annotations
 

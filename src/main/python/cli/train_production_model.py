@@ -18,12 +18,8 @@ let ``get_advisor()`` discover it at the default location.
 
 Usage::
 
-    # Uses default WAV cache (from BEQ_WAV_CACHE env var or settings.json)
+    # Uses default WAV cache (from settings.json or derived from BEQ_SHARED_DIR)
     bin/beq-designer train-production
-
-    # Override WAV cache location (e.g. NAS mount)
-    BEQ_WAV_CACHE=/Volumes/jetspeed/beqdesigner/wav-cache \\
-      bin/beq-designer train-production
 
     # Experiment with a different real:synth weight ratio
     bin/beq-designer train-production --real-weight 20

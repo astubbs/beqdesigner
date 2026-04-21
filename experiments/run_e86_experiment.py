@@ -2,8 +2,7 @@
 """E86: multi-type topology experiment (LowShelf + HighShelf + PeakingEQ).
 
 Usage:
-    BEQ_WAV_CACHE=/path/to/beqdesigner/wav-cache \
-      poetry run python3 scripts/run_e86_experiment.py
+    poetry run python3 experiments/run_e86_experiment.py
 """
 from __future__ import annotations
 

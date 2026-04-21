@@ -1981,9 +1981,8 @@ def _production_model_default_path() -> "Path | None":
     """Return the default location for the E82 production model.
 
     Looks at ``{beq-dir}/production_model.joblib`` where ``beq-dir`` is
-    derived from ``BEQ_WAV_CACHE`` / settings.json / the default
-    ``~/Downloads/beqdesigner`` (the same resolution used by the WAV
-    cache helpers).
+    derived from ``BEQ_SHARED_DIR`` / settings.json (the same resolution
+    used by the WAV cache helpers).
 
     Returns ``None`` if the spike helpers aren't importable (e.g. in
     a minimal install) or if the path simply doesn't exist yet.

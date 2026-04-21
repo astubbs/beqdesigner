@@ -10,7 +10,6 @@ grouped by quality tier (< 2 dB, 2-4 dB, > 5 dB).
 
 Usage:
     bin/beq-designer nn-report
-    BEQ_WAV_CACHE=/path/to/wav-cache bin/beq-designer nn-report
     bin/beq-designer nn-report --output report.md
 """
 

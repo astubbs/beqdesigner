@@ -32,14 +32,13 @@ def main(argv: list[str] | None = None):
     import argparse
     parser = argparse.ArgumentParser(description="Summarise WAV cache training set status.")
     parser.add_argument("cache_dir", nargs="?", type=Path, default=None,
-                        help="WAV cache directory. Defaults to BEQ_WAV_CACHE env var or settings.json.")
+                        help="WAV cache directory. Defaults to settings.json or derived from BEQ_SHARED_DIR.")
     args = parser.parse_args(argv)
 
     if args.cache_dir:
-        # Override the env var so discover_wav_catalogue_pairs() uses it too.
-        import os
-        os.environ["BEQ_WAV_CACHE"] = str(args.cache_dir.resolve())
-    cache = wav_cache_dir()
+        cache = args.cache_dir.resolve()
+    else:
+        cache = wav_cache_dir()
     print(f"WAV cache: {cache}")
     print()
 

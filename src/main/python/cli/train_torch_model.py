@@ -10,8 +10,7 @@ discover it at ``{beq-dir}/e85_torch_filter.pt``.
 Usage::
 
     # Train using the existing E82 production model as teacher:
-    BEQ_WAV_CACHE=/Volumes/jetspeed/beqdesigner/wav-cache \\
-      bin/beq-designer train-torch
+    bin/beq-designer train-torch
 
     # Override hyperparams:
     bin/beq-designer train-torch \\
