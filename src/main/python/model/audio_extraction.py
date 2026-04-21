@@ -121,7 +121,13 @@ def probe_audio_stream(media_path: Path) -> dict:
         ],
         capture_output=True, check=True, text=True, timeout=30,
     )
-    info = json.loads(result.stdout)["streams"][0]
+    streams = json.loads(result.stdout).get("streams", [])
+    if not streams:
+        raise RuntimeError(
+            f"no audio streams found in {media_path} — "
+            "the file may be video-only or have an unsupported audio codec"
+        )
+    info = streams[0]
     log.info(
         "audio stream: codec=%s channels=%d layout=%s sample_rate=%s",
         info.get("codec_name"), info.get("channels"),
@@ -226,7 +232,7 @@ def extract_lfe_wav(
         "-f", "wav",
         str(tmp_path),
     ]
-    proc = subprocess.run(ff_args, capture_output=True, text=True)
+    proc = subprocess.run(ff_args, capture_output=True, text=True, timeout=900)
     elapsed = time.time() - start
     if proc.returncode != 0:
         tmp_path.unlink(missing_ok=True)
@@ -787,3 +793,101 @@ _have_tool = have_tool
 _probe_audio_stream = probe_audio_stream
 _extract_lfe_wav = extract_lfe_wav
 _load_and_smooth_chunked = load_and_smooth_chunked
+
+
+# ---------------------------------------------------------------------------
+# Parallel feature extraction (moved from test_auto_beq_nn_real.py)
+# ---------------------------------------------------------------------------
+
+
+def _extract_one_wav(args: tuple) -> tuple:
+    """Worker function for parallel feature extraction.
+
+    Takes (wav_path, freqs_hz, fs, strategy) and returns (wav_path, features)
+    or (wav_path, None) on failure.
+
+    Uses ``cached_extract_features_with_strategy`` so repeat runs over
+    the same WAV cache skip the Welch + chunked-percentile work and
+    just unpickle the cached CurveFeatures. Auto-invalidates via
+    (size, mtime) in the cache key.
+    """
+    wav_path, freqs_hz, fs, strategy = args
+    try:
+        features = cached_extract_features_with_strategy(
+            Path(wav_path), freqs_hz, fs, strategy=strategy,
+        )
+        return (str(wav_path), features)
+    except Exception:
+        return (str(wav_path), None)
+
+
+def extract_features_parallel(
+    pairs: list[dict],
+    freqs_hz,
+    fs: int,
+    strategy=None,
+    max_workers: int | None = None,
+) -> list[tuple]:
+    """Extract audio features from multiple WAVs in parallel.
+
+    Returns list of (pair, features) tuples. Failed extractions are skipped.
+    Uses ThreadPoolExecutor since scipy Welch releases the GIL.
+    Logs progress at each 10% decile + final count so long runs over
+    the NAS cache have visible heartbeat.
+    """
+    if strategy is None:
+        strategy = STRATEGY_WELCH
+
+    work = [
+        (str(p["wav_path"]), freqs_hz, fs, strategy)
+        for p in pairs
+    ]
+    n_work = len(work)
+    strat_label = getattr(strategy, "label", "welch")
+    log.info(
+        "extracting curve features from %d WAVs (strategy=%s, parallel)...",
+        n_work, strat_label,
+    )
+
+    t0 = time.time()
+    results = {}
+    next_pct_to_log = 10
+    done = 0
+    # ThreadPoolExecutor instead of ProcessPoolExecutor: scipy/numpy
+    # release the GIL during C-level computation (Welch, FFT, smoothing),
+    # so threads get real parallelism without fork/spawn overhead.
+    # Eliminates logging spam from child processes re-importing modules.
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for wav_str, features in executor.map(_extract_one_wav, work):
+            results[wav_str] = features
+            done += 1
+            pct = (done * 100) // max(1, n_work)
+            if pct >= next_pct_to_log and pct < 100:
+                elapsed_s = time.time() - t0
+                rate = done / elapsed_s if elapsed_s > 0 else 0
+                eta_s = (n_work - done) / rate if rate > 0 else 0
+                log.info(
+                    "  %3d%%  %d/%d WAVs  (%.0f WAVs/s, ETA %.0fs)",
+                    pct, done, n_work, rate, eta_s,
+                )
+                while next_pct_to_log <= pct:
+                    next_pct_to_log += 10
+
+    elapsed = time.time() - t0
+    ok_count = sum(1 for f in results.values() if f is not None)
+    log.info(
+        "curve-feature extraction complete: %d/%d WAVs in %.1fs (%.1f WAVs/s)",
+        ok_count, n_work, elapsed, ok_count / elapsed if elapsed > 0 else 0,
+    )
+
+    out = []
+    for p in pairs:
+        features = results.get(str(p["wav_path"]))
+        if features is not None:
+            out.append((p, features))
+    return out
+
+
+# Backwards-compatible alias for callers using the old underscore name.
+_extract_features_parallel = extract_features_parallel

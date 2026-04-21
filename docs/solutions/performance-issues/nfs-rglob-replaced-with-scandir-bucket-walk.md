@@ -66,7 +66,7 @@ for bucket_path in bucket_dirs:
 
 Sites fixed:
 - `cli/cache_status.py` - 3 rglob calls replaced
-- `spike/_auto_beq_helpers.py` - `discover_wav_catalogue_pairs()` and `discover_unmatched_wavs()`
+- `model/wav_discovery.py` - `discover_wav_catalogue_pairs()` and `discover_unmatched_wavs()`
 - `model/wav_integrity.py` - `verify_cache()` tightened to `.lfe-1000hz.wav` pattern
 - `_latest_wav_mtime()` - replaced per-file stat with dir-level mtime scan
 

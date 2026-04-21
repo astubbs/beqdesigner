@@ -25,7 +25,7 @@ fi
 
 echo "=== Pass 1: all tests except torch ==="
 poetry run pytest \
-    --ignore=src/test/python/spike/test_auto_beq_torch.py \
+    --ignore=src/test/python/auto_beq/test_auto_beq_torch.py \
     "${MARKER_ARGS[@]}" \
     "${EXTRA_ARGS[@]}" \
     -v
@@ -33,7 +33,7 @@ poetry run pytest \
 echo ""
 echo "=== Pass 2: torch tests (separate process) ==="
 poetry run pytest \
-    src/test/python/spike/test_auto_beq_torch.py \
+    src/test/python/auto_beq/test_auto_beq_torch.py \
     "${EXTRA_ARGS[@]}" \
     -v
 

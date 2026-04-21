@@ -73,7 +73,10 @@ def _load_inventory(inventory_path: Path | None = None) -> dict | None:
             from model.wav_discovery import beq_shared_dir
             _beq = beq_shared_dir()
         except RuntimeError:
-            _beq = Path.home() / "Downloads" / "beqdesigner"
+            raise RuntimeError(
+                "BEQ shared directory not configured. "
+                "Set BEQ_SHARED_DIR or run bin/beq-designer extract to configure."
+            )
         inventory_path = _beq / "media_inventory.json"
     if not inventory_path.exists():
         if explicit:

@@ -166,96 +166,9 @@ def _print_per_title_breakdown(Y_pred: np.ndarray, val_entries: list[dict], mode
 _extract_real_audio_features = extract_real_audio_features
 
 
-def _extract_one_wav(args: tuple) -> tuple:
-    """Worker function for parallel feature extraction.
-
-    Takes (wav_path, freqs_hz, fs, strategy) and returns (wav_path, features)
-    or (wav_path, None) on failure. Runs in a separate process.
-
-    Uses ``cached_extract_features_with_strategy`` so repeat runs over
-    the same WAV cache skip the Welch + chunked-percentile work and
-    just unpickle the cached CurveFeatures. Auto-invalidates via
-    (size, mtime) in the cache key.
-    """
-    wav_path, freqs_hz, fs, strategy = args
-    try:
-        features = cached_extract_features_with_strategy(
-            Path(wav_path), freqs_hz, fs, strategy=strategy,
-        )
-        return (str(wav_path), features)
-    except Exception as exc:
-        return (str(wav_path), None)
-
-
-def _extract_features_parallel(
-    pairs: list[dict],
-    freqs_hz: np.ndarray,
-    fs: int,
-    strategy=None,
-    max_workers: int | None = None,
-) -> list[tuple]:
-    """Extract audio features from multiple WAVs in parallel.
-
-    Returns list of (pair, features) tuples. Failed extractions are skipped.
-    Uses ProcessPoolExecutor since scipy Welch is single-threaded.
-    Logs progress at each 10% decile + final count so long runs over
-    the NAS cache have visible heartbeat.
-    """
-    from auto_beq._auto_beq_helpers import STRATEGY_WELCH
-    if strategy is None:
-        strategy = STRATEGY_WELCH
-
-    work = [
-        (str(p["wav_path"]), freqs_hz, fs, strategy)
-        for p in pairs
-    ]
-    n_work = len(work)
-    strat_label = getattr(strategy, "label", "welch")
-    log.info(
-        "extracting curve features from %d WAVs (strategy=%s, parallel)…",
-        n_work, strat_label,
-    )
-
-    t0 = time.time()
-    results = {}
-    next_pct_to_log = 10
-    done = 0
-    # Use ThreadPoolExecutor instead of ProcessPoolExecutor.
-    # scipy/numpy release the GIL during C-level computation (Welch,
-    # FFT, smoothing), so threads get real parallelism without the
-    # fork/spawn overhead. Eliminates all logging spam from child
-    # processes re-importing modules and duplicating handlers.
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for wav_str, features in executor.map(_extract_one_wav, work):
-            results[wav_str] = features
-            done += 1
-            pct = (done * 100) // max(1, n_work)
-            if pct >= next_pct_to_log and pct < 100:
-                elapsed_s = time.time() - t0
-                rate = done / elapsed_s if elapsed_s > 0 else 0
-                eta_s = (n_work - done) / rate if rate > 0 else 0
-                log.info(
-                    "  %3d%%  %d/%d WAVs  (%.0f WAVs/s, ETA %.0fs)",
-                    pct, done, n_work, rate, eta_s,
-                )
-                while next_pct_to_log <= pct:
-                    next_pct_to_log += 10
-
-    elapsed = time.time() - t0
-    ok_count = sum(1 for f in results.values() if f is not None)
-    log.info(
-        "curve-feature extraction complete: %d/%d WAVs in %.1fs (%.1f WAVs/s)",
-        ok_count, n_work, elapsed, ok_count / elapsed if elapsed > 0 else 0,
-    )
-
-    out = []
-    for p in pairs:
-        features = results.get(str(p["wav_path"]))
-        if features is not None:
-            out.append((p, features))
-    return out
-
+# Parallel feature extraction now lives in model.audio_extraction.
+# Import here for backward compatibility with any callers using the old location.
+from model.audio_extraction import extract_features_parallel as _extract_features_parallel
 
 # synthetic_features() is imported from auto_beq._auto_beq_helpers.
 # Local alias for backward compatibility with call sites using the old name.

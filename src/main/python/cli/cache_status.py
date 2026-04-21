@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 # Allow running from repo root.
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[4]  # cli/ -> python/ -> main/ -> src/ -> repo
 _SRC = _REPO_ROOT / "src" / "main" / "python"
 _TEST = _REPO_ROOT / "src" / "test" / "python"
 for p in (_SRC, _TEST):

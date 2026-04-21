@@ -21,7 +21,7 @@ JUNK_SUBDIRS = frozenset({
 MIN_FEATURE_SIZE_BYTES = 500_000_000  # 500 MB
 
 # Media file extensions to scan.
-MEDIA_EXTENSIONS = frozenset({".mkv"})
+MEDIA_EXTENSIONS = frozenset({".mkv", ".iso", ".mp4", ".m2ts", ".ts", ".avi"})
 
 # Matches [tmdb-NNN], [tvdb-NNN], or [imdb-ttNNN] in a path string.
 ID_RE = re.compile(r"\[(tmdb|tvdb|imdb)-([^\]]+)\]")

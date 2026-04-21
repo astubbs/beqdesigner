@@ -126,7 +126,7 @@ def prepare_training_data(
     from model.auto_beq import DEFAULT_GRID
     from model.auto_beq_metadata import fetch_metadata_batch, load_cache
     from model.wav_discovery import discover_wav_catalogue_pairs_cached
-    from auto_beq.test_auto_beq_nn_real import _extract_features_parallel
+    from model.audio_extraction import extract_features_parallel as _extract_features_parallel
 
     if strategy is None:
         strategy = STRATEGY_BLENDED_07
@@ -249,6 +249,8 @@ def prepare_training_data(
     elif fetch_catalogue:
         # No split - synth_entries is the full deduped catalogue.
         result["synth_entries"] = deduped
+    else:
+        result["synth_entries"] = []
 
     # --- 7. Optionally build feature vectors ---
     if build_feature_vectors:

@@ -7,7 +7,7 @@ Outputs a CSV for downstream reporting and prints a summary table.
 Usage::
 
     PYTHONPATH=./src/main/python:./src/test/python QT_QPA_PLATFORM=offscreen \
-      poetry run pytest src/test/python/spike/test_auto_beq_nn_experiments.py \
+      poetry run pytest src/test/python/auto_beq/test_auto_beq_nn_experiments.py \
       -x -s --tb=short -k test_f_experiment_comparison
 
 The CSV is written to ``.pytest_cache/auto_beq_f_experiments.csv``.

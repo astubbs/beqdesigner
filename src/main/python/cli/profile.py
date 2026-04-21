@@ -261,14 +261,6 @@ def _prompt_select_files(media_dir: Path, output_dir: Path) -> list[Path]:
     return selected or []
 
 
-def _prompt_author(config: CliConfig) -> str:
-    """Prompt for author style, offering saved default."""
-    return inquirer.text(
-        message="Author style:",
-        default=config.author,
-    ).execute() or config.author
-
-
 def _prompt_output_dir(config: CliConfig) -> str:
     """Prompt for output directory."""
     return inquirer.filepath(

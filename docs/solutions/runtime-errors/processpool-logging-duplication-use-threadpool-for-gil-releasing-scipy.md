@@ -130,7 +130,7 @@ The pattern generalizes: **for any Python workload where the heavy computation i
 - XGBoost training was parallelized with `ThreadPoolExecutor` and `n_jobs=1` inside XGBoost to prevent nested parallelism contention (session history)
 
 **Files changed:**
-- `src/test/python/spike/test_auto_beq_nn_real.py` - ProcessPoolExecutor -> ThreadPoolExecutor
+- `src/main/python/model/audio_extraction.py` (was `test_auto_beq_nn_real.py`) - ProcessPoolExecutor -> ThreadPoolExecutor
 - `src/main/python/cli/train_production_model.py` - module-level basicConfig -> inside main()
 - `src/main/python/cli/train_torch_model.py` - same
 - `src/main/python/model/auto_beq_nn.py` - spawn context added (separate ProcessPoolExecutor site)

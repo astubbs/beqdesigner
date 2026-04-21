@@ -1152,7 +1152,7 @@ def test_library_sweep_advisors(film: SweepFilm, advisor_name: str, caplog):
         SPIKE_TEST=...::test_library_sweep_advisors bash scripts/run-spike-tests.sh
 
     Or run all sweep tests together:
-        SPIKE_TEST=src/test/python/spike/test_auto_beq_library_sweep.py bash scripts/run-spike-tests.sh
+        SPIKE_TEST=src/test/python/auto_beq/test_auto_beq_library_sweep.py bash scripts/run-spike-tests.sh
     """
     caplog.set_level(logging.INFO, logger="auto_beq_sweep")
     result = _run_one_film_advisor(film, advisor_name)

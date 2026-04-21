@@ -170,10 +170,10 @@ their `.ui` sources.
   git SHA into this file at build time; running from source without it falls
   back to `0.0.0-alpha.1`.
 
-## Auto-BEQ spike (research)
+## Auto-BEQ (research)
 
-Research spike exploring automated BEQ filter generation from measured
-LFE audio — "take the human out of BEQ-making".
+Research module exploring automated BEQ filter generation from measured
+LFE audio - "take the human out of BEQ-making".
 
 ### Quick start (Docker, recommended for NAS / servers)
 
@@ -280,7 +280,7 @@ compares the output to the catalogue's expert-authored filters.
 | `bin/beq-designer report cache-bias` | Cache vs catalogue bias |
 | `bin/beq-designer report acquisitions` | Title acquisition recommendations |
 | `bin/beq-designer dev train` | Train production model |
-| `bin/beq-designer dev test` | Run spike tests |
+| `bin/beq-designer dev test` | Run auto_beq tests |
 | `bin/beq-designer sweep discover` | Discover media in library |
 | `bin/beq-designer sweep run` | Run sweep pipeline |
 | `bin/beq-designer --help` | Full subcommand list |
@@ -293,7 +293,7 @@ compares the output to the catalogue's expert-authored filters.
 | `AUTO_BEQ_ADVISOR` | Which advisor: `measurement` (signal-only), `ollama` (LLM), `mock`, `heuristic` | `measurement` |
 | `AUTO_BEQ_SWEEP_LIMIT` | Max media files to process in sweep | `10` |
 | `OLLAMA_MODEL` | Ollama model name | `qwen:14b` |
-| `SPIKE_TEST` | Pytest selector for run-spike-*.sh wrappers | all spike tests |
+| `SPIKE_TEST` | Pytest selector for run-spike-*.sh wrappers | all auto_beq tests |
 | `SPIKE_MARKERS` | Override default marker filter in `run-spike-tests.sh` | `not integration and not experiment` |
 | `SPIKE_VERBOSE` | `1` to show stdout from tests | `0` |
 | `AUTO_BEQ_MODEL_PATH` | Override path for the trained XGBoost model loaded by `AUTO_BEQ_ADVISOR=trained_model`. Falls back to `{beq-dir}/production_model.joblib`. | (auto-discover) |

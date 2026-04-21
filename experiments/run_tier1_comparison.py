@@ -47,13 +47,9 @@ from model.auto_beq_nn import (
     train_production_weighted_hybrid,
 )
 from model.auto_beq_torch import E85TrainingConfig, train_e85_differentiable_dsp
-from auto_beq._auto_beq_helpers import (
-    STRATEGY_BLENDED_07,
-    beq_shared_dir,
-    cached_extract_features_with_strategy,
-    discover_unmatched_wavs_cached,
-    prepare_training_data,
-)
+from model.audio_extraction import STRATEGY_BLENDED_07, cached_extract_features_with_strategy
+from model.training_data import prepare_training_data
+from model.wav_discovery import beq_shared_dir, discover_unmatched_wavs_cached
 
 _FS = 1000
 

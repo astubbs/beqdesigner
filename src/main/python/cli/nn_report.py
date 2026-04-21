@@ -23,7 +23,7 @@ from pathlib import Path
 from cli.report_base import create_report_argparser, run_report
 
 # Allow running from repo root.
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[4]  # cli/ -> python/ -> main/ -> src/ -> repo
 for p in (_REPO_ROOT / "src" / "main" / "python", _REPO_ROOT / "src" / "test" / "python"):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))

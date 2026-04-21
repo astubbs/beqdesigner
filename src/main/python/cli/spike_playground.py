@@ -2,7 +2,7 @@
 """CLI playground for the auto-BEQ spike.
 
 Secondary deliverable - the primary one is the pytest integration test at
-src/test/python/spike/test_auto_beq.py. Use this script to poke at things
+src/test/python/auto_beq/test_auto_beq.py. Use this script to poke at things
 interactively without editing test fixtures.
 
 Examples:
@@ -22,7 +22,7 @@ import json
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[4]  # cli/ -> python/ -> main/ -> src/ -> repo
 sys.path.insert(0, str(REPO_ROOT / "src" / "main" / "python"))
 
 

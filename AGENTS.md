@@ -160,7 +160,7 @@ classification) differs between experiments.
 ### Shared infrastructure — no forking
 
 **Never duplicate audio extraction, probing, or configuration loading.**
-Use the single shared implementations in `spike/_auto_beq_helpers.py`:
+Use the single shared implementations in `model/` and `src/test/python/auto_beq/_auto_beq_helpers.py`:
 
 - **LFE extraction**: `extract_lfe_wav()` — handles caching, LFE detection,
   atomic writes, WAV validation. Never inline ffmpeg extraction.
@@ -328,7 +328,7 @@ Run with no arguments for an interactive menu, or use subcommands directly.
 bin/beq-designer                        # interactive menu
 bin/beq-designer profile movie.mkv      # generate BEQ profile
 bin/beq-designer extract --media-root . # extract LFE to cache
-bin/beq-designer dev test               # run spike tests
+bin/beq-designer dev test               # run auto_beq tests
 bin/beq-designer --help                 # list all subcommands
 ```
 
@@ -345,6 +345,9 @@ bin/beq-designer --help                 # list all subcommands
 | `cli/verify_cache.py` | WAV cache integrity check |
 | `cli/nn_report.py` | NN vs catalogue comparison report |
 | `cli/sweep_report.py` | Experiment sweep comparison report |
+| `cli/evaluate.py` | Model evaluation and comparison |
+| `cli/report_base.py` | Shared report infrastructure (argparse, output, classification) |
+| `cli/sweep_discover.py` | Media library scanning and catalogue matching |
 | `cli/spike_playground.py` | Dev: single-title filter proposal test |
 | `cli/train_production_model.py` | Train E82 production XGBoost model |
 | `cli/train_torch_model.py` | Train E85 differentiable-DSP model |

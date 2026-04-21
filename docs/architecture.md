@@ -131,7 +131,7 @@ same across machines:
 | `production_model.joblib` | Trained E82 XGBoost model |
 | `e85_torch_filter.pt` | Trained E85 differentiable-DSP model |
 
-Resolved by `beq_shared_dir()` in `spike/_auto_beq_helpers.py`:
+Resolved by `beq_shared_dir()` in `model/wav_discovery.py`:
 
 1. `BEQ_SHARED_DIR` env var (preferred)
 2. `shared_beq_dir` key in `~/.config/beqdesigner/settings.json`

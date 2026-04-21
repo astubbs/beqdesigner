@@ -9,11 +9,9 @@ from __future__ import annotations
 
 import csv
 import time
-from collections import defaultdict
 from pathlib import Path
 
 from experiment_base import (
-    ExperimentData,
     evaluate_model,
     load_experiment_data,
     setup_experiment_paths,

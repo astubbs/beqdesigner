@@ -35,7 +35,7 @@ def smooth(x, y, smooth_type=None):
     if smooth_type is not None:
         try:
             int(smooth_type)
-        except:
+        except ValueError:
             return smooth_savgol(x, y, smooth_type)
         return smooth_octave(x, y, smooth_type)
     else:
@@ -88,7 +88,7 @@ def must_interpolate(smooth_type):
         try:
             int(smooth_type)
             return True
-        except:
+        except ValueError:
             return False
 
 

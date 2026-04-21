@@ -339,7 +339,7 @@ def cache_status(
 ) -> None:
     """Show WAV cache counts, titles, and author breakdown."""
     from cli.cache_status import main as status_main
-    status_main()
+    status_main([str(cache_dir)] if cache_dir else None)
 
 
 @app.command()
@@ -377,12 +377,15 @@ def nn_report(
 @sweep_app.command(name="discover")
 def sweep_discover(
     library: Optional[list[Path]] = typer.Option(None, "--library", help="Media library root(s)."),  # noqa: UP007
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompts (non-interactive mode)."),
 ) -> None:
     """Scan media library and match against BEQ catalogue."""
     argv: list[str] = []
     if library:
         for lib in library:
             argv.extend(["--library", str(lib)])
+    if yes or os.environ.get("BEQ_AUTO_YES") == "1":
+        argv.append("--yes")
     from cli.sweep_discover import main as discover_main
     discover_main(argv if argv else None)
 

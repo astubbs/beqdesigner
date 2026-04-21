@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 # Allow running from repo root without setting PYTHONPATH.
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[4]  # cli/ -> python/ -> main/ -> src/ -> repo
 _SRC = _REPO_ROOT / "src" / "main" / "python"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))

@@ -7,7 +7,6 @@ interactive components, config persistence, and startup logic.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -44,7 +43,7 @@ from rich.console import Console  # noqa: E402 — after path setup is defined
 
 console = Console()
 
-MEDIA_EXTENSIONS = {".mkv", ".iso", ".mp4", ".m2ts", ".ts", ".avi"}
+from model.media_constants import MEDIA_EXTENSIONS  # noqa: E402 — after console setup
 
 
 # ---------------------------------------------------------------------------

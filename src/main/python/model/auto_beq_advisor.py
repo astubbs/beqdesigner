@@ -1907,7 +1907,7 @@ class OllamaAdvisor:
                         metadata, features, working_chain, tier,
                     ),
                 )
-            except RuntimeError as exc:
+            except (RuntimeError, OSError) as exc:
                 log.info("Ollama refine pass %d failed: %s", pass_num, exc)
                 break
             action = str(diff_result.get("action", "accept")).lower()

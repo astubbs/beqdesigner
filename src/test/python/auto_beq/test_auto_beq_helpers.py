@@ -380,10 +380,10 @@ class TestPrepareTrainingData:
             wd, "discover_wav_catalogue_pairs_cached", lambda: pairs,
         )
 
-        # Mock _extract_features_parallel to return (pair, features) tuples.
-        import auto_beq.test_auto_beq_nn_real as nn_real
+        # Mock extract_features_parallel to return (pair, features) tuples.
+        import model.audio_extraction as audio_mod
         monkeypatch.setattr(
-            nn_real, "_extract_features_parallel",
+            audio_mod, "extract_features_parallel",
             lambda pairs, grid, fs, strategy=None: [
                 (p, features_value) for p in pairs
             ],

@@ -92,7 +92,7 @@ The `MagnitudeData.normalise()` and `.filter()` methods call `interp()` from `xy
 - **Never put Qt/GUI imports or instantiation at module level in `model/` code.** The `model/` layer must be importable without a display server.
 - **AGENTS.md rule added**: "CLI and service code must never depend on Qt. The model/ layer and cli/ layer must be importable without PyQt6."
 - **Verify with**: `python -c "from model.iir import HighShelf, LowShelf, PeakingEQ"` - must work without Qt/display.
-- **The `check_production_model()` function was also moved** from `cli/profile.py` (which imports Qt) to `spike/_auto_beq_helpers.py` (Qt-free) for the same reason.
+- **The `check_production_model()` function was also moved** from `cli/profile.py` (which imports Qt) to `auto_beq/_auto_beq_helpers.py` (Qt-free) for the same reason.
 
 ## Related Issues
 

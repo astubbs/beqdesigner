@@ -25,27 +25,13 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from cli.report_base import classify_format, create_report_argparser, run_report
+from cli.report_base import classify_era, classify_format, create_report_argparser, run_report
 
 # Top authors to analyse (≥1% of catalogue).
 TARGET_AUTHORS = [
     "mobe1969", "aron7awol", "mikejl", "kaelaria",
     "remixmark", "t1g8rsfan", "halcyon888",
 ]
-
-
-def _classify_era(year) -> str:
-    try:
-        y = int(year)
-    except (ValueError, TypeError):
-        return "unknown"
-    if y < 1990:
-        return "pre-1990"
-    if y < 2010:
-        return "1990s-2000s"
-    if y < 2020:
-        return "2010s"
-    return "2020s"
 
 
 def generate_report(catalogue_path: Path, output=None) -> None:
@@ -97,7 +83,7 @@ def generate_report(catalogue_path: Path, output=None) -> None:
     era_by_author: dict[str, Counter] = defaultdict(Counter)
     for e in cat:
         a = e.get("author", "unknown").strip().lower()
-        era_by_author[a][_classify_era(e.get("year"))] += 1
+        era_by_author[a][classify_era(e.get("year"))] += 1
 
     pr("## Era distribution per author")
     pr()
