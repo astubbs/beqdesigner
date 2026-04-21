@@ -304,10 +304,10 @@ def generate_profile(
              f"{episode:02d}" if episode else "?")
 
     # Extract LFE via shared WAV cache (skips extraction if cached).
-    # Always use the unified bucket layout — fail loudly if we can't.
-    # NEVER fall through to the legacy mirrored-path layout, which would
-    # write WAVs to weird paths like wav-cache/Users/astubbs/... and
-    # bypass the cache lookup that the extract command uses.
+    # Always use the unified bucket layout - fail loudly if we can't.
+    # NEVER fall through to the legacy mirrored-path layout, which
+    # mirrors the source media path into the cache and bypasses the
+    # cache lookup that the extract command uses.
     id_pair = extract_media_id(media_path)
     if not id_pair:
         raise RuntimeError(

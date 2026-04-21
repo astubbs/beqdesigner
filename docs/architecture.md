@@ -163,11 +163,12 @@ machines, CLI preferences are per-user). Resolved by `beq_config_dir()`.
 
 ### Why the split
 
-Different machines have different mount points (`/Volumes/Batou/...` on Mac,
-`/volume1/...` on Synology, `/media/batou` in Docker). Putting machine-specific
-paths in the shared directory would break portability. Putting portable data
-(WAV cache, models) in the local config dir would force re-extraction on every
-machine.
+Different machines have different mount points for the same shared
+storage (e.g. Mac mounts it under `/Volumes/`, Synology under
+`/volume1/`, Docker under `/media/`). Putting machine-specific paths
+in the shared directory would break portability. Putting portable data
+(WAV cache, models) in the local config dir would force re-extraction
+on every machine.
 
 The rule: **if the value differs between machines, it lives in
 `~/.config/beqdesigner/`. If it is the same on every machine, it lives in

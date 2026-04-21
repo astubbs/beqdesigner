@@ -72,4 +72,4 @@ The human-readable title is preserved in the FILENAME (not the directory structu
 
 ## Related Issues
 
-- The legacy mirrored-path layout (`wav-cache/Users/astubbs/...`) was from `cli/generate.py` falling through to `extract_lfe_wav()` without a `target_path`. Fixed by making `generate.py` always pass the ID-based target and fail loudly if it can't compute one.
+- The legacy mirrored-path layout (`wav-cache/<source-media-path>/...`) was from `cli/generate.py` falling through to `extract_lfe_wav()` without a `target_path`. Fixed by making `generate.py` always pass the ID-based target and fail loudly if it can't compute one.

@@ -1,5 +1,6 @@
 from dataclasses import asdict, dataclass, is_dataclass
 import json
+import os
 import time
 from concurrent.futures import ProcessPoolExecutor
 
@@ -67,7 +68,9 @@ def load() -> list[BEQFilter]:
             r.raise_for_status()
             entries: list[CatalogueEntry] = load_catalogue(r.content)
         except requests.exceptions.HTTPError as e:
-            entries: list[CatalogueEntry] = load_catalogue('/home/matt/.beq/database.json')
+            fallback = os.environ.get('BEQ_CATALOGUE_FALLBACK',
+                                      os.path.expanduser('~/.beq/database.json'))
+            entries: list[CatalogueEntry] = load_catalogue(fallback)
         with ProcessPoolExecutor() as executor:
             data: list[BEQFilter] = list(executor.map(convert, [e for e in entries if e.filters]))
         with open('database.bin', 'w') as f:

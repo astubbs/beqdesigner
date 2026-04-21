@@ -55,11 +55,11 @@ class TestExtractLfeWavCachePath:
         cache_root = tmp_path / "audio-cache"
         monkeypatch.setenv("AUTO_BEQ_AUDIO_CACHE", str(cache_root))
 
-        source = Path("/Volumes/NAS/Movies/Dune (2021)/Dune.mkv")
+        source = Path("/media/library/Movies/Dune (2021)/Dune.mkv")
         # Pre-compute what the cache path should be
         expected = (
             cache_root
-            / "Volumes/NAS/Movies/Dune (2021)"
+            / "media/library/Movies/Dune (2021)"
             / "Dune.lfe-1000hz.wav"
         )
         # Pre-seed the cache so extract_lfe_wav skips ffmpeg
@@ -73,10 +73,10 @@ class TestExtractLfeWavCachePath:
         cache_root = tmp_path / "audio-cache"
         monkeypatch.setenv("AUTO_BEQ_AUDIO_CACHE", str(cache_root))
 
-        source = Path("/Volumes/NAS/Movies/EoT/EoT.mkv")
+        source = Path("/media/library/Movies/EoT/EoT.mkv")
         expected = (
             cache_root
-            / "Volumes/NAS/Movies/EoT"
+            / "media/library/Movies/EoT"
             / "EoT.lfe-1000hz-t1800-3600.wav"
         )
         expected.parent.mkdir(parents=True, exist_ok=True)
