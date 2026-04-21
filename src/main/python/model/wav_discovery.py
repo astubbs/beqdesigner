@@ -334,12 +334,41 @@ def ensure_analysis_reports_current(
     return regenerated
 
 
+def _count_wav_files(cache_root: Path) -> int:
+    """Count WAV files via os.scandir at each level (NFS-safe).
+
+    Walks bucket/shard/file structure counting files matching WAV_SUFFIX.
+    O(buckets * shards) scandir calls - fast on NFS, no per-file stat.
+    """
+    count = 0
+    try:
+        for bucket in os.scandir(cache_root):
+            if not bucket.is_dir():
+                continue
+            try:
+                for shard in os.scandir(bucket.path):
+                    if not shard.is_dir():
+                        continue
+                    try:
+                        for entry in os.scandir(shard.path):
+                            if entry.is_file() and entry.name.endswith(".wav"):
+                                count += 1
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return count
+
+
 def _discovery_cache_signature() -> dict | None:
-    """Lightweight signature: two stat calls, no directory walk.
+    """Lightweight signature using WAV count + catalogue mtime.
 
     Invalidation sources:
-      * wav cache root mtime - bumped when extract_lfe.py writes
-        ``.status_last.json``, or when new top-level subdirs are added.
+      * wav_count - changes when WAVs are added or removed anywhere in
+        the cache tree, including inside existing subdirectories (which
+        the old mtime-only check missed).
       * catalogue cache file mtime - bumped when the BEQ catalogue is refetched.
 
     Returns None if stats fail (cache miss forced).
@@ -348,7 +377,7 @@ def _discovery_cache_signature() -> dict | None:
         wav_root = wav_cache_dir()
         if not wav_root.exists():
             return None
-        root_mtime = wav_root.stat().st_mtime
+        wav_count = _count_wav_files(wav_root)
     except Exception:
         return None
 
@@ -361,7 +390,7 @@ def _discovery_cache_signature() -> dict | None:
             catalogue_mtime = 0.0
 
     return {
-        "wav_root_mtime": float(root_mtime),
+        "wav_count": wav_count,
         "catalogue_mtime": float(catalogue_mtime),
     }
 

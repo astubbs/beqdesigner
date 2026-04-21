@@ -100,3 +100,41 @@ class TestMatchWavsToCatalogue:
         wav = Path("/cache/INCEPTION (2010) [imdb-tt1375666]/file.lfe-1000hz.wav")
         matched, unmatched = self._run_match([wav])
         assert len(matched) == 1
+
+
+class TestCountWavFiles:
+    """Tests for _count_wav_files (discovery cache invalidation)."""
+
+    def test_counts_wav_files_in_bucket_shard_layout(self, tmp_path):
+        """Standard 3-level layout: bucket/shard/file.wav"""
+        from model.wav_discovery import _count_wav_files
+        bucket = tmp_path / "tmdb"
+        shard = bucket / "19"
+        shard.mkdir(parents=True)
+        (shard / "avatar.lfe-1000hz.wav").write_bytes(b"fake")
+        (shard / "avatar.lfe-500hz.wav").write_bytes(b"fake")
+        assert _count_wav_files(tmp_path) == 2
+
+    def test_new_wav_in_existing_shard_changes_count(self, tmp_path):
+        """Adding a WAV inside an existing shard increments count."""
+        from model.wav_discovery import _count_wav_files
+        shard = tmp_path / "tmdb" / "19"
+        shard.mkdir(parents=True)
+        (shard / "avatar.wav").write_bytes(b"fake")
+        assert _count_wav_files(tmp_path) == 1
+        # Add another WAV to the same shard
+        (shard / "inception.wav").write_bytes(b"fake")
+        assert _count_wav_files(tmp_path) == 2
+
+    def test_empty_cache_returns_zero(self, tmp_path):
+        from model.wav_discovery import _count_wav_files
+        assert _count_wav_files(tmp_path) == 0
+
+    def test_ignores_non_wav_files(self, tmp_path):
+        from model.wav_discovery import _count_wav_files
+        shard = tmp_path / "tmdb" / "19"
+        shard.mkdir(parents=True)
+        (shard / "avatar.wav").write_bytes(b"fake")
+        (shard / "avatar.tmp").write_bytes(b"fake")
+        (shard / "metadata.json").write_bytes(b"fake")
+        assert _count_wav_files(tmp_path) == 1
