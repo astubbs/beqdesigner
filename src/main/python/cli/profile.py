@@ -383,37 +383,28 @@ def _render_results(profile: dict, output_path: Path) -> None:
             f"| {f.get('type', '?')} | {f.get('freq', 0):.0f} | {f.get('gain', 0):+.1f} | {f.get('q', 0):.2f} |"
         )
 
-    lines.append("")
-
-    # Output paths.
-    abs_path = output_path.resolve()
-    lines.append("### Output")
-    lines.append("")
-    lines.append(f"- **Profile:** `{output_path}`")
-
-    img_dir = output_path.parent
-    spect = list(img_dir.glob(f"*spectrograph*.png"))
-    if spect:
-        lines.append(f"- **Spectrograph:** `{spect[0].name}`")
-
     md_text = "\n".join(lines)
 
     console.print()
     console.print(Markdown(md_text))
 
-    # Clickable links (separate from markdown - Rich markdown doesn't support file:// links).
-    # Escape path text because media filenames often contain [brackets]
-    # (e.g. [Bluray-2160p][FLAC 2.0]) which Rich interprets as markup tags.
+    # Clickable file links. Use Text objects (not markup strings) because
+    # media filenames contain [brackets] that break Rich's markup parser.
     from rich.text import Text
+    abs_path = output_path.resolve()
+    img_dir = output_path.parent
+    spect = list(img_dir.glob("*spectrograph*.png"))
+
     console.print()
-    link_text = Text(f"  {output_path}")
-    link_text.stylize(f"link file://{abs_path}")
-    console.print(link_text)
+    console.print("[bold]Output[/bold]")
+    profile_link = Text(f"  Profile:      {output_path}")
+    profile_link.stylize(f"link file://{abs_path}", len("  Profile:      "))
+    console.print(profile_link)
     if spect:
         spect_abs = spect[0].resolve()
-        spect_text = Text(f"  {spect[0].name}")
-        spect_text.stylize(f"link file://{spect_abs}")
-        console.print(spect_text)
+        spect_link = Text(f"  Spectrograph: {spect[0].name}")
+        spect_link.stylize(f"link file://{spect_abs}", len("  Spectrograph: "))
+        console.print(spect_link)
 
 
 # ---------------------------------------------------------------------------
@@ -504,7 +495,8 @@ def _run_single(
             console.print("\n[dim]Interrupted.[/dim]")
             raise
         except Exception as exc:
-            console.print(f"\n[red]Error:[/red] {exc}")
+            msg = str(exc) or type(exc).__name__
+            console.print(f"\n[red]Error:[/red] {msg}")
             console.print_exception(show_locals=False)
             return None
         finally:
