@@ -8,6 +8,9 @@ CLAUDE.md
 # Generated at build time
 build/version.json
 
+# Generated profile output (JSON, spectrographs, reports)
+profiles/
+
 # Local Docker compose (personal volume mounts -- copy from example)
 docker/docker-compose.yml
 
