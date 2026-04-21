@@ -2062,6 +2062,118 @@ class TorchFilterAdvisor:
         )
 
 
+# ---------------------------------------------------------------------------
+# TrainedModelAdvisor and LateFusionAdvisor - moved from auto_beq_nn.py
+# to break circular imports. They import auto_beq_nn functions lazily
+# inside method bodies.
+# ---------------------------------------------------------------------------
+
+
+class TrainedModelAdvisor:
+    """Advisor backed by a trained regression model (XGBoost -> CNN -> transformer).
+
+    Implements the ``Advisor`` protocol. Given a film's ``MediaMetadata``
+    and measured ``CurveFeatures``, builds the 60-dim input vector, runs
+    inference, decodes the predicted 16-dim label vector into filter dicts,
+    and returns an ``Advice`` with the filters set.
+
+    Load with ``TrainedModelAdvisor.load(path)`` for production use.
+    """
+
+    name = "trained_model"
+
+    def __init__(self, model: object) -> None:
+        self._model = model
+
+    @classmethod
+    def load(cls, path: str) -> "TrainedModelAdvisor":
+        """Load from a path written by ``save_model``."""
+        from model.auto_beq_nn import load_model
+        return cls(load_model(path))
+
+    def advise(self, metadata: MediaMetadata, features: CurveFeatures) -> Advice:
+        from model.auto_beq_nn import build_feature_vector, labels_to_filters
+
+        x = build_feature_vector(features, metadata)
+        y_pred = self._model.predict(x.reshape(1, -1))[0]
+        filters = labels_to_filters(y_pred)
+
+        if not filters:
+            log.debug("trained_model: no filters predicted above gain threshold")
+            return _clamp_advice(
+                Advice(
+                    max_gain_db=10.0,
+                    reasoning="trained_model: no filters predicted",
+                    confidence=0.2,
+                    source="trained_model",
+                ),
+                source="trained_model",
+            )
+
+        total_gain = sum(abs(f["gain"]) for f in filters)
+        primary_knee = filters[0]["freq"]
+        log.debug(
+            "trained_model: %d filter(s), total_gain=%.1f dB, primary_knee=%.1f Hz",
+            len(filters), total_gain, primary_knee,
+        )
+        return _clamp_advice(
+            Advice(
+                max_gain_db=total_gain,
+                knee_hz=primary_knee,
+                filters=tuple(filters),
+                reasoning=f"trained_model: {len(filters)} filter(s) predicted",
+                confidence=0.5,
+                source="trained_model",
+            ),
+            source="trained_model",
+        )
+
+
+class LateFusionAdvisor:
+    """Advisor backed by a late-fusion model (E22).
+
+    Two independent XGBoost sub-models (audio-only + metadata-only) with
+    blended predictions. Prevents the cross-feature overfitting observed
+    in E18e when early-fusing audio and metadata on synthetic data.
+    """
+
+    name = "late_fusion"
+
+    def __init__(self, model) -> None:
+        self._model = model
+
+    @classmethod
+    def load(cls, path: str) -> "LateFusionAdvisor":
+        from model.auto_beq_nn import load_model
+        return cls(load_model(path))
+
+    def advise(self, metadata: MediaMetadata, features: CurveFeatures) -> Advice:
+        from model.auto_beq_nn import build_feature_vector, labels_to_filters
+
+        x = build_feature_vector(features, metadata)
+        y_pred = self._model.predict(x.reshape(1, -1))[0]
+        filters = labels_to_filters(y_pred)
+
+        if not filters:
+            return _clamp_advice(
+                Advice(max_gain_db=10.0, reasoning="late_fusion: no filters predicted",
+                       confidence=0.2, source="late_fusion"),
+                source="late_fusion",
+            )
+
+        total_gain = sum(abs(f["gain"]) for f in filters)
+        primary_knee = filters[0]["freq"]
+        return _clamp_advice(
+            Advice(
+                max_gain_db=total_gain, knee_hz=primary_knee,
+                filters=tuple(filters),
+                reasoning=f"late_fusion(alpha={self._model.alpha:.2f}): {len(filters)} filter(s)",
+                confidence=0.5, source="late_fusion",
+            ),
+            source="late_fusion",
+        )
+
+
 def get_advisor(name: str | None = None) -> Advisor:
     """Return an Advisor by name. Falls back to AUTO_BEQ_ADVISOR env var,
     then to HeuristicAdvisor.
@@ -2092,7 +2204,6 @@ def get_advisor(name: str | None = None) -> Advisor:
     if resolved == "ollama":
         return OllamaAdvisor()
     if resolved == "trained_model":
-        from model.auto_beq_nn import TrainedModelAdvisor
         path = os.environ.get("AUTO_BEQ_MODEL_PATH")
         if not path:
             # Fall back to the E82 production model at the default
@@ -2111,7 +2222,6 @@ def get_advisor(name: str | None = None) -> Advisor:
             _warn_if_stale_production_model(default_path)
         return TrainedModelAdvisor.load(path)
     if resolved == "late_fusion":
-        from model.auto_beq_nn import LateFusionAdvisor
         path = os.environ.get("AUTO_BEQ_MODEL_PATH")
         if not path:
             raise ValueError(
